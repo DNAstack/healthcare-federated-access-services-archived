@@ -1,20 +1,20 @@
 # Format: google3/devtools/metadata/metadata.proto (go/google3metadata)
 
-name: "healthcare-federated-access-tools"
+name: "healthcare-federated-access-services"
 description: ""
 
 third_party {
   url {
     type: HOMEPAGE
-    value: "https://github.com/GoogleCloudPlatform/healthcare-federated-access-tools"
+    value: "https://github.com/GoogleCloudPlatform/healthcare-federated-access-services"
   }
   url {
     type: GIT
-    value: "https://github.com/GoogleCloudPlatform/healthcare-federated-access-tools"
+    value: "https://github.com/GoogleCloudPlatform/healthcare-federated-access-services"
   }
   # This project is using this third_party directory as source of truth, will
   # put the commit hash of the initial git checkin here.
-  version: "0"
+  version: "0103c4dfa741954ebcebd8c345bff209c8d57ba8"
   last_upgrade_date { year: 2019 month: 6 day: 6 }
 }
 
@@ -28,7 +28,7 @@ presubmit: {
 
     failure_message:
       "\n"
-      "CL descriptions for changes to healthcare-federated-access-tools\n"
+      "CL descriptions for changes to healthcare-federated-access-services\n"
       "must contain one or more sections delimited as follows:\n"
       "\n"
       "BEGIN_PUBLIC\n"
