@@ -12,18 +12,27 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package module provides optional, extended functionality.
 package module
 
 import (
 	dampb "google3/third_party/hcls_federated_access/dam/api/v1/go_proto"
 )
 
-// Module offers extended functionality that can be added or removed from
-// various environments.
-type Module interface {
-	// ModuleName returns a named identifier for this module.
-	ModuleName() string
-	// LoadPersonas allows and IC to load personas from a DAM.
-	LoadPersonas(realm string) (map[string]*dampb.TestPersona, error)
+// Basic provides no extended functionality.
+type Basic struct {
+}
+
+// NewBasicModule creates a module with no extended functionality.
+func NewBasicModule() Module {
+	return &Basic{}
+}
+
+// ModuleName returns a named identifier for this module.
+func (m *Basic) ModuleName() string {
+	return "basic"
+}
+
+// LoadPersonas allows and IC to load personas from a DAM.
+func (m *Basic) LoadPersonas(realm string) (map[string]*dampb.TestPersona, error) {
+	return make(map[string]*dampb.TestPersona), nil
 }
