@@ -36,3 +36,14 @@ func (m *Basic) ModuleName() string {
 func (m *Basic) LoadPersonas(realm string) (map[string]*dampb.TestPersona, error) {
 	return make(map[string]*dampb.TestPersona), nil
 }
+
+// JoinNonEmpty filters empty strings and joins remainder together.
+func JoinNonEmpty(in []string, separator string) string {
+	out := []string{}
+	for _, v := range in {
+		if len(v) > 0 {
+			out = append(out, v)
+		}
+	}
+	return strings.Join(out, separator)
+}
