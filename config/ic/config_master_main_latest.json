@@ -24,6 +24,16 @@
         "label": "Data Access Manager",
         "description": "The audience of passport tokens"
       }
+    },
+    "local_ddap": {
+      "clientId": "ab7ac98b-fc80-4556-9b4c-0191bce2cdcb",
+      "redirectUris": [
+        "http://localhost:8085/api"
+      ],
+      "ui": {
+        "label": "DDAP Frontend",
+        "description": "Development client"
+      }
     }
   },
   "accountTags": {
