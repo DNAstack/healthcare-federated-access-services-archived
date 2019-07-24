@@ -12,6 +12,7 @@ require (
 	github.com/google/go-cmp v0.2.0
 	github.com/gorilla/mux v1.7.0
 	github.com/pborman/uuid v1.2.0
+	github.com/pquerna/cachecontrol v0.0.0-20180517163645-1555304b9b35 // indirect
 	golang.org/x/crypto v0.0.0-20190424203555-c05e17bb3b2d
 	golang.org/x/oauth2 v0.0.0-20190130055435-99b60b757ec1
 	google.golang.org/api v0.1.0

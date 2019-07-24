@@ -8,6 +8,18 @@
         "admin": -1
       },
       "tags": ["IC", "DAM"]
+    },
+    "admin@nci.nih.gov": {
+      "roles": {
+        "admin": -1
+      },
+      "tags": ["IC", "DAM"]
+    },
+    "nci_researcher@nci.nih.gov": {
+      "roles": {
+        "admin": -1
+      },
+      "tags": ["IC", "DAM"]
     }
   }
 }
