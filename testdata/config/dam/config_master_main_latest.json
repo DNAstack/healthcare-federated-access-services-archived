@@ -725,6 +725,6 @@
     "readOnlyMasterRealm": true,
     "gcpManagedKeysMaxRequestedTtl": "7d",
     "gcpManagedKeysPerAccount": 8,
-    "gcpServiceAccountProject": "hcls-data-connect-demo"
+    "gcpServiceAccountProject": "max-dam-dev"
   }
 }
