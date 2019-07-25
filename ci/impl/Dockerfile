@@ -26,6 +26,10 @@ FROM golang:1.12-alpine
 ARG APP_NAME
 ARG APP_VERSION
 
-COPY --from=0 /build/gcp/dam/main /dam
-COPY --from=0 /build/gcp/ic/main /ic
+COPY --from=0 /build/gcp/dam/main /go/dam-main
+COPY --from=0 /build/gcp/ic/main /go/ic-main
+# Config must be mounted into these folders at runtime
+RUN mkdir -p /go/config/dam /go/config/ic
+COPY --from=0 /build/config/dam-static /go/config/dam-static
+COPY --from=0 /build/gcp/ic/fe /go/gcp/ic/fe
 EXPOSE 8080
