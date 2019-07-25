@@ -6,7 +6,7 @@
 
 # This stage depends on a JDK image and uses Maven Wrapper to pull in dependencies and build the project
 # from source.
-FROM golang:1.12-alpine AS build
+FROM golang:1.12-stretch AS build
 ARG APP_NAME
 ARG APP_VERSION
 
