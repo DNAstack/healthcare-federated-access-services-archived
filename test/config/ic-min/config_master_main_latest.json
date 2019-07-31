@@ -1,0 +1,16 @@
+{
+  "clients": {
+    "test_client": {
+      "clientId": "00000000-0000-0000-0000-000000000000",
+      "ui": {
+        "label": "Test Client",
+        "description": "Unit test client"
+      },
+      "redirectUris": [
+        "http://example.com"
+      ]
+    }
+  },
+  "options": {
+  }
+}
