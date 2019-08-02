@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Copyright 2019 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,22 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-indexes:
+protoc --go_out=paths=source_relative:. proto/models/common.proto
+protoc --go_out=paths=source_relative:. proto/ic/v1/ic_service.proto
+protoc --go_out=paths=source_relative:. internal/proto/builder/builder.proto
+protoc --go_out=paths=source_relative:. proto/dam/v1/dam_secrets.proto
+protoc --go_out=paths=source_relative:. proto/dam/v1/dam_service.proto
 
-- kind: history
-  properties:
-  - name: service
-  - name: realm
-  - name: type
-  - name: user_id
-  - name: id
-  - name: rev
-
-- kind: entity
-  properties:
-  - name: service
-  - name: realm
-  - name: type
-  - name: user_id
-  - name: rev
-  - name: id
+# Install addlicense: go get -u github.com/google/addlicense
+find . -type f -name "*.pb.go" -exec addlicense {} \;
