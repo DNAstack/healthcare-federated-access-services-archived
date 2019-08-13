@@ -3,13 +3,13 @@
   "revision": "1",
   "commitTime": "1544824316",
   "users": {
-    "admin@example.org": {
+    "dr_joe@faculty.example.edu": {
       "roles": {
         "admin": -1
       },
       "tags": ["IC", "DAM"]
     },
-    "admin@nci.nih.gov": {
+    "dr_joe@era.nih.gov": {
       "roles": {
         "admin": -1
       },

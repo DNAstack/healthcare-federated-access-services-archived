@@ -3,7 +3,7 @@
   "revision": "1",
   "commitTime": "1544824316",
   "users": {
-    "admin@nci.nih.gov": {
+    "admin@faculty.example.edu": {
       "roles": {
         "admin": -1
       },
