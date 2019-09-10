@@ -5,7 +5,8 @@
    "ui": {
       "label": "Test Identity Concentrator"
    },
-   "identityProviders": {},
+   "identityProviders": {
+   },
    "clients": {
       "test_page": {
          "clientId": "903cfaeb-57d9-4ef6-5659-04377794ed65",
@@ -18,10 +19,20 @@
          }
       },
       "ga4gh_dam": {
-         "clientId": "6126e2e5-7139-46a4-9457-e2b7341d6bdd",
+         "clientId": "05c14eaf-c762-4dbf-b7aa-c7bab5dd41b2",
          "ui": {
             "label": "Data Access Manager",
             "description": "The audience of passport tokens"
+         }
+      },
+      "local_ddap": {
+         "clientId": "ab7ac98b-fc80-4556-9b4c-0191bce2cdcb",
+         "redirectUris": [
+            "http://localhost:8085/api"
+         ],
+         "ui": {
+            "label": "DDAP Frontend",
+            "description": "Development client"
          }
       }
    },
