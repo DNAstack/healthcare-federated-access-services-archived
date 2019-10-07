@@ -7,6 +7,14 @@
     "description": "Test DAM"
   },
   "trustedPassportIssuers": {
+    "test": {
+      "issuer": "https://example.org/oidc",
+      "clientId": "00000000-0000-0000-0000-000000000000",
+      "ui": {
+        "label": "Test",
+        "description": "Fake OIDC Issuer for testing"
+      }
+    },
     "ic_dev": {
       "issuer": "https://ic-dev-dot-hcls-data-connect-demo.appspot.com/oidc",
       "ui": {
@@ -56,6 +64,7 @@
   "trustedSources": {
     "nih_institutes": {
       "sources": [
+        "https://example.org/oidc",
         "https://dbgap.nlm.nih.gov/aa",
         "https://nci.nih.gov",
         "https://institute1.nih.gov",
@@ -74,6 +83,7 @@
     },
     "the_broad": {
       "sources": [
+        "https://example.org/oidc",
         "https://ga4gh.broadinstitute.org"
       ],
       "ui": {
@@ -83,6 +93,7 @@
     },
     "elixir_institutes": {
       "sources": [
+        "https://example.org/oidc",
         "https://ga4gh.elixir-czech.org/claims"
       ],
       "claims": [
@@ -96,10 +107,12 @@
     },
     "eu_universities": {
       "sources": [
+        "https://example.org/oidc",
         "https://example.edu"
       ],
       "claims": [
         "AcceptedTermsAndPolicies",
+        "AffiliationAndRole",
         "BonaFide"
       ],
       "ui": {
@@ -109,6 +122,7 @@
     },
     "us_universities": {
       "sources": [
+        "https://example.org/oidc",
         "https://ga4gh.stanford.edu/claims"
       ],
       "claims": [
@@ -122,6 +136,7 @@
     },
     "research_companies": {
       "sources": [
+        "https://example.org/oidc",
         "https://ga4gh.google.com/claims",
         "https://ga4gh.dnastack.com/claims"
       ],
@@ -327,6 +342,40 @@
             "description": "GCS File Read"
           }
         },
+        "gcs_payer": {
+          "serviceTemplate": "gcs_requester_pays",
+          "version": "dataset v1",
+          "topic": "FHIR",
+          "partition": "all",
+          "fidelity": "normalized",
+          "geoLocation": "gcp:na/us/us-central1/us-central1-b",
+          "contentTypes": [
+            "application/bam"
+          ],
+          "items": [
+            {
+              "vars": {
+                "project": "dataset-example-project",
+                "requester-pays-bucket": "dataset-example-payer-bucket1"
+              }
+            }, {
+              "vars": {
+                "project": "dataset-example-project",
+                "requester-pays-bucket": "dataset-example-payer-bucket2"
+              }
+            }
+          ],
+          "roles": {
+            "viewer": {
+              "policies": ["dac(DATASETS=^https?://dac\\.nih\\.gov/datasets/phs000709$,^https?://dac\\.nih\\.gov/datasets/phs000710$,https://dac.nih.gov/datasets/phs000711)"]
+            }
+          },
+          "defaultRole": "viewer",
+          "ui": {
+            "label": "File Requster Pays Read",
+            "description": "GCS Requester Pays File Read"
+          }
+        },
         "gcp": {
           "serviceTemplate": "views",
           "version": "dataset v1",
@@ -526,6 +575,31 @@
         "description": "Google Cloud Storage"
       }
     },
+    "gcs_requester_pays": {
+      "targetAdapter": "token:gcp:sa",
+      "itemFormat": "gcs",
+      "roles": {
+        "viewer": {
+          "targetRoles": ["roles/storage.objectViewer"],
+          "targetScopes": [
+            "https://www.googleapis.com/auth/cloud-platform"
+          ],
+          "damRoleCategories": ["metadata", "list", "read"],
+          "ui": {
+            "label": "File Viewer",
+            "description": "List and read files"
+          }
+        }
+      },
+      "interfaces": {
+        "gcp:gs": "gs://${requester-pays-bucket}",
+        "http:gcp:gs": "https://www.googleapis.com/storage/v1/b/${requester-pays-bucket}"
+      },
+      "ui": {
+        "label": "Google Cloud Storage",
+        "description": "Google Cloud Storage (GCS) requester-pays bucket"
+      }
+    },
     "bigquery": {
       "targetAdapter": "token:gcp:sa",
       "itemFormat": "bigquery",
@@ -639,15 +713,15 @@
       "ui": {
         "label": "Dr. Joe (Elixir)"
       },
-      "idToken": {
+      "passport": {
         "standardClaims": {
           "iss": "https://login.elixir-czech.org/oidc/",
-          "sub": "dr_joe@faculty.example.edu",
+          "email": "dr_joe@faculty.example.edu",
           "picture": "https://pbs.twimg.com/profile_images/497015367391121408/_cWXo-vA_400x400.jpeg"
         },
-        "ga4ghClaims": [
+        "ga4ghAssertions": [
           {
-            "claimName": "BonaFide",
+            "type": "BonaFide",
             "source": "https://example.edu",
             "value": "https://doi.org/10.1038/s41431-018-0219-y",
             "assertedDuration": "1d",
@@ -655,7 +729,7 @@
             "by": "peer"
           },
           {
-            "claimName": "AcceptedTermsAndPolicies",
+            "type": "AcceptedTermsAndPolicies",
             "source": "https://example.edu",
             "value": "https://doi.org/10.1038/s41431-018-0219-y",
             "assertedDuration": "1d",
@@ -664,25 +738,24 @@
           }
         ]
       },
-      "resources": {
-        "ga4gh-apis" : {
-          "access" : ["beacon/discovery", "gcs_read/viewer"]
-        }
-      }
+      "access" : [
+        "ga4gh-apis/beacon/discovery",
+        "ga4gh-apis/gcs_read/viewer"
+      ]
     },
     "dr_joe_era_commons": {
       "ui": {
         "label": "Dr. Joe (eRA Commons)"
       },
-      "idToken": {
+      "passport": {
         "standardClaims": {
           "iss": "https://login.nih.gov/oidc/",
-          "sub": "dr_joe@era.nih.gov",
+          "email": "dr_joe@era.nih.gov",
           "picture": "https://pbs.twimg.com/profile_images/3443048571/ef5062acfce64a7aef1d75b4934fbee6_400x400.png"
         },
-        "ga4ghClaims": [
+        "ga4ghAssertions": [
           {
-            "claimName": "AffiliationAndRole",
+            "type": "AffiliationAndRole",
             "source": "https://example.edu",
             "value": "faculty@example.edu",
             "assertedDuration": "1d",
@@ -690,26 +763,32 @@
             "by": "so"
           },
           {
-            "claimName": "ControlledAccessGrants",
+            "type": "ControlledAccessGrants",
             "source": "https://dbgap.nlm.nih.gov/aa",
             "value": "https://dac.nih.gov/datasets/phs000710",
             "assertedDuration": "1d",
             "expiresDuration": "30d",
             "by": "dac",
-            "condition": {
-              "AffiliationAndRole": {
-                "value": ["faculty@example.edu"],
-                "by": ["so"]
+            "conditions": [
+              {
+                "clauses": [
+                  {
+                    "type": "AffiliationAndRole",
+                    "value": "const:faculty@example.edu",
+                    "by": "const:so"
+                  }
+                ]
               }
-            }
+            ]
           }
         ]
       },
-      "resources": {
-        "dataset_example" : {
-          "access": ["bq_read/viewer", "gcp/viewer", "gcs_read/viewer"]
-        }
-      }
+      "access": [
+        "dataset_example/bq_read/viewer",
+        "dataset_example/gcp/viewer",
+        "dataset_example/gcs_payer/viewer",
+        "dataset_example/gcs_read/viewer"
+      ]
     }
   },
   "clients": {
@@ -725,6 +804,6 @@
     "readOnlyMasterRealm": true,
     "gcpManagedKeysMaxRequestedTtl": "7d",
     "gcpManagedKeysPerAccount": 8,
-    "gcpServiceAccountProject": "max-dam-dev"
+    "gcpServiceAccountProject": "example-project-id"
   }
 }

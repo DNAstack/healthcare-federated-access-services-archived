@@ -30,6 +30,8 @@ const (
 	sawName        = "saw"
 	// SawMaxUserIDLength is the service account desc max length.
 	SawMaxUserIDLength = 100
+	sawBucketVar       = "bucket"
+	sawPaysBucketVar   = "requester-pays-bucket"
 )
 
 // SawAdapter is a Service Account Warehouse (SAW) adapter.
@@ -120,6 +122,10 @@ func scrubVars(vars map[string]string) map[string]string {
 		if len(v) == 0 {
 			delete(vars, k)
 		}
+	}
+	if v, ok := vars[sawPaysBucketVar]; ok {
+		vars[sawBucketVar] = v
+		delete(vars, sawPaysBucketVar)
 	}
 	return vars
 }
