@@ -33,6 +33,29 @@
             "description": "Cloud Storage allows world-wide storage and retrieval of any amount of data at any time. You can use Cloud Storage for a range of scenarios including serving website content, storing data for archival and disaster recovery, or distributing large data objects to users via direct download."
          }
       },
+      "requester-pays-gcs": {
+         "variables": {
+            "project": {
+               "regexp": "^[a-z]([-a-z0-9]*[a-z0-9])?$",
+               "ui": {
+                  "label": "GCP Project ID",
+                  "description": "make sure to use the project ID and not the project name"
+               }
+            },
+            "requester-pays-bucket": {
+               "regexp": "^[a-z]([-a-z0-9]*[a-z0-9])$",
+               "optional": true,
+               "ui": {
+                  "description": "must be owned by the specified project ID",
+                  "label": "GCS Requester Pays Bucket name"
+               }
+            }
+         },
+         "ui": {
+            "label": "Google Cloud Storage",
+            "description": "Cloud Storage allows world-wide storage and retrieval of any amount of data at any time. You can use Cloud Storage for a range of scenarios including serving website content, storing data for archival and disaster recovery, or distributing large data objects to users via direct download."
+         }
+      },
       "bigquery": {
          "variables": {
             "project": {
