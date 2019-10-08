@@ -28,10 +28,9 @@ const (
 	// SawAdapterName is the name identifier exposed in config files.
 	SawAdapterName = "token:gcp:sa"
 	sawName        = "saw"
+	userProjectVar = "userProject"
 	// SawMaxUserIDLength is the service account desc max length.
 	SawMaxUserIDLength = 100
-	sawBucketVar       = "bucket"
-	sawPaysBucketVar   = "requester-pays-bucket"
 )
 
 // SawAdapter is a Service Account Warehouse (SAW) adapter.
@@ -82,7 +81,11 @@ func (a *SawAdapter) MintToken(input *Action) (*MintTokenResult, error) {
 	}
 	userID := common.TokenUserID(input.Identity, SawMaxUserIDLength)
 	maxKeyTTL, _ := common.ParseDuration(input.Config.Options.GcpManagedKeysMaxRequestedTtl, input.MaxTTL)
-	result, err := a.warehouse.MintTokenWithTTL(input.Request.Context(), userID, input.TTL, maxKeyTTL, int(input.Config.Options.GcpManagedKeysPerAccount), resourceTokenCreationParams(input.GrantRole, input.ServiceTemplate, input.ServiceRole, input.View, input.Config, input.TokenFormat))
+	params, err := resourceTokenCreationParams(input.GrantRole, input.ServiceTemplate, input.ServiceRole, input.View, input.Config, input.TokenFormat)
+	if err != nil {
+		return nil, fmt.Errorf("SAW minting token: %v", err)
+	}
+	result, err := a.warehouse.MintTokenWithTTL(input.Request.Context(), userID, input.TTL, maxKeyTTL, int(input.Config.Options.GcpManagedKeysPerAccount), params)
 	if err != nil {
 		return nil, fmt.Errorf("SAW minting token: %v", err)
 	}
@@ -93,7 +96,7 @@ func (a *SawAdapter) MintToken(input *Action) (*MintTokenResult, error) {
 	}, nil
 }
 
-func resourceTokenCreationParams(role string, template *pb.ServiceTemplate, sRole *pb.ServiceRole, view *pb.View, cfg *pb.DamConfig, format string) *clouds.ResourceTokenCreationParams {
+func resourceTokenCreationParams(role string, template *pb.ServiceTemplate, sRole *pb.ServiceRole, view *pb.View, cfg *pb.DamConfig, format string) (*clouds.ResourceTokenCreationParams, error) {
 	roles := []string{}
 	scopes := []string{}
 	if sRole != nil {
@@ -105,16 +108,27 @@ func resourceTokenCreationParams(role string, template *pb.ServiceTemplate, sRol
 		}
 	}
 	items := make([]map[string]string, len(view.Items))
+	userProject := ""
 	for index, item := range view.Items {
-		items[index] = scrubVars(item.Vars)
+		vars := scrubVars(item.Vars)
+		items[index] = vars
+		if v, hasProjectVar := vars[userProjectVar]; hasProjectVar {
+			if userProject == "" {
+				userProject = v
+			} else {
+				return nil, fmt.Errorf("multiple user projects specified")
+			}
+		}
 	}
+
 	return &clouds.ResourceTokenCreationParams{
 		AccountProject: cfg.Options.GcpServiceAccountProject,
 		Items:          items,
 		Roles:          roles,
 		Scopes:         scopes,
 		TokenFormat:    format,
-	}
+		UserProject:    userProject,
+	}, nil
 }
 
 func scrubVars(vars map[string]string) map[string]string {
@@ -123,9 +137,6 @@ func scrubVars(vars map[string]string) map[string]string {
 			delete(vars, k)
 		}
 	}
-	if v, ok := vars[sawPaysBucketVar]; ok {
-		vars[sawBucketVar] = v
-		delete(vars, sawPaysBucketVar)
-	}
+
 	return vars
 }
