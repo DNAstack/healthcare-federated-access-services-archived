@@ -32,4 +32,5 @@ COPY --from=0 /build/gcp/ic/main /go/ic-main
 RUN mkdir -p /go/config/dam /go/config/ic
 COPY --from=0 /build/deploy/config/dam-static /go/config/dam-static
 COPY --from=0 /build/assets /go/assets/
+COPY --from=0 /build/pages /go/pages/
 EXPOSE 8080
