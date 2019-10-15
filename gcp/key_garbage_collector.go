@@ -17,17 +17,16 @@ package gcp
 import (
 	"context"
 	"fmt"
-	"log"
 	"math/rand"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
 
+	glog "github.com/golang/glog"
+	iam "google.golang.org/api/iam/v1"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
-
-	iam "google.golang.org/api/iam/v1"
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
 )
 
@@ -89,24 +88,7 @@ func (gc *KeyGarbageCollector) RegisterProject(realm, project string, maxRequest
 	if !locked {
 		return fmt.Errorf("%s: unable to lock garbage collection object in data storage layer, waiting for next wake cycle", kgcName)
 	}
-	if kgc.ActiveProjects == nil {
-		kgc.ActiveProjects = make(map[string]*pb.BackgroundProcess_Project)
-	}
-	if kgc.ActiveRealms == nil {
-		kgc.ActiveRealms = make(map[string]*pb.BackgroundProcess_Realm)
-	}
-	if kgc.CleanupProjects == nil {
-		kgc.CleanupProjects = make(map[string]int64)
-	}
-	if kgc.DroppedProjects == nil {
-		kgc.DroppedProjects = make(map[string]int64)
-	}
-	if kgc.ProjectStatus == nil {
-		kgc.ProjectStatus = make(map[string]*pb.BackgroundProcess_Status)
-	}
-	if kgc.SuccessStatus == nil {
-		kgc.SuccessStatus = &pb.BackgroundProcess_Status{}
-	}
+	gc.setupGC(kgc)
 	display := ""
 	now := common.GetNowInUnix()
 	emptyProject := len(project) == 0
@@ -193,9 +175,30 @@ func (gc *KeyGarbageCollector) RegisterProject(realm, project string, maxRequest
 		}
 	}
 	if len(display) > 0 {
-		log.Printf(display)
+		glog.Infof(display)
 	}
 	return nil
+}
+
+func (gc *KeyGarbageCollector) setupGC(kgc *pb.BackgroundProcess) {
+	if kgc.ActiveProjects == nil {
+		kgc.ActiveProjects = make(map[string]*pb.BackgroundProcess_Project)
+	}
+	if kgc.ActiveRealms == nil {
+		kgc.ActiveRealms = make(map[string]*pb.BackgroundProcess_Realm)
+	}
+	if kgc.CleanupProjects == nil {
+		kgc.CleanupProjects = make(map[string]int64)
+	}
+	if kgc.DroppedProjects == nil {
+		kgc.DroppedProjects = make(map[string]int64)
+	}
+	if kgc.ProjectStatus == nil {
+		kgc.ProjectStatus = make(map[string]*pb.BackgroundProcess_Status)
+	}
+	if kgc.SuccessStatus == nil {
+		kgc.SuccessStatus = &pb.BackgroundProcess_Status{}
+	}
 }
 
 func (gc *KeyGarbageCollector) findRealm(kgc *pb.BackgroundProcess, project string) *pb.BackgroundProcess_Realm {
@@ -212,7 +215,6 @@ func (gc *KeyGarbageCollector) run() {
 	ctx := context.Background()
 	var kgc *pb.BackgroundProcess
 	for sleep := gc.sleepTime(kgc, 0); true; sleep = gc.sleepTime(kgc, wakeTime) {
-		// log.Printf("FIXME %s sleeping %s...", kgcName, common.TtlString(sleep))
 		time.Sleep(sleep)
 		lkgc, work := gc.lockGC()
 		if lkgc == nil || !work {
@@ -220,7 +222,7 @@ func (gc *KeyGarbageCollector) run() {
 		}
 		kgc = lkgc
 		if errCount := gc.garbageCollectKeys(ctx, kgc); errCount > 0 && len(kgc.SuccessStatus.Errors) > 0 {
-			log.Printf("%s errors during execution: %d total errors, first error: %v", kgcName, errCount, kgc.SuccessStatus.Errors[0])
+			glog.Infof("%s errors during execution: %d total errors, first error: %v", kgcName, errCount, kgc.SuccessStatus.Errors[0])
 		}
 		gc.finishGC(kgc)
 	}
@@ -229,7 +231,7 @@ func (gc *KeyGarbageCollector) run() {
 func (gc *KeyGarbageCollector) lockGC() (*pb.BackgroundProcess, bool) {
 	tx, err := gc.store.Tx(true)
 	if err != nil {
-		log.Printf("%s: unable to obtain storage transaction: %v", kgcName, err)
+		glog.Infof("%s: unable to obtain storage transaction: %v", kgcName, err)
 		return nil, false
 	}
 	defer tx.Finish()
@@ -239,15 +241,18 @@ func (gc *KeyGarbageCollector) lockGC() (*pb.BackgroundProcess, bool) {
 	for try := 0; try < 5; try++ {
 		err := gc.store.ReadTx(BackgroundProcessDataType, storage.DefaultRealm, storage.DefaultUser, KeyGcProcessName, storage.LatestRev, kgc, tx)
 		if err == nil || storage.ErrNotFound(err) {
+			// Will setup the object below.
 			locked = true
 			break
 		}
 		time.Sleep(time.Duration(gc.jitter() * 1e9))
 	}
 	if !locked {
-		log.Printf("%s: unable to lock garbage collection object in data storage layer, waiting for next wake cycle", kgcName)
+		glog.Infof("%s: unable to lock garbage collection object in data storage layer, waiting for next wake cycle", kgcName)
 		return nil, false
 	}
+	// Always call setupGC() to add any structures that may not already be defined within the object.
+	gc.setupGC(kgc)
 	cutoff := gc.cutoff(kgc.ActiveProjects)
 	if kgc.ProgressTime >= cutoff {
 		if kgc.FinishTime == 0 || kgc.SettingsChangeTime < kgc.StartTime {
@@ -263,10 +268,10 @@ func (gc *KeyGarbageCollector) lockGC() (*pb.BackgroundProcess, bool) {
 	kgc.ProgressTime = kgc.StartTime
 	kgc.FinishTime = 0
 	if err := gc.store.WriteTx(BackgroundProcessDataType, storage.DefaultRealm, storage.DefaultUser, KeyGcProcessName, storage.LatestRev, kgc, nil, tx); err != nil {
-		log.Printf("%s: unable to write garbage collection object in data storage layer: %v", kgcName, err)
+		glog.Infof("%s: unable to write garbage collection object in data storage layer: %v", kgcName, err)
 		return kgc, false
 	}
-	log.Printf("%s start processing...", kgcName)
+	glog.Infof("%s start processing...", kgcName)
 	return kgc, true
 }
 
@@ -287,7 +292,7 @@ func (gc *KeyGarbageCollector) cutoff(projects map[string]*pb.BackgroundProcess_
 func (gc *KeyGarbageCollector) putGC(kgc *pb.BackgroundProcess, tries int) {
 	tx, err := gc.store.Tx(true)
 	if err != nil {
-		log.Printf("%s: unable to obtain storage transaction: %v", kgcName, err)
+		glog.Infof("%s: unable to obtain storage transaction: %v", kgcName, err)
 		return
 	}
 	defer tx.Finish()
@@ -299,7 +304,7 @@ func (gc *KeyGarbageCollector) putGC(kgc *pb.BackgroundProcess, tries int) {
 		}
 		time.Sleep(time.Duration(gc.jitter() * 1e9))
 	}
-	log.Printf("%s: unable to write garbage collection object in data storage layer: %v", kgcName, err)
+	glog.Infof("%s: unable to write garbage collection object in data storage layer: %v", kgcName, err)
 }
 
 func (gc *KeyGarbageCollector) finishGC(kgc *pb.BackgroundProcess) {
@@ -331,7 +336,7 @@ func (gc *KeyGarbageCollector) garbageCollectKeys(ctx context.Context, kgc *pb.B
 		if err := gc.wh.GetServiceAccounts(ctx, projectName, func(sa *iam.ServiceAccount) bool {
 			if isGarbageCollectAccount(sa) {
 				pAccounts++
-				//log.Printf("%s processing service account: %q for user %q, %#v", kgcName, sa.Email, sa.DisplayName, sa)
+				//glog.Infof("%s processing service account: %q for user %q, %#v", kgcName, sa.Email, sa.DisplayName, sa)
 				keyTTL := project.Params.IntParams["keyTtl"]
 				keysPerAccount := project.Params.IntParams["keysPerAccount"]
 				_, got, rm, err := gc.wh.ManageAccountKeys(ctx, projectName, sa.Email, 0, time.Duration(keyTTL)*time.Second, int(keysPerAccount))
@@ -428,7 +433,7 @@ func (gc *KeyGarbageCollector) garbageCollectKeys(ctx context.Context, kgc *pb.B
 		kgc.SuccessStatus = &pb.BackgroundProcess_Status{}
 	}
 	populateStatus(kgc.SuccessStatus, accounts, kept, rmKeys, rmAccts, cleanupProjects, errors, errTime, errList, nil)
-	log.Printf("%s complete: %d active projects, %d accounts, kept %d keys, removed %d keys, removed %d accounts, cleaned up %d projects, %d errors", kgcName, projects, accounts, kept, rmKeys, rmAccts, cleanupProjects, errors)
+	glog.Infof("%s complete: %d active projects, %d accounts, kept %d keys, removed %d keys, removed %d accounts, cleaned up %d projects, %d errors", kgcName, projects, accounts, kept, rmKeys, rmAccts, cleanupProjects, errors)
 	return errors
 }
 

@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"reflect"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp"
@@ -94,7 +93,7 @@ func (h *realmHandler) Remove(name string) error {
 		return err
 	}
 	if name == storage.DefaultRealm {
-		return h.s.importFiles()
+		return h.s.ImportFiles(importDefault)
 	}
 	return h.s.unregisterRealm(h.cfg, name)
 }
@@ -472,7 +471,7 @@ func (h *configHandler) Save(tx storage.Tx, name string, vars map[string]string,
 	if err := h.s.saveConfig(h.save, desc, typeName, h.r, h.id, h.cfg, h.save, h.input.Modification, tx); err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(h.cfg.Options, h.save.Options) {
+	if !proto.Equal(h.cfg.Options, h.save.Options) {
 		return h.s.registerProject(h.save, getRealm(h.r))
 	}
 	return nil
@@ -554,7 +553,7 @@ func (h *configOptionsHandler) Save(tx storage.Tx, name string, vars map[string]
 	if err := h.s.saveConfig(h.cfg, desc, typeName, h.r, h.id, h.item, h.save, h.input.Modification, h.tx); err != nil {
 		return err
 	}
-	if h.orig != nil && !reflect.DeepEqual(h.orig, h.save) {
+	if h.orig != nil && !proto.Equal(h.orig, h.save) {
 		return h.s.registerProject(h.cfg, getRealm(h.r))
 	}
 	return nil
@@ -1199,14 +1198,11 @@ func (h *configPersonaHandler) NormalizeInput(name string, vars map[string]strin
 	if h.input.Item == nil {
 		h.input.Item = &pb.TestPersona{}
 	}
-	if h.input.Item.IdToken == nil {
-		h.input.Item.IdToken = &pb.TestPersona_TestIdentityToken{}
+	if h.input.Item.Passport == nil {
+		h.input.Item.Passport = &pb.TestPersona_TestPassport{}
 	}
-	if h.input.Item.IdToken.StandardClaims == nil {
-		h.input.Item.IdToken.StandardClaims = make(map[string]string)
-	}
-	if h.input.Item.Resources == nil {
-		h.input.Item.Resources = make(map[string]*pb.AccessList)
+	if h.input.Item.Passport.StandardClaims == nil {
+		h.input.Item.Passport.StandardClaims = make(map[string]string)
 	}
 	if h.input.Item.Ui == nil {
 		h.input.Item.Ui = make(map[string]string)
@@ -1229,8 +1225,8 @@ func (h *configPersonaHandler) Put(name string) error {
 }
 func (h *configPersonaHandler) Patch(name string) error {
 	proto.Merge(h.item, h.input.Item)
-	h.item.IdToken = h.input.Item.IdToken
-	h.item.Resources = h.input.Item.Resources
+	h.item.Passport = h.input.Item.Passport
+	h.item.Access = h.input.Item.Access
 	h.item.Ui = h.input.Item.Ui
 	h.save = h.item
 	return nil

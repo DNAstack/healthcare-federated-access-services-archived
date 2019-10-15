@@ -60,7 +60,7 @@ Add the IAM Admin role to the `App Engine default service account` of the server
 
 #### Setup service account project
 
-Add `Service Account Token Creator` role to `App Engine default service account` of server hosting project.
+Add `Service Account Token Creator` and `Cloud KMS CryptoKey Encrypter/Decrypter` role to `App Engine default service account` of server hosting project.
 
 ### Configure
 
@@ -77,6 +77,7 @@ Add `Service Account Token Creator` role to `App Engine default service account`
     PROJECT: "${dam-hosting-project}"
     CONFIG_PATH: "config"
     STORAGE: "datastore"
+    DEFAULT_BROKER: "${your-ic-name-in-config-file}"
 
   # ic/app.yaml
   runtime: go112

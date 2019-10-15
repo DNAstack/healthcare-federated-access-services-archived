@@ -30,15 +30,19 @@ import (
 
 // IsAudience returns true if the token's "azp" or "aud" contains the self string or clientID.
 func IsAudience(token *ga4gh.Identity, clientID, self string) bool {
+	if len(token.AuthorizedParty) == 0 && len(token.Audiences) == 0 {
+		// Is a public token.
+		return true
+	}
 	if clientID == "" {
 		return false
 	}
 	if len(self) > 0 {
-		if self == token.AuthorizedParty || ListContains(token.Audiences.Audiences, self) {
+		if self == token.AuthorizedParty || ListContains(token.Audiences, self) {
 			return true
 		}
 	}
-	return clientID == token.AuthorizedParty || ListContains(token.Audiences.Audiences, clientID)
+	return clientID == token.AuthorizedParty || ListContains(token.Audiences, clientID)
 }
 
 // UserID returns an user identifier that specifies a subject within an issuer.
@@ -100,12 +104,10 @@ func ConvertTokenToIdentityUnsafe(tok string) (*ga4gh.Identity, error) {
 
 // HasUserinfoClaims checks if /userinfo endpoint needs to be called to fetch additional claims for
 // a particular identity.
-func HasUserinfoClaims(userinfoClaims []string) bool {
-	if len(userinfoClaims) == 0 {
-		return false
-	}
-	for _, name := range userinfoClaims {
-		if strings.HasPrefix(name, "ga4gh.") {
+func HasUserinfoClaims(id *ga4gh.Identity) bool {
+	scopes := strings.Split(id.Scope, " ")
+	for _, scope := range scopes {
+		if scope == "ga4gh" || scope == "ga4gh_passport_v1" {
 			return true
 		}
 	}

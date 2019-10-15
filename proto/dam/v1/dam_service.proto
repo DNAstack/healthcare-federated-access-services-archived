@@ -43,6 +43,8 @@ message TrustedPassportIssuer {
   string translate_using = 2;
   map<string, string> ui = 3;
   string client_id = 4;
+  string auth_url = 5;
+  string token_url = 6;
 }
 
 message TrustedSource {
@@ -84,6 +86,7 @@ message View {
   message Item {
     map<string, string> vars = 1;
   }
+
   string service_template = 1;
   string version = 2;
   string topic = 3;
@@ -113,6 +116,7 @@ message Client {
   int64 revision = 2;
   double commit_time = 3;
   map<string, string> ui = 4;
+  repeated string redirect_uris = 5;
 }
 
 message ServiceTemplate {
@@ -164,26 +168,30 @@ message AccessList {
 }
 
 message TestPersona {
-  message GA4GHClaim {
-    message Condition {
-      repeated string source = 1;
-      repeated string value = 2;
-      repeated string by = 3;
+  message TestAssertion {
+    message ConditionClause {
+      string type = 1;
+      string source = 2;
+      string value = 3;
+      string by = 4;
     }
-    string claim_name = 1;
+    message Condition {
+      repeated ConditionClause clauses = 1;
+    }
+    string type = 1;
     string source = 2;
     string value = 3;
     string asserted_duration = 4;
     string expires_duration = 5;
-    map<string, Condition> condition = 6;
+    repeated Condition conditions = 6;
     string by = 7;
   }
-  message TestIdentityToken {
+  message TestPassport {
     map<string, string> standard_claims = 1;
-    repeated GA4GHClaim ga4gh_claims = 2;
+    repeated TestAssertion ga4gh_assertions = 2;
   }
-  TestIdentityToken id_token = 1;
-  map<string, AccessList> resources = 2;
+  TestPassport passport = 1;
+  repeated string access = 2;
   map<string, string> ui = 3;
 }
 
@@ -239,6 +247,14 @@ message Realm {}
 message PassportTranslator {
   repeated string compatible_issuers = 1;
   map<string, string> ui = 2;
+}
+
+message ResourceToken {
+  string name = 1;
+  View view = 2;
+  string account = 3;
+  string token = 4;
+  string ttl = 5;
 }
 
 ///////////////////////////////////////////////////
@@ -394,8 +410,10 @@ message GetTestResultsResponse {
   message TestResult {
     string name = 1;
     string result = 2;
-    map<string, AccessList> resources = 3;
-    string error = 4;
+    repeated string access = 3;
+    map<string, string> no_access = 4;
+    map<string, string> rejected_visas = 5;
+    string error = 6;
   }
 
   string version = 1;
@@ -473,11 +491,9 @@ message TokenResponse {
 
 message ConfigModification {
   message PersonaModification {
-    map<string, AccessList> resources = 1;
-    // TODO: remove add_resources and remove_resources when DDAP no
-    // longer needs them.
-    map<string, AccessList> add_resources = 2;
-    map<string, AccessList> remove_resources = 3;
+    repeated string access = 1;
+    repeated string add_access = 2;
+    repeated string remove_access = 3;
   }
 
   int64 revision = 1;
@@ -543,4 +559,38 @@ message ConfigTestPersonaRequest {
 message ConfigClientRequest {
   Client item = 1;
   ConfigModification modification = 2;
+}
+
+message ResourceTokenRequestState {
+  string realm = 1;
+  string client_id = 2;
+  string resource = 3;
+  string view = 4;
+  string role = 5;
+  string state = 6;
+  string broker = 7;
+  string redirect = 8;
+  int64 ttl = 9;
+  bool response_key_file = 10;
+}
+
+message AuthCode {
+  string client_id = 1;
+  bool response_key_file = 2;
+  map<string, ResourceToken> tokens = 3;
+}
+
+///////////////////////////////////////////////////
+// oidc
+
+message OidcConfig {
+  string issuer = 1 [json_name = "issuer"];
+  string jwks_uri = 2 [json_name = "jwks_uri"];
+  string auth_url = 3 [json_name = "auth_url"];
+  repeated string response_types_supported = 4
+      [json_name = "response_types_supported"];
+  string token_endpoint = 5 [json_name = "token_endpoint"];
+  string revocation_endpoint = 8 [json_name = "revocation_endpoint"];
+  string userinfo_endpoint = 6 [json_name = "userinfo_endpoint"];
+  repeated string scopes_supported = 7 [json_name = "scopes_supported"];
 }

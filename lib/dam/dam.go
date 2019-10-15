@@ -12,13 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Package dam contains data access management service.
 package dam
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,14 +34,16 @@ import (
 	"time"
 	"unicode"
 
+	glog "github.com/golang/glog"
 	"github.com/golang/protobuf/jsonpb"
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/mux"
+	"gopkg.in/square/go-jose.v2"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/playground"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator"
@@ -75,6 +80,14 @@ const (
 	tokensPath            = methodPrefix + "tokens"
 	tokenPath             = methodPrefix + "tokens/{name}"
 
+	oidcPrefix          = basePath + "/oidc/"
+	loggedInPath        = oidcPrefix + "loggedin"
+	resourceAuthPath    = oidcPrefix + "authorize"
+	resourceTokenPath   = oidcPrefix + "token"
+	oidcWellKnownPrefix = oidcPrefix + ".well-known"
+	oidcConfiguarePath  = oidcWellKnownPrefix + "/openid-configuration"
+	oidcJwksPath        = oidcWellKnownPrefix + "/jwks"
+
 	configPath                      = methodPrefix + "config"
 	configResourcePath              = configPath + "/resources/{name}"
 	configViewPath                  = configPath + "/resources/{resource}/views/{name}"
@@ -101,7 +114,7 @@ const (
 	defaultPersonaScope = ""
 	damStaticService    = "dam-static"
 
-	requestTTLInNanoFloat64 = ga4gh.ContextKey("requested_ttl")
+	requestTTLInNanoFloat64 = "requested_ttl"
 )
 
 var (
@@ -112,12 +125,15 @@ var (
 	maxTTLStr  = "90 days"           // keep in sync with maxTTL
 
 	translators = translator.PassportTranslators()
+
+	importDefault = os.Getenv("IMPORT")
 )
 
 type Service struct {
 	adapters       *adapter.TargetAdapters
 	roleCategories map[string]*pb.RoleCategory
 	domainURL      string
+	defaultBroker  string
 	store          storage.Store
 	warehouse      clouds.ResourceTokenCreator
 	permissions    *common.Permissions
@@ -135,23 +151,25 @@ type ServiceHandler struct {
 // NewService create DAM service
 // - ctx: pass in http.Client can replace the one used in oidc request
 // - domain: domain used to host DAM service
+// - defaultBroker: default identity broker
 // - store: data storage and configuration storage
 // - warehouse: resource token creator service
-func NewService(ctx context.Context, domain string, store storage.Store, warehouse clouds.ResourceTokenCreator) *Service {
+func NewService(ctx context.Context, domain, defaultBroker string, store storage.Store, warehouse clouds.ResourceTokenCreator) *Service {
 	fs := getFileStore(store, damStaticService)
 	var roleCat pb.DamRoleCategoriesResponse
 	if err := fs.Read("role", storage.DefaultRealm, storage.DefaultUser, "en", storage.LatestRev, &roleCat); err != nil {
-		log.Fatalf("cannot load role categories: %v", err)
+		glog.Fatalf("cannot load role categories: %v", err)
 	}
 	perms, err := common.LoadPermissions(store)
 	if err != nil {
-		log.Fatalf("cannot load permissions: %v", err)
+		glog.Fatalf("cannot load permissions: %v", err)
 	}
 
 	sh := &ServiceHandler{}
 	s := &Service{
 		roleCategories: roleCat.DamRoleCategories,
 		domainURL:      domain,
+		defaultBroker:  defaultBroker,
 		store:          store,
 		warehouse:      warehouse,
 		permissions:    perms,
@@ -162,38 +180,38 @@ func NewService(ctx context.Context, domain string, store storage.Store, warehou
 
 	secrets, err := s.loadSecrets(nil)
 	if err != nil {
-		if isAutoReset() {
-			if impErr := s.importFiles(); impErr == nil {
+		if isAutoReset() || storage.ErrNotFound(err) {
+			if impErr := s.ImportFiles(importDefault); impErr == nil {
 				secrets, err = s.loadSecrets(nil)
 			}
 		}
 		if err != nil {
-			log.Fatalf("cannot load client secrets: %v", err)
+			glog.Fatalf("cannot load client secrets: %v", err)
 		}
 	}
 	adapters, err := adapter.CreateAdapters(fs, warehouse, secrets)
 	if err != nil {
-		log.Fatalf("cannot load adapters: %v", err)
+		glog.Fatalf("cannot load adapters: %v", err)
 	}
 	s.adapters = adapters
-	if err := s.importFiles(); err != nil {
-		log.Fatalf("cannot initialize storage: %v", err)
+	if err := s.ImportFiles(importDefault); err != nil {
+		glog.Fatalf("cannot initialize storage: %v", err)
 	}
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
-		log.Fatalf("cannot load config: %v", err)
+		glog.Fatalf("cannot load config: %v", err)
 	}
 	if err := s.CheckIntegrity(cfg); err != nil {
-		log.Fatalf("config integrity error: %v", err)
+		glog.Fatalf("config integrity error: %v", err)
 	}
 	if tests := s.runTests(cfg, nil); hasTestError(tests) {
-		log.Fatalf("run tests error: %v; results: %v; modification: <%v>", tests.Error, tests.TestResults, tests.Modification)
+		glog.Fatalf("run tests error: %v; results: %v; modification: <%v>", tests.Error, tests.TestResults, tests.Modification)
 	}
 
 	for name, cfgTpi := range cfg.TrustedPassportIssuers {
 		_, err = s.getIssuerTranslator(s.ctx, cfgTpi.Issuer, cfg, secrets, nil)
 		if err != nil {
-			log.Printf("failed to create translator for issuer %q: %v", name, err)
+			glog.Infof("failed to create translator for issuer %q: %v", name, err)
 		}
 	}
 
@@ -261,7 +279,7 @@ func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.ParseForm()
-	if r.URL.Path == infoPath {
+	if r.URL.Path == infoPath || r.URL.Path == loggedInPath || strings.HasPrefix(r.URL.Path, oidcWellKnownPrefix) {
 		sh.Handler.ServeHTTP(w, r)
 		return
 	}
@@ -272,6 +290,11 @@ func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	cs := getClientSecret(r)
 	if len(cs) == 0 {
+		// resource auth does not have realm in path.
+		if r.URL.Path == resourceAuthPath {
+			sh.Handler.ServeHTTP(w, r)
+			return
+		}
 		// Allow a request to allocate a client secret to proceed.
 		parts := strings.Split(r.URL.Path, "/")
 		// Path starts with a "/", so first part is always empty.
@@ -280,6 +303,10 @@ func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		path := strings.Join(parts, "/")
 		if strings.HasPrefix(path, clientSecretPath) {
+			sh.Handler.ServeHTTP(w, r)
+			return
+		}
+		if path == resourceAuthPath {
 			sh.Handler.ServeHTTP(w, r)
 			return
 		}
@@ -324,6 +351,13 @@ func (s *Service) buildHandlerMux() *mux.Router {
 	r.HandleFunc(tokensPath, common.MakeHandler(s, s.tokensFactory()))
 	r.HandleFunc(tokenPath, common.MakeHandler(s, s.tokenFactory()))
 
+	r.HandleFunc(resourceAuthPath, s.ResourceAuthHandler)
+	r.HandleFunc(resourceTokenPath, s.ExchangeResourceTokenHandler)
+	r.HandleFunc(loggedInPath, s.LoggedInHandler)
+
+	r.HandleFunc(oidcConfiguarePath, s.OidcWellKnownConfig)
+	r.HandleFunc(oidcJwksPath, s.OidcKeys)
+
 	r.HandleFunc(configHistoryPath, s.ConfigHistory)
 	r.HandleFunc(configHistoryRevisionPath, s.ConfigHistoryRevision)
 	r.HandleFunc(configResetPath, s.ConfigReset)
@@ -349,71 +383,62 @@ func checkName(name string) error {
 	return common.CheckName("name", name, nil)
 }
 
-func (s *Service) getPassportIdentity(cfg *pb.DamConfig, tx storage.Tx, r *http.Request) (*ga4gh.Identity, int, error) {
-	// TODO: remove the persona query parameter feature.
-	pname := r.URL.Query().Get("persona")
-	if len(pname) > 0 {
-		p, ok := cfg.TestPersonas[pname]
-		if !ok || p == nil {
-			return nil, http.StatusUnauthorized, fmt.Errorf("unauthorized")
-		}
-		id, err := playground.PersonaToIdentity(pname, p, defaultPersonaScope)
-		if err != nil {
-			return nil, http.StatusInternalServerError, err
-		}
-		return id, http.StatusOK, nil
-	}
-
-	auth := r.Header.Get("Authorization")
-	paramTok := r.URL.Query().Get("access_token")
-	if len(paramTok) == 0 && len(auth) > 0 {
-		paramTok = auth
-	} else {
-		paramTok = "bearer " + paramTok
-	}
-
-	parts := strings.SplitN(paramTok, " ", 2)
-	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-		return nil, http.StatusUnauthorized, fmt.Errorf("authorization requires a bearer token")
-	}
-
-	tok := parts[1]
+func (s *Service) tokenToPassportIdentity(cfg *pb.DamConfig, tx storage.Tx, tok, clientID string) (*ga4gh.Identity, error) {
 	id, err := common.ConvertTokenToIdentityUnsafe(tok)
 	if err != nil {
-		return nil, http.StatusUnauthorized, fmt.Errorf("inspecting token: %v", err)
+		return nil, fmt.Errorf("inspecting token: %v", err)
 	}
+	identities := id.Identities
 
 	iss := id.Issuer
 	t, err := s.getIssuerTranslator(s.ctx, iss, cfg, nil, tx)
 	if err != nil {
-		return nil, http.StatusUnauthorized, err
+		return nil, err
 	}
 
 	id, err = t.TranslateToken(s.ctx, tok)
 	if err != nil {
-		return nil, http.StatusUnauthorized, fmt.Errorf("translating token from issuer %q: %v", iss, err)
+		return nil, fmt.Errorf("translating token from issuer %q: %v", iss, err)
 	}
-	if common.HasUserinfoClaims(id.UserinfoClaims) {
+	if common.HasUserinfoClaims(id) {
 		id, err = translator.FetchUserinfoClaims(s.ctx, tok, id, t)
 		if err != nil {
-			return nil, http.StatusUnauthorized, fmt.Errorf("fetching user info from issuer %q: %v", iss, err)
+			return nil, fmt.Errorf("fetching user info from issuer %q: %v", iss, err)
 		}
 	}
 
-	// DAM will only accept tokens designated for use by the requestor's client ID.
-	if len(id.AuthorizedParty) == 0 || id.AuthorizedParty != getClientID(r) {
-		return nil, http.StatusUnauthorized, fmt.Errorf("mismatched authorized party")
-	}
-	if err := id.Valid(); err != nil {
-		return nil, http.StatusUnauthorized, err
+	if err := id.Validate(clientID); err != nil {
+		return nil, err
 	}
 
+	vs := []ga4gh.VisaJWT{}
+	for _, v := range id.VisaJWTs {
+		vs = append(vs, ga4gh.VisaJWT(v))
+	}
+	id.GA4GH = ga4gh.VisasToOldClaims(vs)
+
+	// Retain identities from access token.
+	id.Identities = identities
+
+	return id, nil
+}
+
+func (s *Service) getPassportIdentity(cfg *pb.DamConfig, tx storage.Tx, r *http.Request) (*ga4gh.Identity, int, error) {
+	tok, err := extractBearerToken(r)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+
+	id, err := s.tokenToPassportIdentity(cfg, tx, tok, getClientID(r))
+	if err != nil {
+		return nil, http.StatusUnauthorized, err
+	}
 	return id, http.StatusOK, nil
 }
 
-func (s *Service) testPersona(personaName string, resources []string, cfg *pb.DamConfig, vm map[string]*validator.Policy) (string, map[string]*pb.AccessList, error) {
-	persona := cfg.TestPersonas[personaName]
-	id, err := playground.PersonaToIdentity(personaName, persona, defaultPersonaScope)
+func (s *Service) testPersona(personaName string, resources []string, cfg *pb.DamConfig, vm map[string]*validator.Policy) (string, []string, error) {
+	p := cfg.TestPersonas[personaName]
+	id, err := persona.PersonaToIdentity(personaName, p, defaultPersonaScope, "")
 	if err != nil {
 		return "INVALID", nil, err
 	}
@@ -421,20 +446,20 @@ func (s *Service) testPersona(personaName string, resources []string, cfg *pb.Da
 	if err != nil {
 		return state, got, err
 	}
-	if reflect.DeepEqual(persona.Resources, got) || (len(persona.Resources) == 0 && len(got) == 0) {
+	if reflect.DeepEqual(p.Access, got) || (len(p.Access) == 0 && len(got) == 0) {
 		return "PASSED", got, nil
 	}
 	return "FAILED", got, fmt.Errorf("access does not match expectations")
 }
 
-func (s *Service) resolveAccessList(id *ga4gh.Identity, resources, views, roles []string, cfg *pb.DamConfig, vm map[string]*validator.Policy) (string, map[string]*pb.AccessList, error) {
-	got := make(map[string]*pb.AccessList)
+func (s *Service) resolveAccessList(id *ga4gh.Identity, resources, views, roles []string, cfg *pb.DamConfig, vm map[string]*validator.Policy) (string, []string, error) {
+	var got []string
 	for _, rn := range resources {
 		r, ok := cfg.Resources[rn]
 		if !ok {
+			sort.Strings(got)
 			return "FAILED", got, fmt.Errorf("resource %q not found", rn)
 		}
-		got[rn] = &pb.AccessList{Access: []string{}}
 		for vn, v := range r.Views {
 			if len(views) > 0 && !common.ListContains(views, vn) {
 				continue
@@ -449,37 +474,28 @@ func (s *Service) resolveAccessList(id *ga4gh.Identity, resources, views, roles 
 				if _, err := s.checkAuthorization(id, 0, rn, vn, rname, cfg, noClientID, vm); err != nil {
 					continue
 				}
-				got[rn].Access = mergeLists(got[rn].Access, []string{vn + "/" + rname})
+				got = append(got, rn+"/"+vn+"/"+rname)
 			}
 		}
-		sort.Strings(got[rn].Access)
-		if len(got[rn].Access) == 0 {
-			delete(got, rn)
-		}
 	}
+	sort.Strings(got)
 	return "OK", got, nil
 }
 
 func (s *Service) makeAccessList(id *ga4gh.Identity, resources, views, roles []string, cfg *pb.DamConfig, r *http.Request) []string {
-	out := []string{}
 	vm, err := s.buildValidatorMap(cfg)
 	if err != nil {
-		return out
+		return nil
 	}
 	if id == nil {
 		id, _, err = s.getPassportIdentity(cfg, nil, r)
 		if err != nil {
-			return out
+			return nil
 		}
 	}
-	_, got, err := s.resolveAccessList(id, resources, views, roles, cfg, vm)
-	if err != nil {
-		return out
-	}
-	for _, v := range got {
-		out = mergeLists(out, v.Access)
-	}
-	return out
+	// Ignore errors as the goal of makeAccessList is to show what is accessible despite any errors.
+	_, got, _ := s.resolveAccessList(id, resources, views, roles, cfg, vm)
+	return got
 }
 
 func (s *Service) checkAuthorization(id *ga4gh.Identity, ttl time.Duration, resourceName, viewName, roleName string, cfg *pb.DamConfig, client string, vm map[string]*validator.Policy) (int, error) {
@@ -912,138 +928,6 @@ func (s *Service) GetViewRole(w http.ResponseWriter, r *http.Request) {
 	common.SendResponse(proto.Message(&resp), w)
 }
 
-// GetResourceToken implements the GetResourceToken RPC method.
-func (s *Service) GetResourceToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodPost {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method %s not allowed", r.Method), w)
-		return
-	}
-	vars := mux.Vars(r)
-	name := vars["name"]
-	viewName := vars["view"]
-	role, ok := vars["role"]
-	if err := checkName(name); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
-		return
-	}
-	if err := checkName(viewName); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
-		return
-	}
-	cfg, err := s.loadConfig(nil, getRealm(r))
-	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
-		return
-	}
-	res, ok := cfg.Resources[name]
-	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("resource not found: %q", name), w)
-		return
-	}
-	id, status, err := s.getPassportIdentity(cfg, nil, r)
-	if err != nil {
-		common.HandleError(status, err, w)
-		return
-	}
-	view, ok := res.Views[viewName]
-	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("view %q not found for resource %q", viewName, name), w)
-		return
-	}
-	grantRole := role
-	if len(grantRole) == 0 {
-		grantRole = view.DefaultRole
-	}
-
-	ttl := defaultTTL
-	if ttlStr := r.URL.Query().Get("ttl"); len(ttlStr) > 0 {
-		ttl, err = common.ParseDuration(ttlStr, defaultTTL)
-		if err != nil {
-			common.HandleError(http.StatusBadRequest, fmt.Errorf("TTL parameter %q format error: %v", ttlStr, err), w)
-			return
-		}
-		if ttl == 0 {
-			ttl = defaultTTL
-		} else if ttl < 0 || ttl > maxTTL {
-			common.HandleError(http.StatusBadRequest, fmt.Errorf("TTL parameter %q out of range: must be positive and not exceed %s", ttlStr, maxTTLStr), w)
-			return
-		}
-	}
-
-	status, err = s.checkAuthorization(id, ttl, name, viewName, grantRole, cfg, getClientID(r), nil)
-	if err != nil {
-		common.HandleError(status, err, w)
-		return
-	}
-
-	sRole, err := adapter.ResolveServiceRole(grantRole, view, res, cfg)
-	if err != nil {
-		common.HandleError(http.StatusInternalServerError, err, w)
-		return
-	}
-	if !viewHasRole(view, grantRole) {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("role %q is not defined on resource %q view %q", grantRole, name, viewName), w)
-		return
-	}
-	st, ok := cfg.ServiceTemplates[view.ServiceTemplate]
-	if !ok {
-		common.HandleError(http.StatusInternalServerError, fmt.Errorf("view %q service template %q is not defined", viewName, view.ServiceTemplate), w)
-		return
-	}
-	adapt := s.adapters.ByName[st.TargetAdapter]
-	var aggregates []*adapter.AggregateView
-	if adapt.IsAggregator() {
-		aggregates, err = s.resolveAggregates(res, view, cfg)
-		if err != nil {
-			common.HandleError(http.StatusInternalServerError, err, w)
-			return
-		}
-	}
-	keyFile := false
-	tokenFormat := ""
-	if common.GetParam(r, "response_type") == "key-file-type" {
-		keyFile = true
-		tokenFormat = "application/json"
-	}
-	adapterAction := &adapter.Action{
-		Aggregates:      aggregates,
-		Identity:        id,
-		Issuer:          getIssuerString(r),
-		ClientID:        getClientID(r),
-		Config:          cfg,
-		GrantRole:       grantRole,
-		MaxTTL:          maxTTL,
-		Request:         r,
-		Resource:        res,
-		ServiceRole:     sRole,
-		ServiceTemplate: st,
-		TTL:             ttl,
-		View:            view,
-		TokenFormat:     tokenFormat,
-	}
-	result, err := adapt.MintToken(adapterAction)
-	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
-		return
-	}
-
-	if keyFile {
-		if common.IsJSON(result.TokenFormat) {
-			common.SendJSONResponse(result.Token, w)
-			return
-		}
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("adapter cannot create key file format"), w)
-	}
-	out := pb.GetTokenResponse{
-		Name:    name,
-		View:    s.makeView(viewName, view, res, cfg),
-		Account: result.Account,
-		Token:   result.Token,
-		Ttl:     common.TtlString(ttl),
-	}
-	common.SendResponse(proto.Message(&out), w)
-}
-
 func viewHasRole(view *pb.View, role string) bool {
 	if view.AccessRoles == nil {
 		return false
@@ -1101,18 +985,6 @@ func (srt byOrder) Less(i, j int) bool {
 
 func (srt byOrder) Swap(i, j int) {
 	srt.strs[i], srt.strs[j] = srt.strs[j], srt.strs[i]
-}
-
-func getIssuerString(r *http.Request) string {
-	s := r.URL.Scheme
-	if len(s) == 0 {
-		// TODO: fix this.
-		s = "https"
-		if strings.HasPrefix(r.Host, "localhost") {
-			s = "http"
-		}
-	}
-	return s + "://" + r.Host
 }
 
 // GetTestResults implements the GetTestResults RPC method.
@@ -1215,7 +1087,7 @@ func (s *Service) ConfigReset(w http.ResponseWriter, r *http.Request) {
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}
-	if err = s.importFiles(); err != nil {
+	if err = s.ImportFiles(importDefault); err != nil {
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}
@@ -1412,7 +1284,7 @@ func (s *Service) getIssuerTranslator(ctx context.Context, issuer string, cfg *p
 }
 
 func (s *Service) createIssuerTranslator(ctx context.Context, cfgTpi *pb.TrustedPassportIssuer, secrets *pb.DamSecrets) (translator.Translator, error) {
-	return translator.CreateTranslator(ctx, cfgTpi.Issuer, cfgTpi.TranslateUsing, cfgTpi.ClientId, secrets.PublicTokenKeys[cfgTpi.Issuer])
+	return translator.CreateTranslator(ctx, cfgTpi.Issuer, cfgTpi.TranslateUsing, cfgTpi.ClientId, secrets.PublicTokenKeys[cfgTpi.Issuer], "", "")
 }
 
 // GetPassportTranslators implements the corresponding REST API endpoint.
@@ -1450,7 +1322,7 @@ func (s *Service) GetTestPersonas(w http.ResponseWriter, r *http.Request) {
 	}
 	out := &pb.GetTestPersonasResponse{
 		Personas:       cfg.TestPersonas,
-		StandardClaims: playground.StandardClaims,
+		StandardClaims: persona.StandardClaims,
 	}
 	common.SendResponse(out, w)
 }
@@ -1941,16 +1813,7 @@ func normalizeConfig(cfg *pb.DamConfig) error {
 		cfg.Clients = make(map[string]*pb.Client)
 	}
 	for _, p := range cfg.TestPersonas {
-		for aname, alist := range p.Resources {
-			if alist == nil {
-				alist = &pb.AccessList{}
-				p.Resources[aname] = alist
-			}
-			if alist.Access == nil {
-				alist.Access = []string{}
-			}
-			sort.Strings(alist.Access)
-		}
+		sort.Strings(p.Access)
 	}
 	return nil
 }
@@ -2161,9 +2024,11 @@ func (s *Service) unregisterRealm(cfg *pb.DamConfig, realm string) error {
 	return s.warehouse.RegisterAccountProject(realm, "", 0, 0)
 }
 
-func (s *Service) importFiles() error {
-	if isAutoReset() {
-		wipe := false
+// ImportFiles ingests bootstrap configuration files to the DAM's storage sytem.
+func (s *Service) ImportFiles(importType string) error {
+	wipe := false
+	switch importType {
+	case "AUTO_RESET":
 		cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 		if err != nil {
 			if !storage.ErrNotFound(err) {
@@ -2172,11 +2037,13 @@ func (s *Service) importFiles() error {
 		} else if err := s.CheckIntegrity(cfg); err != nil {
 			wipe = true
 		}
-		if wipe {
-			log.Printf("prepare for DAM config import: wipe data store for all realms")
-			if err = s.store.Wipe(storage.WipeAllRealms); err != nil {
-				return err
-			}
+	case "FORCE_WIPE":
+		wipe = true
+	}
+	if wipe {
+		glog.Infof("prepare for DAM config import: wipe data store for all realms")
+		if err := s.store.Wipe(storage.WipeAllRealms); err != nil {
+			return err
 		}
 	}
 
@@ -2188,7 +2055,7 @@ func (s *Service) importFiles() error {
 		return nil
 	}
 	fs := getFileStore(s.store, os.Getenv("IMPORT_SERVICE"))
-	log.Printf("import DAM config %q into data store", fs.Info()["service"])
+	glog.Infof("import DAM config %q into data store", fs.Info()["service"])
 	tx, err := s.store.Tx(true)
 	if err != nil {
 		return err
@@ -2222,7 +2089,7 @@ func (s *Service) importFiles() error {
 }
 
 func isAutoReset() bool {
-	return os.Getenv("IMPORT") == "AUTO_RESET"
+	return importDefault == "AUTO_RESET"
 }
 
 func getFileStore(store storage.Store, service string) storage.Store {
@@ -2233,4 +2100,62 @@ func getFileStore(store storage.Store, service string) storage.Store {
 	}
 	path := info["path"]
 	return storage.NewFileStorage(service, path)
+}
+
+/////////////////////////////////////////////////////////
+// OIDC related
+
+// OidcWellKnownConfig handle OpenID Provider configuration request.
+func (s *Service) OidcWellKnownConfig(w http.ResponseWriter, r *http.Request) {
+	conf := &pb.OidcConfig{
+		Issuer:  s.damIssuerString(),
+		JwksUri: s.domainURL + oidcJwksPath,
+		AuthUrl: s.domainURL + resourceAuthPath,
+		ResponseTypesSupported: []string{
+			"code",
+		},
+		TokenEndpoint: s.domainURL + resourceTokenPath,
+	}
+	common.SendResponse(conf, w)
+}
+
+// OidcKeys handle OpenID Provider jwks request.
+func (s *Service) OidcKeys(w http.ResponseWriter, r *http.Request) {
+	secrets, err := s.loadSecrets(nil)
+	if err != nil {
+		common.HandleError(http.StatusInternalServerError, fmt.Errorf("loadSecrets failed: %v", err), w)
+		return
+	}
+
+	if len(secrets.GatekeeperTokenKeys.PublicKey) == 0 {
+		common.HandleError(http.StatusInternalServerError, fmt.Errorf("gatekeeper token not found"), w)
+		return
+	}
+
+	block, _ := pem.Decode([]byte(secrets.GatekeeperTokenKeys.PublicKey))
+	pub, err := x509.ParsePKCS1PublicKey(block.Bytes)
+	if err != nil {
+		common.HandleError(http.StatusInternalServerError, fmt.Errorf("parsing public key for gatekeeper token: %v", err), w)
+		return
+	}
+
+	jwks := jose.JSONWebKeySet{
+		Keys: []jose.JSONWebKey{
+			{
+				Key:       pub,
+				Algorithm: "RS256",
+				Use:       "sig",
+				KeyID:     "kid",
+			},
+		},
+	}
+
+	data, err := json.Marshal(jwks)
+	if err != nil {
+		glog.Infof("Marshal failed: %q", err)
+		common.HandleError(http.StatusInternalServerError, err, w)
+		return
+	}
+
+	common.SendJSONResponse(string(data), w)
 }

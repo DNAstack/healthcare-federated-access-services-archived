@@ -17,23 +17,26 @@ package ic
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	glog "github.com/golang/glog"
 	"github.com/golang/protobuf/jsonpb"
 	"github.com/google/go-cmp/cmp"
 	"github.com/coreos/go-oidc"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms/fakeencryption"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/module"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakeoidcissuer"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/httptestclient"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys"
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1"
 )
 
@@ -47,23 +50,13 @@ const (
 func init() {
 	err := os.Setenv("SERVICE_DOMAIN", domain)
 	if err != nil {
-		log.Fatal("Setenv SERVICE_DOMAIN:", err)
+		glog.Fatal("Setenv SERVICE_DOMAIN:", err)
 	}
-}
-
-type mockRoundTripper struct {
-	handler http.Handler
-}
-
-func (m *mockRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
-	w := httptest.NewRecorder()
-	m.handler.ServeHTTP(w, r)
-	return w.Result(), nil
 }
 
 func TestOidcEndpoints(t *testing.T) {
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	s := NewService(domain, domain, store, module.NewBasicModule())
+	s := NewService(context.Background(), domain, domain, store, module.NewBasicModule(), fakeencryption.New())
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
 		t.Fatalf("loading config: %v", err)
@@ -78,11 +71,7 @@ func TestOidcEndpoints(t *testing.T) {
 	}
 
 	// Inject the mock http client to oidc client.
-	client := &http.Client{
-		Transport: &mockRoundTripper{
-			handler: s.Handler,
-		},
-	}
+	client := httptestclient.New(s.Handler)
 	ctx := oidc.ClientContext(context.Background(), client)
 	provider, err := oidc.NewProvider(ctx, oidcIssuer)
 	if err != nil {
@@ -99,55 +88,15 @@ func TestOidcEndpoints(t *testing.T) {
 	}
 }
 
-func TestUserinfoClaims(t *testing.T) {
-	damStore := storage.NewMemoryStorage("dam-min", "testdata/config")
-	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	s := NewService(domain, domain, store, module.NewTestModule(t, damStore, storage.DefaultRealm))
-	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
-	if err != nil {
-		t.Fatalf("loading config: %v", err)
-	}
-
-	longStr := strings.Repeat("a", 1000)
-
-	identity := &ga4gh.Identity{
-		Subject: "sub",
-		GA4GH: map[string][]ga4gh.Claim{
-			ga4gh.ClaimResearcherStatus: {{
-				Value: longStr,
-			}},
-			ga4gh.ClaimAcceptedTermsAndPolicies: {{
-				Value: longStr,
-			}},
-		},
-	}
-
-	tok, err := s.createToken(identity, "openid ga4gh", oidcIssuer, "azp", storage.DefaultRealm, noNonce, time.Now(), time.Hour*1, cfg, nil)
-	if err != nil {
-		t.Fatalf("creating token: %v", err)
-	}
-
-	id, err := common.ConvertTokenToIdentityUnsafe(tok)
-	if len(id.GA4GH) != 0 {
-		t.Errorf("wants token with no 'ga4gh' claims, got %d claims", len(id.GA4GH))
-	}
-
-	expectUserinfoClaims := []string{
-		ga4ghClaimNamePrefix + ga4gh.ClaimAcceptedTermsAndPolicies,
-		ga4ghClaimNamePrefix + ga4gh.ClaimResearcherStatus,
-	}
-	sort.Strings(expectUserinfoClaims)
-	sort.Strings(id.UserinfoClaims)
-
-	if !cmp.Equal(id.UserinfoClaims, expectUserinfoClaims) {
-		t.Errorf("wants userinfo claim %v, got %v", expectUserinfoClaims, id.UserinfoClaims)
-	}
-}
-
 func TestHandlers(t *testing.T) {
 	damStore := storage.NewMemoryStorage("dam-min", "testdata/config")
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	s := NewService(domain, domain, store, module.NewTestModule(t, damStore, storage.DefaultRealm))
+	server, err := fakeoidcissuer.New(oidcIssuer, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config")
+	if err != nil {
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", oidcIssuer, err)
+	}
+	ctx := server.ContextWithClient(context.Background())
+	s := NewService(ctx, domain, domain, store, module.NewTestModule(t, damStore, storage.DefaultRealm), fakeencryption.New())
 	cfg, err := s.loadConfig(nil, "test")
 	if err != nil {
 		t.Fatalf("loading config: %v", err)
@@ -163,7 +112,7 @@ func TestHandlers(t *testing.T) {
 			Name:   "Get a self-owned token",
 			Method: "GET",
 			Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
-			Output: `{"tokenMetadata":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh identities profiles openid","identityProvider":"elixir"}}`,
+			Output: `{"tokenMetadata":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh_passport_v1 identities profiles openid","identityProvider":"elixir"}}`,
 			Status: http.StatusOK,
 		},
 		{
@@ -171,7 +120,7 @@ func TestHandlers(t *testing.T) {
 			Method:  "GET",
 			Path:    "/identity/v1alpha/test/token/someone-account/1a2-3b4",
 			Persona: "admin",
-			Output:  `{"tokenMetadata":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh openid","identityProvider":"google"}}`,
+			Output:  `{"tokenMetadata":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh_passport_v1 openid","identityProvider":"google"}}`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -256,7 +205,7 @@ func TestHandlers(t *testing.T) {
 			Status:  http.StatusOK,
 		},
 	}
-	test.HandlerTests(t, s.Handler, tests)
+	test.HandlerTests(t, s.Handler, tests, oidcIssuer, server.Config())
 }
 
 func createTestToken(t *testing.T, s *Service, id *ga4gh.Identity, scope string, cfg *pb.IcConfig) string {
@@ -270,7 +219,13 @@ func createTestToken(t *testing.T, s *Service, id *ga4gh.Identity, scope string,
 func TestAdminHandlers(t *testing.T) {
 	damStore := storage.NewMemoryStorage("dam-min", "testdata/config")
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	s := NewService(domain, domain, store, module.NewTestModule(t, damStore, storage.DefaultRealm))
+	server, err := fakeoidcissuer.New(oidcIssuer, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config")
+	if err != nil {
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", oidcIssuer, err)
+	}
+	ctx := server.ContextWithClient(context.Background())
+
+	s := NewService(ctx, domain, domain, store, module.NewTestModule(t, damStore, storage.DefaultRealm), fakeencryption.New())
 	tests := []test.HandlerTest{
 		{
 			Name:    "List all tokens of all users as a non-admin",
@@ -285,7 +240,7 @@ func TestAdminHandlers(t *testing.T) {
 			Method:  "GET",
 			Path:    "/identity/v1alpha/test/admin/tokens",
 			Persona: "admin",
-			Output:  `{"tokensMetadata":{"dr_joe_elixir/123-456":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh identities profiles openid","identityProvider":"elixir"},"someone-account/1a2-3b4":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh openid","identityProvider":"google"}}}`,
+			Output:  `{"tokensMetadata":{"dr_joe_elixir/123-456":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh_passport_v1 identities profiles openid","identityProvider":"elixir"},"someone-account/1a2-3b4":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh_passport_v1 openid","identityProvider":"google"}}}`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -313,14 +268,14 @@ func TestAdminHandlers(t *testing.T) {
 			Status:  http.StatusOK,
 		},
 	}
-	test.HandlerTests(t, s.Handler, tests)
+	test.HandlerTests(t, s.Handler, tests, oidcIssuer, server.Config())
 }
 
 func TestNonce(t *testing.T) {
 	nonce := "nonce-for-test"
 	damStore := storage.NewMemoryStorage("dam-min", "testdata/config")
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	s := NewService(domain, domain, store, module.NewTestModule(t, damStore, storage.DefaultRealm))
+	s := NewService(context.Background(), domain, domain, store, module.NewTestModule(t, damStore, storage.DefaultRealm), fakeencryption.New())
 	cfg, err := s.loadConfig(nil, "test")
 	if err != nil {
 		t.Fatalf("loading config: %v", err)
@@ -388,5 +343,80 @@ func TestNonce(t *testing.T) {
 	refresh, err = common.ConvertTokenToIdentityUnsafe(tokens.RefreshToken)
 	if len(refresh.Nonce) > 0 {
 		t.Error("refresh token should not include nonce")
+	}
+}
+
+func TestAddLinkedIdentities(t *testing.T) {
+	subject := "111@a.com"
+	issuer := "https://example.com/oidc"
+	subjectInIdp := "222"
+	emailInIdp := "222@idp.com"
+	idp := "idp"
+	idpIss := "https://idp.com/oidc"
+
+	id := &ga4gh.Identity{
+		Subject:  subject,
+		Issuer:   issuer,
+		VisaJWTs: []string{},
+	}
+
+	link := &pb.ConnectedAccount{
+		Provider: idp,
+		Properties: &pb.AccountProperties{
+			Subject: subjectInIdp,
+			Email:   emailInIdp,
+		},
+	}
+
+	damStore := storage.NewMemoryStorage("dam-min", "testdata/config")
+	store := storage.NewMemoryStorage("ic-min", "testdata/config")
+	s := NewService(context.Background(), domain, domain, store, module.NewTestModule(t, damStore, storage.DefaultRealm), fakeencryption.New())
+	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
+	if err != nil {
+		t.Fatalf("loading config: %v", err)
+	}
+	cfg.IdentityProviders = map[string]*pb.IdentityProvider{
+		idp: &pb.IdentityProvider{Issuer: idpIss},
+	}
+
+	err = s.addLinkedIdentities(id, link, testkeys.Default.Private, cfg)
+	if err != nil {
+		t.Fatalf("s.addLinkedIdentities(_) failed: %v", err)
+	}
+
+	if len(id.VisaJWTs) != 1 {
+		t.Fatalf("len(id.VisaJWTs), want 1, got %d", len(id.VisaJWTs))
+	}
+
+	v, err := ga4gh.NewVisaFromJWT(ga4gh.VisaJWT(id.VisaJWTs[0]))
+	if err != nil {
+		t.Fatalf("ga4gh.NewVisaFromJWT(_) failed: %v", err)
+	}
+
+	got := v.Data()
+
+	wantIdentities := []string{
+		linkedIdentityValue(subjectInIdp, idpIss),
+		linkedIdentityValue(emailInIdp, idpIss),
+	}
+
+	want := &ga4gh.VisaData{
+		StdClaims: ga4gh.StdClaims{
+			Subject:   subject,
+			Issuer:    issuer,
+			IssuedAt:  got.IssuedAt,
+			ExpiresAt: got.ExpiresAt,
+		},
+		Scope: "openid",
+		Assertion: ga4gh.Assertion{
+			Type:     ga4gh.LinkedIdentities,
+			Asserted: got.Assertion.Asserted,
+			Value:    ga4gh.Value(strings.Join(wantIdentities, ";")),
+			Source:   ga4gh.Source(issuer),
+		},
+	}
+
+	if diff := cmp.Diff(want, got); len(diff) != 0 {
+		t.Fatalf("v.Data() returned diff (-want +got):\n%s", diff)
 	}
 }

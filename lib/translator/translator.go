@@ -37,6 +37,7 @@ type Translator interface {
 func FetchUserinfoClaims(ctx context.Context, acTok string, id *ga4gh.Identity, translator Translator) (*ga4gh.Identity, error) {
 	// Issue a Get request to the issuer's /userinfo endpoint.
 	iss := id.Issuer
+	// TODO: use JWKS to discover the /userinfo endpoint.
 	contentType, userInfo, err := issueGetRequest(ctx, strings.TrimSuffix(iss, "/")+"/userinfo", acTok)
 	if err != nil {
 		return nil, err
@@ -67,7 +68,7 @@ func FetchUserinfoClaims(ctx context.Context, acTok string, id *ga4gh.Identity, 
 
 	// Append the claims returned by /userinfo to the access token's list of claims.
 	if userinfoID.GA4GH == nil {
-		userinfoID.GA4GH = make(map[string][]ga4gh.Claim)
+		userinfoID.GA4GH = make(map[string][]ga4gh.OldClaim)
 	}
 	for name, claims := range id.GA4GH {
 		userinfoID.GA4GH[name] = append(userinfoID.GA4GH[name], claims...)

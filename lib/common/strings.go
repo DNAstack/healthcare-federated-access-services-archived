@@ -17,6 +17,7 @@ package common
 import (
 	"net/http"
 	"strings"
+	"unicode"
 
 	"github.com/pborman/uuid"
 )
@@ -60,4 +61,37 @@ func JoinNonEmpty(in []string, separator string) string {
 		}
 	}
 	return strings.Join(out, separator)
+}
+
+// FilterStringsByPrefix filters returns only strings that do NOT have a given prefix.
+func FilterStringsByPrefix(in []string, prefix string) []string {
+	var out []string
+	for _, v := range in {
+		if !strings.HasPrefix(v, prefix) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// ToTitle does some auto-formatting on camel-cased or snake-cased strings to make them look like titles.
+func ToTitle(str string) string {
+	out := ""
+	l := 0
+	for i, ch := range str {
+		if unicode.IsUpper(ch) && i > 0 && str[i-1] != ' ' {
+			out += " "
+			l++
+		} else if ch == '_' {
+			out += " "
+			l++
+			continue
+		}
+		if l > 0 && out[l-1] == ' ' {
+			ch = rune(unicode.ToUpper(rune(ch)))
+		}
+		out += string(ch)
+		l++
+	}
+	return strings.Title(out)
 }

@@ -16,7 +16,7 @@ package dam
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,23 +24,45 @@ import (
 	"time"
 
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakeoidcissuer"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	. "github.com/golang/mock/gomock"
 )
+
+// transformJSON is a cmp.Option that transform strings into structured objects
+// for properly comparing JSON in a way that is agnostic towards the trivial
+// changes in the output.
+var transformJSON = cmpopts.AcyclicTransformer("ParseJSON", func(in string) (out interface{}) {
+	if err := json.Unmarshal([]byte(in), &out); err != nil {
+		return in
+	}
+	return out
+})
 
 func TestHandlers(t *testing.T) {
 	store := storage.NewMemoryStorage("dam", "testdata/config")
 	wh := clouds.NewMockTokenCreator(false)
-	s := NewService(context.Background(), "test.org", store, wh)
+	server, err := fakeoidcissuer.New(test.TestIssuerURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config")
+	if err != nil {
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", test.TestIssuerURL, err)
+	}
+	ctx := server.ContextWithClient(context.Background())
+	s := NewService(ctx, "test.org", "no-broker", store, wh)
 	tests := []test.HandlerTest{
 		{
 			Method: "GET",
 			Path:   "/dam",
-			Output: `^{"name":"Data Access Manager","versions":\["v1alpha"\],"startTime":"[0-9]+","ui":{"description":"Test DAM","label":"Test DAM".*}}$`,
+			Output: `{"name":"Data Access Manager","versions":["v1alpha"],"ui":{"description":"Test DAM","label":"Test DAM"}}`,
+			CmpOptions: cmp.Options{transformJSON, cmpopts.IgnoreMapEntries(func(k string, v interface{}) bool {
+				return k == "startTime"
+			})},
 			Status: http.StatusOK,
 		},
 		{
@@ -232,13 +254,13 @@ func TestHandlers(t *testing.T) {
 		{
 			Method: "PUT",
 			Path:   "/dam/v1alpha/test/config/resources/new-resource",
-			Input:  `{"item": $(GET /dam/v1alpha/test/config/resources/ga4gh-apis), "modification": {"testPersonas":{"dr_joe_elixir":{"resources":{"ga4gh-apis":{"access":["beacon/discovery","gcs_read/viewer"]},"new-resource":{"access":["beacon/discovery","gcs_read/viewer"]}},"addResources":{"new-resource":{"access":["beacon/discovery","gcs_read/viewer"]}},"removeResources":{}}}}}`,
+			Input:  `{"item": $(GET /dam/v1alpha/test/config/resources/ga4gh-apis), "modification": {"testPersonas":{"dr_joe_elixir":{"access":["ga4gh-apis/beacon/discovery","ga4gh-apis/gcs_read/viewer","new-resource/beacon/discovery","new-resource/gcs_read/viewer"]}}}}`,
 			Status: http.StatusOK,
 		},
 		{
 			Method: "PATCH",
 			Path:   "/dam/v1alpha/test/config/resources/new-resource",
-			Input:  `{"item": {"ui":{"label":"foo","description":"bar"}}, "modification": {"testPersonas":{"dr_joe_elixir":{"resources":{"ga4gh-apis":{"access":["beacon/discovery","gcs_read/viewer"]}}}}}}`,
+			Input:  `{"item": {"ui":{"label":"foo","description":"bar"}}, "modification": {"testPersonas":{"dr_joe_elixir":{"access":["ga4gh-apis/beacon/discovery","ga4gh-apis/gcs_read/viewer"]}}}}`,
 			Status: http.StatusOK,
 		},
 		{
@@ -256,7 +278,7 @@ func TestHandlers(t *testing.T) {
 		{
 			Method: "POST",
 			Path:   "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
-			Input:  `{"item":$(GET /dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read), "modification": {"testPersonas":{"dr_joe_elixir":{"resources":{"ga4gh-apis":{"access":["beacon/discovery","gcs_read/viewer","gcs_read2/viewer"]}}}}}}`,
+			Input:  `{"item":$(GET /dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read), "modification": {"testPersonas":{"dr_joe_elixir":{"access":["ga4gh-apis/beacon/discovery","ga4gh-apis/gcs_read/viewer","ga4gh-apis/gcs_read2/viewer"]}}}}`,
 			Output: ``,
 			Status: http.StatusOK,
 		},
@@ -483,7 +505,7 @@ func TestHandlers(t *testing.T) {
 		{
 			Method: "GET",
 			Path:   "/dam/v1alpha/test/config/testPersonas/dr_joe_elixir",
-			Output: `^.*"idToken"`,
+			Output: `^.*"passport"`,
 			Status: http.StatusOK,
 		},
 		{
@@ -551,15 +573,15 @@ func TestHandlers(t *testing.T) {
 					"ui": {
 						"label": "dr_joe_era_commons test"
 					},
-					"idToken": {
+					"passport": {
 						"standardClaims": {
 							"iss": "https://login.nih.gov/oidc/",
 							"sub": "dr_joe@era.nih.gov",
 							"picture": "https://pbs.twimg.com/profile_images/3443048571/ef5062acfce64a7aef1d75b4934fbee6_400x400.png"
 						},
-						"ga4ghClaims": [
+						"ga4ghAssertions": [
 							{
-								"claimName": "AffiliationAndRole",
+								"type": "AffiliationAndRole",
 								"source": "https://example.edu",
 								"value": "student@example.edu",
 								"assertedDuration": "1d",
@@ -567,32 +589,34 @@ func TestHandlers(t *testing.T) {
 								"by": "so"
 							},
 							{
-								"claimName": "ControlledAccessGrants",
+								"type": "ControlledAccessGrants",
 								"source": "https://dbgap.nlm.nih.gov/aa",
 								"value": "https://dac.nih.gov/datasets/phs000710",
 								"assertedDuration": "1d",
 								"expiresDuration": "30d",
 								"by": "dac",
-								"condition": {
-									"AffiliationAndRole": {
-										"value": ["faculty@example.edu"],
-										"by": ["so"]
-									}
-								}
+								"conditions": [
+       		      	{
+                		"clauses": [
+                  		{
+                    		"type": "AffiliationAndRole",
+                    		"value": "const:faculty@example.edu",
+                    		"by": "const:so"
+                  		}
+                		]
+              		}
+            		]
 							}
 						]
 					},
-					"resources": {
-						"dataset_example" : {
-							"access": ["bq_read/viewer", "gcs_read/viewer"]
-						},
-						"thousand-genomes" : {
-							"access" : ["gcs-file-access/viewer"]
-						}
-					}
+					"access": [
+						"dataset_example/bq_read/viewer",
+						"dataset_example/gcs_read/viewer",
+						"thousand-genomes/gcs-file-access/viewer"
+					]
 				}
 			}`,
-			Output: `^.*"dataset_example":\{\}`,
+			Output: `^.*"removeAccess":\["dataset_example/`,
 			Status: http.StatusFailedDependency,
 		},
 		{
@@ -604,15 +628,15 @@ func TestHandlers(t *testing.T) {
 					"ui": {
 						"label": "dr_joe_era_commons test"
 					},
-					"idToken": {
+					"passport": {
 						"standardClaims": {
 							"iss": "https://login.nih.gov/oidc/",
 							"sub": "dr_joe@era.nih.gov",
 							"picture": "https://pbs.twimg.com/profile_images/3443048571/ef5062acfce64a7aef1d75b4934fbee6_400x400.png"
 						},
-						"ga4ghClaims": [
+						"ga4ghAssertions": [
 							{
-								"claimName": "AffiliationAndRole",
+								"type": "AffiliationAndRole",
 								"source": "https://example.edu",
 								"value": "faculty@example.edu",
 								"assertedDuration": "30d",
@@ -620,32 +644,34 @@ func TestHandlers(t *testing.T) {
 								"by": "so"
 							},
 							{
-								"claimName": "ControlledAccessGrants",
+								"type": "ControlledAccessGrants",
 								"source": "https://dbgap.nlm.nih.gov/aa",
 								"value": "https://dac.nih.gov/datasets/phs000710",
 								"assertedDuration": "1d",
 								"expiresDuration": "30d",
 								"by": "dac",
-								"condition": {
-									"AffiliationAndRole": {
-										"value": ["faculty@example.edu"],
-										"by": ["so"]
-									}
-								}
+								"conditions": [
+       		      	{
+                		"clauses": [
+                  		{
+                    		"type": "AffiliationAndRole",
+                    		"value": "const:faculty@example.edu",
+                    		"by": "const:so"
+                  		}
+                		]
+              		}
+            		]
 							}
 						]
 					},
-					"resources": {
-						"dataset_example" : {
-							"access": ["bq_read/viewer", "gcs_read/viewer"]
-						},
-						"thousand-genomes" : {
-							"access" : ["gcs-file-access/viewer"]
-						}
-					}
+					"access": [
+					  "dataset_example/bq_read/viewer",
+						"dataset_example/gcs_read/viewer",
+						"thousand-genomes/gcs-file-access/viewer"
+					]
 				}
 			}`,
-			Output: `^.*"dataset_example":\{\}`,
+			Output: `^.*"removeAccess":\["dataset_example/`,
 			Status: http.StatusFailedDependency,
 		},
 		{
@@ -657,15 +683,15 @@ func TestHandlers(t *testing.T) {
 					"ui": {
 						"label": "Dr. Joe (Elixir)"
 					},
-					"idToken": {
+					"passport": {
 						"standardClaims": {
 							"iss": "https://login.elixir-czech.org/oidc/",
 							"sub": "dr_joe@faculty.example.edu",
 							"picture": "https://pbs.twimg.com/profile_images/497015367391121408/_cWXo-vA_400x400.jpeg"
 						},
-						"ga4ghClaims": [
+						"ga4ghAssertions": [
 							{
-								"claimName": "BonaFide",
+								"type": "BonaFide",
 								"source": "https://example.edu",
 								"value": "https://www.nature.com/articles/s41431-018-0219-y",
 								"assertedDuration": "1d",
@@ -673,7 +699,7 @@ func TestHandlers(t *testing.T) {
 								"by": "peer"
 							},
 							{
-								"claimName": "AcceptedTermsAndPolicies",
+								"type": "AcceptedTermsAndPolicies",
 								"source": "https://example.edu",
 								"value": "https://www.nature.com/articles/s41431-018-0219-y",
 								"assertedDuration": "1d",
@@ -682,14 +708,13 @@ func TestHandlers(t *testing.T) {
 							}
 						]
 					},
-					"resources": {
-						"ga4gh-apis" : {
-							"access" : ["beacon/discovery", "gcs_read/viewer"]
-						}
-					}
+					"access" : [
+						"ga4gh-apis/beacon/discovery",
+						"ga4gh-apis/gcs_read/viewer"
+					]
 				}
 			},`,
-			Output: `^.*"ga4gh-apis":\{\}`,
+			Output: `^.*"removeAccess":\["ga4gh-apis/`,
 			Status: http.StatusFailedDependency,
 		},
 		{
@@ -808,18 +833,24 @@ func TestHandlers(t *testing.T) {
 			Status: http.StatusNotFound,
 		},
 	}
-	test.HandlerTests(t, s.Handler, tests)
+	test.HandlerTests(t, s.Handler, tests, test.TestIssuerURL, server.Config())
 }
 
 func TestMinConfig(t *testing.T) {
 	store := storage.NewMemoryStorage("dam-min", "testdata/config")
-	s := NewService(context.Background(), "test.org", store, nil)
+	server, err := fakeoidcissuer.New(test.TestIssuerURL, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config")
+	if err != nil {
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", test.TestIssuerURL, err)
+	}
+	ctx := server.ContextWithClient(context.Background())
+	s := NewService(ctx, "test.org", "no-broker", store, nil)
 	tests := []test.HandlerTest{
 		{
 			Name:    "restricted access of 'dr_joe_elixir' (which only exists in min config subdirectory)",
 			Method:  "GET",
 			Path:    "/dam/v1alpha/test/config/testPersonas/dr_joe_elixir",
 			Persona: "admin",
+			Output:  `^.*"passport"`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -827,19 +858,11 @@ func TestMinConfig(t *testing.T) {
 			Method:  "GET",
 			Path:    "/dam/v1alpha/test/config/testPersonas/min_joes",
 			Persona: "admin",
+			Output:  `^.*not found`,
 			Status:  http.StatusNotFound,
 		},
 	}
-	for _, te := range tests {
-		target := fmt.Sprintf("%s?persona=%s&client_id=%s&client_secret=%s", te.Path, te.Persona, test.TestClientID, test.TestClientSecret)
-		var input io.Reader
-		r := httptest.NewRequest(te.Method, target, input)
-		w := httptest.NewRecorder()
-		s.Handler.ServeHTTP(w, r)
-		if w.Code != te.Status {
-			t.Errorf("test %q returned wrong status code: got %d want %d", te.Name, w.Code, te.Status)
-		}
-	}
+	test.HandlerTests(t, s.Handler, tests, test.TestIssuerURL, server.Config())
 }
 
 type contextMatcher struct{}
@@ -849,7 +872,7 @@ func (contextMatcher) Matches(x interface{}) bool {
 	if !ok {
 		return false
 	}
-	requestTTLInNanoFloat64 := ga4gh.ContextKey("requested_ttl")
+	requestTTLInNanoFloat64 := "requested_ttl"
 	_, ok = c.Value(requestTTLInNanoFloat64).(float64)
 	if !ok {
 		return false
@@ -863,22 +886,35 @@ func (contextMatcher) String() string {
 
 func TestCheckAuthorization(t *testing.T) {
 	store := storage.NewMemoryStorage("dam", "testdata/config")
-	s := NewService(context.Background(), "test.org", store, nil)
+	server, err := fakeoidcissuer.New(test.TestIssuerURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config")
+	if err != nil {
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", test.TestIssuerURL, err)
+	}
+	ctx := server.ContextWithClient(context.Background())
+	s := NewService(ctx, "test.org", "no-broker", store, nil)
 
-	// Ensure pass context with TTL in validator
-	var input io.Reader
-	r := httptest.NewRequest("GET", "/dam/v1alpha/master/resources/ga4gh-apis/views/gcs_read/roles/viewer/token?persona=dr_joe_elixir", input)
-
-	resName := "ga4gh-apis"
-	viewName := "gcs_read"
-	role := "viewer"
 	realm := "master"
-	ttl := time.Hour
-
 	cfg, err := s.loadConfig(nil, realm)
 	if err != nil {
 		t.Fatalf("cannot load config, %v", err)
 	}
+
+	pname := "dr_joe_elixir"
+	p := cfg.TestPersonas[pname]
+	acTok, _, err := persona.PersonaAccessToken(pname, test.TestIssuerURL, test.TestClientID, p)
+	if err != nil {
+		t.Fatalf("persona.PersonaAccessToken(%q, %q, _, _) failed: %v", pname, test.TestIssuerURL, err)
+	}
+
+	// Ensure pass context with TTL in validator
+	var input io.Reader
+	r := httptest.NewRequest("GET", "/dam/v1alpha/master/resources/ga4gh-apis/views/gcs_read/roles/viewer/token?client_id="+test.TestClientID+"&client_secret="+test.TestClientSecret, input)
+	r.Header.Set("Authorization", "Bearer "+string(acTok))
+
+	resName := "ga4gh-apis"
+	viewName := "gcs_read"
+	role := "viewer"
+	ttl := time.Hour
 
 	id, _, err := s.getPassportIdentity(cfg, nil, r)
 	if err != nil {

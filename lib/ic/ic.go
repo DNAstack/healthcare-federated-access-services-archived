@@ -22,8 +22,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -34,23 +32,20 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
-	"golang.org/x/oauth2"
-
+	glog "github.com/golang/glog"
 	"github.com/golang/protobuf/jsonpb"
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/mux"
 	"gopkg.in/square/go-jose.v2"
 	"github.com/dgrijalva/jwt-go"
+	"golang.org/x/oauth2"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/module"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/playground"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"
-
-	josejwt "gopkg.in/square/go-jose.v2/jwt"
 	dampb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1"
 	compb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/models"
@@ -66,11 +61,13 @@ const (
 
 	maxClaimsLength = 1900
 
-	loginPageFile              = "gcp/ic/fe/login.html"
-	clientLoginPageFile        = "gcp/ic/fe/client_login.html"
-	informationReleasePageFile = "gcp/ic/fe/information_release.html"
-	testPageFile               = "gcp/ic/fe/test.html"
-	staticDirectory            = "gcp/ic/static/"
+	loginPageFile              = "pages/login.html"
+	loginPageInfoFile          = "pages/login-info.html"
+	clientLoginPageFile        = "pages/client_login.html"
+	informationReleasePageFile = "pages/information_release.html"
+	testPageFile               = "pages/test.html"
+	tokenFlowTestPageFile      = "pages/new-flow-test.html"
+	staticDirectory            = "assets/serve/"
 	version                    = "v1alpha"
 	requiresAdmin              = true
 
@@ -78,7 +75,8 @@ const (
 	realmPath        = basePath + "/" + version + "/" + common.RealmVariable
 	methodPrefix     = realmPath + "/"
 	acceptLoginPath  = basePath + "/loggedin"
-	staticFilePath   = basePath + "/static/"
+	assetPath        = basePath + "/static"
+	staticFilePath   = assetPath + "/"
 	configPathPrefix = methodPrefix + "config"
 
 	infoPath                    = basePath
@@ -111,15 +109,17 @@ const (
 	adminClaimsPath        = adminPathPrefix + "/subjects/{name}/account/claims"
 	adminTokenMetadataPath = adminPathPrefix + "/tokens"
 
-	testPath      = methodPrefix + "test"
-	authorizePath = methodPrefix + "authorize"
+	testPath          = methodPrefix + "test"
+	tokenFlowTestPath = methodPrefix + "new-flow-test"
+	authorizePath     = methodPrefix + "authorize"
 
-	ga4ghClaimNamePrefix = "ga4gh."
+	serviceTitle         = "Identity Concentrator"
+	loginInfoTitle       = "Data Discovery and Access Platform"
 	noClientID           = ""
 	noScope              = ""
 	noNonce              = ""
 	scopeOpenID          = "openid"
-	personaProvider      = "<persona>"
+	personaProvider      = "persona"
 	matchFullScope       = false
 	matchPrefixScope     = true
 	generateRefreshToken = true
@@ -140,21 +140,28 @@ var (
 		"clientSecret":  true,
 		"client_secret": true,
 	}
-	pageVariableRE       = regexp.MustCompile(`\$\{[-A-Z_]*\}`)
+	pageVariableRE = regexp.MustCompile(`\$\{[-A-Z_]*\}`)
+
+	passportScope        = "ga4gh_passport_v1"
+	ga4ghScope           = "ga4gh"
 	defaultIdpScopes     = []string{"openid", "profile", "email"}
 	filterAccessTokScope = map[string]bool{
 		"openid":        true,
-		"ga4gh":         true,
+		ga4ghScope:      true,
 		"identities":    true,
 		"link":          true,
 		"account_admin": true,
+		"email":         true,
+		passportScope:   true,
 	}
 	filterIDTokScope = map[string]bool{
 		"openid":  true,
 		"profile": true,
 		// TODO: remove these once DDAP BFF switches to use access token.
-		"ga4gh":      true,
-		"identities": true,
+		ga4ghScope:    true,
+		passportScope: true,
+		"identities":  true,
+		"email":       true,
 	}
 
 	descAccountNameLength = &pb.ConfigOptions_Descriptor{
@@ -240,6 +247,8 @@ var (
 
 	// skipURLValidationInTokenURL is for skipping URL validation for TokenUrl in format "FOO_BAR=https://...".
 	skipURLValidationInTokenURL = regexp.MustCompile("^[A-Z_]*=https://.*$")
+
+	importDefault = os.Getenv("IMPORT")
 )
 
 type Service struct {
@@ -250,12 +259,14 @@ type Service struct {
 	clientLoginPage       string
 	infomationReleasePage string
 	testPage              string
+	tokenFlowTestPage     string
 	startTime             int64
 	permissions           *common.Permissions
 	domain                string
 	accountDomain         string
 	module                module.Module
 	translators           sync.Map
+	encryption            Encryption
 }
 
 type ServiceHandler struct {
@@ -263,33 +274,49 @@ type ServiceHandler struct {
 	s       *Service
 }
 
+// Encryption abstracts a encryption service for storing visa.
+type Encryption interface {
+	Encrypt(ctx context.Context, data []byte, additionalAuthData string) ([]byte, error)
+	Decrypt(ctx context.Context, encrypted []byte, additionalAuthData string) ([]byte, error)
+}
+
 // NewService create new IC service.
 // - domain: domain used to host ic service
 // - accountDomain: domain used to host service account warehouse
 // - store: data storage and configuration storage
 // - module: the extended functionality for this environment
-func NewService(domain, accountDomain string, store storage.Store, module module.Module) *Service {
-	ctx := context.Background()
+// - encryption: the encryption use for storing tokens safely in database
+func NewService(ctx context.Context, domain, accountDomain string, store storage.Store, module module.Module, encryption Encryption) *Service {
 	sh := &ServiceHandler{}
-	lp, err := loadFile(loginPageFile)
+	lp, err := common.LoadFile(loginPageFile)
 	if err != nil {
-		log.Fatalf("cannot load login page: %v", err)
+		glog.Fatalf("cannot load login page: %v", err)
 	}
-	clp, err := loadFile(clientLoginPageFile)
+	lpi, err := common.LoadFile(loginPageInfoFile)
 	if err != nil {
-		log.Fatalf("cannot load client login page: %v", err)
+		glog.Fatalf("cannot load login page info %q: %v", loginPageInfoFile, err)
 	}
-	irp, err := loadFile(informationReleasePageFile)
+	lp = strings.Replace(lp, "${LOGIN_INFO_HTML}", lpi, -1)
+	clp, err := common.LoadFile(clientLoginPageFile)
 	if err != nil {
-		log.Fatalf("cannot load information release page: %v", err)
+		glog.Fatalf("cannot load client login page: %v", err)
 	}
-	tp, err := loadFile(testPageFile)
+	irp, err := common.LoadFile(informationReleasePageFile)
 	if err != nil {
-		log.Fatalf("cannot load test page: %v", err)
+		glog.Fatalf("cannot load information release page: %v", err)
 	}
+	tp, err := common.LoadFile(testPageFile)
+	if err != nil {
+		glog.Fatalf("cannot load test page: %v", err)
+	}
+	tfp, err := common.LoadFile(tokenFlowTestPageFile)
+	if err != nil {
+		glog.Fatalf("cannot load token flow test page: %v", err)
+	}
+
 	perms, err := common.LoadPermissions(store)
 	if err != nil {
-		log.Fatalf("cannot load permissions:%v", err)
+		glog.Fatalf("cannot load permissions:%v", err)
 	}
 	s := &Service{
 		store:                 store,
@@ -299,38 +326,40 @@ func NewService(domain, accountDomain string, store storage.Store, module module
 		clientLoginPage:       clp,
 		infomationReleasePage: irp,
 		testPage:              tp,
+		tokenFlowTestPage:     tfp,
 		startTime:             time.Now().Unix(),
 		permissions:           perms,
 		domain:                domain,
 		accountDomain:         accountDomain,
 		module:                module,
+		encryption:            encryption,
 	}
 
 	if err := validateURLs(map[string]string{
 		"DOMAIN as URL":         "https://" + domain,
 		"ACCOUNT_DOMAIN as URL": "https://" + accountDomain,
 	}); err != nil {
-		log.Fatalf(err.Error())
+		glog.Fatalf(err.Error())
 	}
-	if err = s.importFiles(); err != nil {
-		log.Fatalf("cannot initialize storage: %v", err)
+	if err = s.ImportFiles(importDefault); err != nil {
+		glog.Fatalf("cannot initialize storage: %v", err)
 	}
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
-		log.Fatalf("cannot load config: %v", err)
+		glog.Fatalf("cannot load config: %v", err)
 	}
 	if err = s.checkConfigIntegrity(cfg); err != nil {
-		log.Fatalf("invalid config: %v", err)
+		glog.Fatalf("invalid config: %v", err)
 	}
 	secrets, err := s.loadSecrets(nil)
 	if err != nil {
-		log.Fatalf("cannot load client secrets: %v", err)
+		glog.Fatalf("cannot load client secrets: %v", err)
 	}
 
 	for name, cfgIdp := range cfg.IdentityProviders {
 		_, err = s.getIssuerTranslator(s.ctx, cfgIdp.Issuer, cfg, secrets)
 		if err != nil {
-			log.Printf("failed to create translator for issuer %q: %v", name, err)
+			glog.Infof("failed to create translator for issuer %q: %v", name, err)
 		}
 	}
 
@@ -365,6 +394,21 @@ func getNonce(r *http.Request) (string, error) {
 	return "no-nonce", nil
 }
 
+func isUserInfo(r *http.Request) bool {
+	path := common.RequestAbstractPath(r)
+	return path == oidcUserInfoPath
+}
+
+func extractState(r *http.Request) (string, error) {
+	n := common.GetParam(r, "state")
+	if len(n) > 0 {
+		return n, nil
+	}
+	// TODO: should return error after front end supports state field.
+	// return "", fmt.Errorf("request must include 'state'")
+	return "no-state", nil
+}
+
 func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
 		common.AddCorsHeaders(w)
@@ -374,7 +418,7 @@ func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	// Allow some requests to proceed without client IDs and/or secrets.
 	path := common.RequestAbstractPath(r)
-	if path == infoPath || strings.HasPrefix(path, staticFilePath) || strings.HasPrefix(path, testPath) || strings.HasPrefix(path, acceptLoginPath) || path == acceptInformationReleasePath || strings.HasPrefix(path, oidcWellKnownPath) {
+	if path == infoPath || strings.HasPrefix(path, staticFilePath) || strings.HasPrefix(path, testPath) || strings.HasPrefix(path, tokenFlowTestPath) || strings.HasPrefix(path, acceptLoginPath) || path == acceptInformationReleasePath || strings.HasPrefix(path, oidcPath) {
 		sh.Handler.ServeHTTP(w, r)
 		return
 	}
@@ -437,6 +481,7 @@ func (s *Service) buildHandlerMux() *mux.Router {
 	r.HandleFunc(personasPath, s.Personas)
 	r.HandleFunc(personaPath, s.Persona)
 	r.HandleFunc(testPath, s.Test)
+	r.HandleFunc(tokenFlowTestPath, s.TokenFlowTest)
 	r.HandleFunc(authorizePath, s.Authorize)
 	r.HandleFunc(accountPath, common.MakeHandler(s, s.accountFactory()))
 	r.HandleFunc(accountSubjectPath, common.MakeHandler(s, s.accountSubjectFactory()))
@@ -477,7 +522,7 @@ func (s *Service) ConfigHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// TODO: consider requiring an "admin" scope (modify all admin handlerSetup calls).
-	_, _, status, err := s.handlerSetup(nil, requiresAdmin, r, noScope, nil)
+	_, _, _, status, err := s.handlerSetup(nil, requiresAdmin, r, noScope, nil)
 	if err != nil {
 		common.HandleError(status, err, w)
 		return
@@ -501,7 +546,7 @@ func (s *Service) ConfigHistoryRevision(w http.ResponseWriter, r *http.Request) 
 		common.HandleError(http.StatusBadRequest, fmt.Errorf("invalid history revision: %q (must be a positive integer)", name), w)
 		return
 	}
-	_, _, status, err := s.handlerSetup(nil, requiresAdmin, r, noScope, nil)
+	_, _, _, status, err := s.handlerSetup(nil, requiresAdmin, r, noScope, nil)
 	if err != nil {
 		common.HandleError(status, err, w)
 		return
@@ -521,7 +566,7 @@ func (s *Service) ConfigReset(w http.ResponseWriter, r *http.Request) {
 		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
 		return
 	}
-	_, _, status, err := s.handlerSetup(nil, requiresAdmin, r, noScope, nil)
+	_, _, _, status, err := s.handlerSetup(nil, requiresAdmin, r, noScope, nil)
 	if err != nil {
 		common.HandleError(status, err, w)
 		return
@@ -530,7 +575,7 @@ func (s *Service) ConfigReset(w http.ResponseWriter, r *http.Request) {
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}
-	if err = s.importFiles(); err != nil {
+	if err = s.ImportFiles(importDefault); err != nil {
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}
@@ -580,6 +625,13 @@ func (s *Service) Token(w http.ResponseWriter, r *http.Request) {
 		common.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
+
+	secrets, err := s.loadSecrets(nil)
+	if err != nil {
+		common.HandleError(http.StatusServiceUnavailable, err, w)
+		return
+	}
+
 	var identity *ga4gh.Identity
 	var status int
 	genRefresh := generateRefreshToken
@@ -599,14 +651,14 @@ func (s *Service) Token(w http.ResponseWriter, r *http.Request) {
 			common.HandleError(status, err, w)
 			return
 		}
-		identity, status, err = s.authCodeToIdentity(code, r, cfg, nil)
+		identity, status, err = s.authCodeToIdentity(code, r, cfg, secrets, nil)
 		if err != nil {
 			common.HandleError(status, err, w)
 			return
 		}
 	} else {
 		genRefresh = noRefreshToken
-		identity, status, err = s.refreshTokenToIdentity(common.GetParam(r, "refresh_token"), r, cfg, nil)
+		identity, status, err = s.refreshTokenToIdentity(common.GetParam(r, "refresh_token"), r, cfg, secrets, nil)
 		if err != nil {
 			common.HandleError(status, err, w)
 			return
@@ -642,6 +694,13 @@ func (s *Service) Revocation(w http.ResponseWriter, r *http.Request) {
 		common.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
+
+	secrets, err := s.loadSecrets(tx)
+	if err != nil {
+		common.HandleError(http.StatusServiceUnavailable, err, w)
+		return
+	}
+
 	// Parse the token to be revoked.
 	// TODO: remove the RevocationRequest proto fields as GetParam() is needed instead.
 	inputToken := common.GetParam(r, "token")
@@ -649,7 +708,7 @@ func (s *Service) Revocation(w http.ResponseWriter, r *http.Request) {
 		common.HandleError(http.StatusBadRequest, fmt.Errorf("missing token parameter"), w)
 		return
 	}
-	identity, status, err := s.refreshTokenToIdentity(inputToken, r, cfg, tx)
+	identity, status, err := s.refreshTokenToIdentity(inputToken, r, cfg, secrets, tx)
 	if err != nil {
 		common.HandleError(status, err, w)
 		return
@@ -689,13 +748,19 @@ func (s *Service) LoginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	state, err := extractState(r)
+	if err != nil {
+		common.HandleError(http.StatusBadRequest, err, w)
+		return
+	}
+
 	nonce, err := getNonce(r)
 	if err != nil {
 		common.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
 
-	params := "?client_id=" + getClientID(r) + "&redirect_uri=" + url.QueryEscape(redirect) + "&nonce=" + url.QueryEscape(nonce)
+	params := "?client_id=" + getClientID(r) + "&redirect_uri=" + url.QueryEscape(redirect) + "&state=" + url.QueryEscape(state) + "&nonce=" + url.QueryEscape(nonce)
 	if len(scope) > 0 {
 		params += "&scope=" + url.QueryEscape(scope)
 	}
@@ -720,14 +785,14 @@ func (s *Service) LoginPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	clientID := getClientID(r)
-	params = "?client_id=" + clientID + "&redirect_uri=" + url.QueryEscape(redirect) + "&scope=" + url.QueryEscape(scope) + "&nonce=" + url.QueryEscape(nonce)
+	params = "?client_id=" + clientID + "&redirect_uri=" + url.QueryEscape(redirect) + "&scope=" + url.QueryEscape(scope) + "&state=" + url.QueryEscape(state) + "&nonce=" + url.QueryEscape(nonce)
 	for pname, p := range personas {
 		ui := p.Ui
 		if ui == nil {
 			ui = make(map[string]string)
 		}
 		if _, ok := ui[common.UILabel]; !ok {
-			ui[common.UILabel] = toTitle(pname)
+			ui[common.UILabel] = common.ToTitle(pname)
 		}
 		list.Personas[pname] = &pb.LoginPageProviders_ProviderEntry{
 			Url: buildPath(personaPath, pname, vars) + params,
@@ -741,14 +806,17 @@ func (s *Service) LoginPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page := strings.Replace(s.loginPage, "${PROVIDER_LIST}", json, -1)
-	sendHTML(page, w)
+	page = strings.Replace(page, "${ASSET_DIR}", assetPath, -1)
+	page = strings.Replace(page, "${SERVICE_TITLE}", serviceTitle, -1)
+	page = strings.Replace(page, "${LOGIN_INFO_TITLE}", loginInfoTitle, -1)
+	common.SendHTML(page, w)
 }
 
 func personaSubject(pName string, p *dampb.TestPersona) string {
-	if p.IdToken == nil || p.IdToken.StandardClaims == nil {
+	if p.Passport == nil || p.Passport.StandardClaims == nil {
 		return pName
 	}
-	if sub, ok := p.IdToken.StandardClaims["sub"]; ok {
+	if sub, ok := p.Passport.StandardClaims["sub"]; ok {
 		return sub
 	}
 	return pName
@@ -760,12 +828,21 @@ func (s *Service) idpAuthorize(idpName string, idp *pb.IdentityProvider, redirec
 		return nil, "", err
 	}
 
+	// TODO: Remove after all idp use passport visa.
+	if idp.UsePassportVisa {
+		scope = strings.Join(idp.Scopes, " ")
+	}
+
+	state, err := extractState(r)
+	if err != nil {
+		return nil, "", err
+	}
 	nonce, err := getNonce(r)
 	if err != nil {
 		return nil, "", err
 	}
 
-	stateID, err := s.buildState(idpName, getRealm(r), getClientID(r), scope, redirect, nonce, tx)
+	stateID, err := s.buildState(idpName, getRealm(r), getClientID(r), scope, redirect, state, nonce, tx)
 	if err != nil {
 		return nil, "", err
 	}
@@ -796,19 +873,20 @@ func idpConfig(idp *pb.IdentityProvider, domainURL string, secrets *pb.IcSecrets
 	}
 }
 
-func (s *Service) buildState(idpName, realm, clientID, scope, redirect, nonce string, tx storage.Tx) (string, error) {
-	state := &compb.LoginState{
+func (s *Service) buildState(idpName, realm, clientID, scope, redirect, state, nonce string, tx storage.Tx) (string, error) {
+	login := &compb.LoginState{
 		IdpName:  idpName,
 		Realm:    realm,
 		ClientId: clientID,
 		Scope:    scope,
 		Redirect: redirect,
+		State:    state,
 		Nonce:    nonce,
 	}
 
 	id := common.GenerateGUID()
 
-	err := s.store.WriteTx(storage.LoginStateDatatype, storage.DefaultRealm, storage.DefaultUser, id, storage.LatestRev, state, nil, tx)
+	err := s.store.WriteTx(storage.LoginStateDatatype, storage.DefaultRealm, storage.DefaultUser, id, storage.LatestRev, login, nil, tx)
 	if err != nil {
 		return "", err
 	}
@@ -880,7 +958,7 @@ func (s *Service) login(w http.ResponseWriter, r *http.Request, cfg *pb.IcConfig
 	url := idpc.AuthCodeURL(state, options...)
 	url = strings.Replace(url, "${CLIENT_ID}", idp.ClientId, -1)
 	url = strings.Replace(url, "${REDIRECT_URI}", buildRedirectNonOIDC(idp, idpc, state), -1)
-	sendRedirect(url, r, w)
+	common.SendRedirect(url, r, w)
 }
 
 // Login login/{name} endpoint handler
@@ -916,7 +994,7 @@ func (s *Service) AcceptLogin(w http.ResponseWriter, r *http.Request) {
 		page := s.clientLoginPage
 		page = strings.Replace(page, "${INSTRUCTIONS}", `""`, -1)
 		page = pageVariableRE.ReplaceAllString(page, `""`)
-		sendHTML(page, w)
+		common.SendHTML(page, w)
 		return
 	}
 
@@ -944,7 +1022,7 @@ func (s *Service) AcceptLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Form.Set("client_id", loginState.ClientId)
 	u.RawQuery = r.Form.Encode()
-	sendRedirect(u.String(), r, w)
+	common.SendRedirect(u.String(), r, w)
 }
 
 func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) {
@@ -988,7 +1066,7 @@ func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) {
 		page := s.clientLoginPage
 		page = strings.Replace(page, "${INSTRUCTIONS}", instructions, -1)
 		page = pageVariableRE.ReplaceAllString(page, `""`)
-		sendHTML(page, w)
+		common.SendHTML(page, w)
 		return
 	}
 
@@ -1018,6 +1096,7 @@ func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) {
 
 	redirect := loginState.Redirect
 	scope := loginState.Scope
+	state := loginState.State
 	nonce := loginState.Nonce
 	clientID := getClientID(r)
 
@@ -1043,10 +1122,13 @@ func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) {
 			common.HandleError(http.StatusUnauthorized, fmt.Errorf("invalid code: %v", err), w)
 			return
 		}
-		idToken, ok = tok.Extra("id_token").(string)
-		if !ok {
-			common.HandleError(http.StatusUnauthorized, fmt.Errorf("token does not contain a valid id_token field"), w)
-			return
+		accessToken = tok.AccessToken
+		if len(accessToken) == 0 && len(idToken) == 0 {
+			idToken, ok = tok.Extra("id_token").(string)
+			if !ok {
+				common.HandleError(http.StatusUnauthorized, fmt.Errorf("token does not contain a valid id_token field"), w)
+				return
+			}
 		}
 	}
 	if accessToken == "" {
@@ -1068,28 +1150,7 @@ func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.finishLogin(login, idpName, redirect, scope, clientID, tx, cfg, r, w)
-}
-
-func toTitle(str string) string {
-	out := ""
-	l := 0
-	for i, ch := range str {
-		if unicode.IsUpper(ch) && i > 0 && str[i-1] != ' ' {
-			out += " "
-			l++
-		} else if ch == '_' {
-			out += " "
-			l++
-			continue
-		}
-		if l > 0 && out[l-1] == ' ' {
-			ch = rune(unicode.ToUpper(rune(ch)))
-		}
-		out += string(ch)
-		l++
-	}
-	return strings.Title(out)
+	s.finishLogin(login, idpName, redirect, scope, clientID, state, tx, cfg, secrets, r, w)
 }
 
 func (s *Service) Authorize(w http.ResponseWriter, r *http.Request) {
@@ -1120,6 +1181,12 @@ func (s *Service) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	secrets, err := s.loadSecrets(nil)
+	if err != nil {
+		common.HandleError(http.StatusServiceUnavailable, err, w)
+		return
+	}
+
 	// Idp login
 	if loginHintProvider != personaProvider {
 		s.login(w, r, cfg, loginHintProvider, loginHintAccount)
@@ -1135,7 +1202,7 @@ func (s *Service) Authorize(w http.ResponseWriter, r *http.Request) {
 
 	for pname, p := range personas {
 		if loginHintAccount == personaSubject(pname, p) {
-			s.personaLogin(pname, p, cfg, nil, w, r)
+			s.personaLogin(pname, p, cfg, secrets, nil, w, r)
 			return
 		}
 	}
@@ -1156,7 +1223,7 @@ func (s *Service) Personas(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make(map[string]*pb.GetPersonasResponse_Meta)
 	for pname, p := range personas {
-		pid, err := playground.PersonaToIdentity(pname, p, noScope)
+		pid, err := persona.PersonaToIdentity(pname, p, noScope, s.getIssuerString())
 		if err != nil {
 			common.HandleError(http.StatusServiceUnavailable, err, w)
 			return
@@ -1204,11 +1271,23 @@ func (s *Service) Persona(w http.ResponseWriter, r *http.Request) {
 		common.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
-	s.personaLogin(pName, p, cfg, tx, w, r)
+
+	secrets, err := s.loadSecrets(tx)
+	if err != nil {
+		common.HandleError(http.StatusServiceUnavailable, err, w)
+		return
+	}
+
+	s.personaLogin(pName, p, cfg, secrets, tx, w, r)
 }
 
-func (s *Service) personaLogin(pName string, p *dampb.TestPersona, cfg *pb.IcConfig, tx storage.Tx, w http.ResponseWriter, r *http.Request) {
+func (s *Service) personaLogin(pName string, p *dampb.TestPersona, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx, w http.ResponseWriter, r *http.Request) {
 	scope, err := getScope(r)
+	if err != nil {
+		common.HandleError(http.StatusBadRequest, err, w)
+		return
+	}
+	state, err := extractState(r)
 	if err != nil {
 		common.HandleError(http.StatusBadRequest, err, w)
 		return
@@ -1219,7 +1298,7 @@ func (s *Service) personaLogin(pName string, p *dampb.TestPersona, cfg *pb.IcCon
 		return
 	}
 
-	id, err := playground.PersonaToIdentity(pName, p, scope)
+	id, err := persona.PersonaToIdentity(pName, p, scope, s.getIssuerString())
 	if err != nil {
 		common.HandleError(http.StatusUnauthorized, err, w)
 		return
@@ -1231,7 +1310,7 @@ func (s *Service) personaLogin(pName string, p *dampb.TestPersona, cfg *pb.IcCon
 	}
 	id.Nonce = nonce
 
-	s.finishLogin(id, personaProvider, redirect, scope, getClientID(r), tx, cfg, r, w)
+	s.finishLogin(id, personaProvider, redirect, scope, getClientID(r), state, tx, cfg, secrets, r, w)
 }
 
 func getStateRedirect(r *http.Request) (string, error) {
@@ -1262,7 +1341,7 @@ func (s *Service) getAndValidateStateRedirect(r *http.Request, cfg *pb.IcConfig)
 	return redirect, nil
 }
 
-func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, clientID string, tx storage.Tx, cfg *pb.IcConfig, r *http.Request, w http.ResponseWriter) {
+func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, clientID, state string, tx storage.Tx, cfg *pb.IcConfig, secrets *pb.IcSecrets, r *http.Request, w http.ResponseWriter) {
 	realm := getRealm(r)
 	lookup, err := s.accountLookup(realm, id.Subject, tx)
 	if err != nil {
@@ -1277,10 +1356,17 @@ func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, cli
 			common.HandleError(http.StatusServiceUnavailable, err, w)
 			return
 		}
-		claims := s.accountLinkToClaims(acct, id.Subject, cfg)
+		claims, err := s.accountLinkToClaims(r.Context(), acct, id.Subject, cfg, secrets)
+		if err != nil {
+			common.HandleError(http.StatusServiceUnavailable, err, w)
+			return
+		}
 		if !claimsAreEqual(claims, id.GA4GH) {
 			// Refresh the claims in the storage layer.
-			populateAccountClaims(acct, id, provider)
+			if err := s.populateAccountClaims(r.Context(), acct, id, provider); err != nil {
+				common.HandleError(http.StatusServiceUnavailable, err, w)
+				return
+			}
 			err := s.saveAccount(nil, acct, "REFRESH claims "+id.Subject, r, id.Subject, tx)
 			if err != nil {
 				common.HandleError(http.StatusServiceUnavailable, err, w)
@@ -1288,8 +1374,13 @@ func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, cli
 			}
 		}
 	} else {
-		// Create an account for a persona automatically.
-		acct := newAccountWithLink(id, provider, cfg)
+		// Create an account for the identity automatically.
+		acct, err := s.newAccountWithLink(r.Context(), id, provider, cfg)
+		if err != nil {
+			common.HandleError(http.StatusServiceUnavailable, err, w)
+			return
+		}
+
 		if err = s.saveNewLinkedAccount(acct, id, "New Persona Account", r, tx, lookup); err != nil {
 			common.HandleError(http.StatusServiceUnavailable, err, w)
 			return
@@ -1300,24 +1391,25 @@ func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, cli
 	loginHint := makeLoginHint(provider, id.Subject)
 
 	if provider == personaProvider {
-		s.sendAuthTokenToRedirect(redirect, subject, scope, provider, realm, id.Nonce, loginHint, cfg, tx, r, w)
+		s.sendAuthTokenToRedirect(redirect, subject, scope, provider, realm, state, id.Nonce, loginHint, cfg, tx, r, w)
 		return
 	}
 
 	// redirect to information release page.
-	state := &compb.AuthTokenState{
+	auth := &compb.AuthTokenState{
 		Redirect:  redirect,
 		Subject:   subject,
 		Scope:     scope,
 		Provider:  provider,
 		Realm:     realm,
+		State:     state,
 		Nonce:     id.Nonce,
 		LoginHint: loginHint,
 	}
 
 	stateID := common.GenerateGUID()
 
-	err = s.store.WriteTx(storage.AuthTokenStateDatatype, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, state, nil, tx)
+	err = s.store.WriteTx(storage.AuthTokenStateDatatype, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, auth, nil, tx)
 	if err != nil {
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
@@ -1326,7 +1418,7 @@ func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, cli
 	s.sendInformationReleasePage(id, stateID, clientID, scope, realm, cfg, w)
 }
 
-func (s *Service) sendAuthTokenToRedirect(redirect, subject, scope, provider, realm, nonce, loginHint string, cfg *pb.IcConfig, tx storage.Tx, r *http.Request, w http.ResponseWriter) {
+func (s *Service) sendAuthTokenToRedirect(redirect, subject, scope, provider, realm, state, nonce, loginHint string, cfg *pb.IcConfig, tx storage.Tx, r *http.Request, w http.ResponseWriter) {
 	auth, err := s.createAuthToken(subject, scope, provider, realm, nonce, time.Now(), cfg, tx)
 	if err != nil {
 		common.HandleError(http.StatusServiceUnavailable, err, w)
@@ -1347,8 +1439,9 @@ func (s *Service) sendAuthTokenToRedirect(redirect, subject, scope, provider, re
 	q := url.Query()
 	q.Set("code", auth)
 	q.Set("login_hint", loginHint)
+	q.Set("state", state)
 	url.RawQuery = q.Encode()
-	sendRedirect(url.String(), r, w)
+	common.SendRedirect(url.String(), r, w)
 }
 
 func (s *Service) sendInformationReleasePage(id *ga4gh.Identity, stateID, clientID, scope, realm string, cfg *pb.IcConfig, w http.ResponseWriter) {
@@ -1381,8 +1474,8 @@ func (s *Service) sendInformationReleasePage(id *ga4gh.Identity, stateID, client
 			}
 			info = append(info, "profile: "+strings.Join(profile, ","))
 		}
-		if s == "ga4gh" && len(id.GA4GH) != 0 {
-			info = append(info, "GA4GH claims")
+		if (s == passportScope || s == ga4ghScope) && len(id.VisaJWTs) != 0 {
+			info = append(info, "passport visas")
 		}
 		if s == "account_admin" {
 			info = append(info, "admin claims")
@@ -1398,7 +1491,7 @@ func (s *Service) sendInformationReleasePage(id *ga4gh.Identity, stateID, client
 	page = strings.Replace(page, "${STATE}", stateID, -1)
 	page = strings.Replace(page, "${PATH}", strings.Replace(acceptInformationReleasePath, "{realm}", realm, -1), -1)
 
-	sendHTML(page, w)
+	common.SendHTML(page, w)
 }
 
 func (s *Service) acceptInformationRelease(w http.ResponseWriter, r *http.Request) {
@@ -1440,7 +1533,7 @@ func (s *Service) acceptInformationRelease(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	s.sendAuthTokenToRedirect(state.Redirect, state.Subject, state.Scope, state.Provider, state.Realm, state.Nonce, state.LoginHint, cfg, tx, r, w)
+	s.sendAuthTokenToRedirect(state.Redirect, state.Subject, state.Scope, state.Provider, state.Realm, state.State, state.Nonce, state.LoginHint, cfg, tx, r, w)
 }
 
 func (s *Service) Test(w http.ResponseWriter, r *http.Request) {
@@ -1458,7 +1551,26 @@ func (s *Service) Test(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := strings.Replace(s.testPage, "${DAM_URL}", dam, -1)
-	sendHTML(page, w)
+	common.SendHTML(page, w)
+}
+
+// TokenFlowTest send token flow test page.
+func (s *Service) TokenFlowTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
+		return
+	}
+	dam := os.Getenv("PERSONA_DAM_URL")
+	if len(dam) == 0 {
+		scheme := "http:"
+		if len(r.URL.Scheme) > 0 {
+			scheme = r.URL.Scheme
+		}
+		dam = strings.Replace(scheme+"//"+s.accountDomain, "ic-", "dam-", -1)
+	}
+
+	page := strings.Replace(s.tokenFlowTestPage, "${DAM_URL}", dam, -1)
+	common.SendHTML(page, w)
 }
 
 //////////////////////////////////////////////////////////////////
@@ -1498,7 +1610,7 @@ type realm struct {
 }
 
 func (c *realm) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
+	cfg, _, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
 	c.cfg = cfg
 	c.id = id
 	return status, err
@@ -1543,7 +1655,7 @@ func (c *realm) Remove(name string) error {
 		return err
 	}
 	if name == storage.DefaultRealm {
-		return c.s.importFiles()
+		return c.s.ImportFiles(importDefault)
 	}
 	return nil
 }
@@ -1585,7 +1697,7 @@ type client struct {
 }
 
 func (c *client) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
+	cfg, _, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
 	c.cfg = cfg
 	c.id = id
 	return status, err
@@ -1667,7 +1779,7 @@ type config struct {
 }
 
 func (c *config) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
+	cfg, _, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
 	c.cfg = cfg
 	c.id = id
 	return status, err
@@ -1775,7 +1887,7 @@ type configIDP struct {
 }
 
 func (c *configIDP) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
+	cfg, _, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
 	c.cfg = cfg
 	c.id = id
 	c.tx = tx
@@ -1886,7 +1998,7 @@ type configClient struct {
 }
 
 func (c *configClient) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
+	cfg, _, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
 	c.cfg = cfg
 	c.id = id
 	c.tx = tx
@@ -1997,7 +2109,7 @@ type configOptions struct {
 }
 
 func (c *configOptions) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
+	cfg, _, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
 	c.cfg = cfg
 	c.id = id
 	c.tx = tx
@@ -2101,7 +2213,7 @@ type tokenMetadataHandler struct {
 }
 
 func (h *tokenMetadataHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	_, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+	_, _, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
 	h.id = id
 	h.tx = tx
 	return status, err
@@ -2195,7 +2307,7 @@ type adminTokenMetadataHandler struct {
 
 func (h *adminTokenMetadataHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
 	h.tx = tx
-	_, _, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+	_, _, _, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
 	return status, err
 }
 
@@ -2285,13 +2397,15 @@ type account struct {
 	input *pb.AccountRequest
 	save  *pb.Account
 	cfg   *pb.IcConfig
+	sec   *pb.IcSecrets
 	id    *ga4gh.Identity
 	tx    storage.Tx
 }
 
 func (c *account) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
+	cfg, sec, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
 	c.cfg = cfg
+	c.sec = sec
 	c.id = id
 	c.tx = tx
 	return status, err
@@ -2374,7 +2488,7 @@ func (c *account) Patch(name string) error {
 		if !hasScopes("link", c.id.Scope, matchFullScope) {
 			return fmt.Errorf("bearer token unauthorized for scope %q", "link")
 		}
-		linkID, _, err := c.s.tokenToIdentity(link, c.r, "link:"+c.item.Properties.Subject, c.cfg, nil)
+		linkID, _, err := c.s.tokenToIdentity(link, c.r, "link:"+c.item.Properties.Subject, getRealm(c.r), c.cfg, c.sec, c.tx)
 		if err != nil {
 			return err
 		}
@@ -2495,7 +2609,7 @@ type accountLink struct {
 }
 
 func (c *accountLink) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
+	cfg, _, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
 	c.cfg = cfg
 	c.id = id
 	c.tx = tx
@@ -2614,7 +2728,7 @@ type adminClaims struct {
 }
 
 func (c *adminClaims) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
+	cfg, _, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
 	c.cfg = cfg
 	c.id = id
 	c.tx = tx
@@ -2709,62 +2823,61 @@ func getName(r *http.Request) string {
 	return ""
 }
 
-func (s *Service) handlerSetup(tx storage.Tx, isAdmin bool, r *http.Request, scope string, item proto.Message) (*pb.IcConfig, *ga4gh.Identity, int, error) {
+func (s *Service) handlerSetup(tx storage.Tx, isAdmin bool, r *http.Request, scope string, item proto.Message) (*pb.IcConfig, *pb.IcSecrets, *ga4gh.Identity, int, error) {
 	if item != nil {
 		if err := jsonpb.Unmarshal(r.Body, item); err != nil && err != io.EOF {
-			return nil, nil, http.StatusBadRequest, err
+			return nil, nil, nil, http.StatusBadRequest, err
 		}
 	}
 	cfg, err := s.loadConfig(tx, getRealm(r))
 	if err != nil {
-		return nil, nil, http.StatusServiceUnavailable, err
+		return nil, nil, nil, http.StatusServiceUnavailable, err
 	}
-	id, status, err := s.getIdentity(r, scope, cfg, tx)
+	secrets, err := s.loadSecrets(tx)
 	if err != nil {
-		return nil, nil, status, err
+		return nil, nil, nil, http.StatusServiceUnavailable, err
+	}
+	id, status, err := s.getIdentity(r, scope, getRealm(r), cfg, secrets, tx)
+	if err != nil {
+		return nil, nil, nil, status, err
 	}
 	// TODO: use only isAdmin by upgrading each handler to set this flag.
 	path := common.RequestAbstractPath(r)
 	if strings.HasPrefix(path, configPathPrefix) || isAdmin {
 		if status, err := s.permissions.CheckAdmin(id); err != nil {
-			return nil, nil, status, err
+			return nil, nil, nil, status, err
 		}
 	}
 	if path == realmPath {
 		if status, err := s.permissions.CheckAdmin(id); err != nil {
-			return nil, nil, status, err
+			return nil, nil, nil, status, err
 		}
 	}
-	return cfg, id, status, err
+	return cfg, secrets, id, status, err
 }
 
-func (s *Service) getIdentity(r *http.Request, scope string, cfg *pb.IcConfig, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	// TODO: move playground persona processing to a plug-in of some sort.
-	if pname := common.GetParam(r, "persona"); len(pname) > 0 {
-		personas, err := s.module.LoadPersonas(getRealm(r))
-		if err != nil {
-			return nil, http.StatusServiceUnavailable, err
-		}
-		p, ok := personas[pname]
-		if !ok || p == nil {
-			return nil, http.StatusUnauthorized, fmt.Errorf("test persona not found")
-		}
-		id, err := playground.PersonaToIdentity(pname, p, scope)
-		if err != nil {
-			return nil, http.StatusUnauthorized, err
-		}
-		email := id.Email
-		if len(email) == 0 {
-			email = id.Subject
-		}
-		return id, http.StatusOK, nil
-	}
-
+func (s *Service) getIdentity(r *http.Request, scope, realm string, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
 	tok, status, err := getAuthCode(r)
 	if err != nil {
 		return nil, status, err
 	}
-	return s.tokenToIdentity(tok, r, scope, cfg, tx)
+	return s.tokenToIdentity(tok, r, scope, realm, cfg, secrets, tx)
+}
+
+func (s *Service) tokenRealm(r *http.Request) (string, int, error) {
+	tok, status, err := getAuthCode(r)
+	if err != nil {
+		return "", status, err
+	}
+	id, err := common.ConvertTokenToIdentityUnsafe(tok)
+	if err != nil {
+		return "", http.StatusUnauthorized, fmt.Errorf("inspecting token: %v", err)
+	}
+	realm := id.Realm
+	if len(realm) == 0 {
+		return storage.DefaultRealm, http.StatusOK, nil
+	}
+	return realm, http.StatusOK, nil
 }
 
 func defaultPermissionTTL(cfg *pb.IcConfig) time.Duration {
@@ -2782,73 +2895,54 @@ func getAuthCode(r *http.Request) (string, int, error) {
 	return tok, http.StatusOK, nil
 }
 
-func (s *Service) parseToken(tok string, tx storage.Tx, out interface{}) (int, error) {
-	parsed, err := josejwt.ParseSigned(tok)
+func (s *Service) authCodeToIdentity(code string, r *http.Request, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
+	id, err := common.ConvertTokenToIdentityUnsafe(code)
 	if err != nil {
-		return http.StatusUnauthorized, err
+		return nil, http.StatusUnauthorized, fmt.Errorf("inspecting token: %v", err)
 	}
-	pub, err := s.getIssuerPublicKey(s.getIssuerString(), tx)
-	if err != nil {
-		return http.StatusUnauthorized, err
-	}
-	if err := parsed.Claims(pub, out); err != nil {
-		return http.StatusUnauthorized, fmt.Errorf("cannot inspect auth code contents: %v", err)
-	}
-	return http.StatusOK, nil
-}
-
-func (s *Service) authCodeToIdentity(code string, r *http.Request, cfg *pb.IcConfig, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	var token authToken
-	if status, err := s.parseToken(code, tx, &token); err != nil {
-		return nil, status, err
-	}
-	if err := token.Valid(); err != nil {
+	if err := id.Valid(); err != nil {
 		return nil, http.StatusUnauthorized, err
 	}
 	realm := getRealm(r)
 	var tokenMetadata pb.TokenMetadata
-	if err := s.store.ReadTx(storage.AuthCodeDatatype, realm, storage.DefaultUser, token.ID, storage.LatestRev, &tokenMetadata, tx); err != nil {
+	if err := s.store.ReadTx(storage.AuthCodeDatatype, realm, storage.DefaultUser, id.ID, storage.LatestRev, &tokenMetadata, tx); err != nil {
 		if storage.ErrNotFound(err) {
 			return nil, http.StatusUnauthorized, fmt.Errorf("auth code invalid or has already been exchanged")
 		}
 		return nil, http.StatusServiceUnavailable, fmt.Errorf("reading auth code metadata from storage: %v", err)
 	}
-	if err := s.store.DeleteTx(storage.AuthCodeDatatype, realm, storage.DefaultUser, token.ID, storage.LatestRev, tx); err != nil {
+	if err := s.store.DeleteTx(storage.AuthCodeDatatype, realm, storage.DefaultUser, id.ID, storage.LatestRev, tx); err != nil {
 		return nil, http.StatusServiceUnavailable, fmt.Errorf("removing auth code metadata from storage: %v", err)
 	}
 
-	id := &ga4gh.Identity{
-		ID:               token.ID,
-		Expiry:           token.Expiry,
-		Subject:          tokenMetadata.Subject,
-		Scope:            tokenMetadata.Scope,
-		IdentityProvider: tokenMetadata.IdentityProvider,
-		Nonce:            tokenMetadata.Nonce,
-	}
-	return s.getTokenAccountIdentity(id, realm, cfg, tx)
+	id.Subject = tokenMetadata.Subject
+	id.Scope = tokenMetadata.Scope
+	id.IdentityProvider = tokenMetadata.IdentityProvider
+	id.Nonce = tokenMetadata.Nonce
+	return s.getTokenAccountIdentity(r.Context(), id, realm, cfg, secrets, tx)
 }
 
-func (s *Service) getTokenIdentity(tok, scope, clientID string, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	var token ga4gh.Identity
-	status, err := s.parseToken(tok, tx, &token)
+func (s *Service) getTokenIdentity(tok, scope, clientID string, anyAudience bool, tx storage.Tx) (*ga4gh.Identity, int, error) {
+	id, err := common.ConvertTokenToIdentityUnsafe(tok)
 	if err != nil {
-		return nil, status, err
+		return nil, http.StatusUnauthorized, fmt.Errorf("inspecting token: %v", err)
 	}
+
 	// TODO: add more checks here as appropriate.
 	iss := s.getIssuerString()
-	if err = token.Valid(); err != nil {
+	if err = id.Valid(); err != nil {
 		return nil, http.StatusUnauthorized, err
-	} else if token.Issuer != iss {
-		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized for issuer %q", token.Issuer)
-	} else if len(scope) > 0 && !hasScopes(scope, token.Scope, matchFullScope) {
+	} else if id.Issuer != iss {
+		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized for issuer %q", id.Issuer)
+	} else if len(scope) > 0 && !hasScopes(scope, id.Scope, matchFullScope) {
 		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized for scope %q", scope)
-	} else if !common.IsAudience(&token, clientID, iss) {
+	} else if !anyAudience && !common.IsAudience(id, clientID, iss) {
 		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized party")
 	}
-	return &token, http.StatusOK, nil
+	return id, http.StatusOK, nil
 }
 
-func (s *Service) getTokenAccountIdentity(token *ga4gh.Identity, realm string, cfg *pb.IcConfig, tx storage.Tx) (*ga4gh.Identity, int, error) {
+func (s *Service) getTokenAccountIdentity(ctx context.Context, token *ga4gh.Identity, realm string, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
 	acct, status, err := s.loadAccount(token.Subject, realm, tx)
 	if err != nil {
 		if status == http.StatusNotFound {
@@ -2856,7 +2950,11 @@ func (s *Service) getTokenAccountIdentity(token *ga4gh.Identity, realm string, c
 		}
 		return nil, http.StatusServiceUnavailable, err
 	}
-	id := s.accountToIdentity(acct, cfg)
+	id, err := s.accountToIdentity(ctx, acct, cfg, secrets)
+	if err != nil {
+		return nil, http.StatusServiceUnavailable, err
+	}
+
 	id.ID = token.ID
 	id.Scope = token.Scope
 	id.Expiry = token.Expiry
@@ -2865,16 +2963,16 @@ func (s *Service) getTokenAccountIdentity(token *ga4gh.Identity, realm string, c
 	return id, http.StatusOK, nil
 }
 
-func (s *Service) tokenToIdentity(tok string, r *http.Request, scope string, cfg *pb.IcConfig, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	token, status, err := s.getTokenIdentity(tok, scope, getClientID(r), tx)
+func (s *Service) tokenToIdentity(tok string, r *http.Request, scope, realm string, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
+	token, status, err := s.getTokenIdentity(tok, scope, getClientID(r), isUserInfo(r), tx)
 	if err != nil {
 		return token, status, err
 	}
-	return s.getTokenAccountIdentity(token, getRealm(r), cfg, tx)
+	return s.getTokenAccountIdentity(r.Context(), token, realm, cfg, secrets, tx)
 }
 
-func (s *Service) refreshTokenToIdentity(tok string, r *http.Request, cfg *pb.IcConfig, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	id, status, err := s.getTokenIdentity(tok, "", getClientID(r), tx)
+func (s *Service) refreshTokenToIdentity(tok string, r *http.Request, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
+	id, status, err := s.getTokenIdentity(tok, "", getClientID(r), isUserInfo(r), tx)
 	if err != nil {
 		return nil, status, fmt.Errorf("inspecting token: %v", err)
 	}
@@ -2885,15 +2983,15 @@ func (s *Service) refreshTokenToIdentity(tok string, r *http.Request, cfg *pb.Ic
 		}
 		return nil, http.StatusServiceUnavailable, err
 	}
-	return s.getTokenAccountIdentity(id, getRealm(r), cfg, tx)
+	return s.getTokenAccountIdentity(r.Context(), id, getRealm(r), cfg, secrets, tx)
 }
 
-func (s *Service) accountToIdentity(acct *pb.Account, cfg *pb.IcConfig) *ga4gh.Identity {
+func (s *Service) accountToIdentity(ctx context.Context, acct *pb.Account, cfg *pb.IcConfig, secrets *pb.IcSecrets) (*ga4gh.Identity, error) {
 	email := acct.Properties.Subject + "@" + s.accountDomain
 	id := &ga4gh.Identity{
 		Subject: acct.Properties.Subject,
 		Issuer:  s.getIssuerString(),
-		GA4GH:   make(map[string][]ga4gh.Claim),
+		GA4GH:   make(map[string][]ga4gh.OldClaim),
 		Email:   email,
 	}
 	if acct.Profile != nil {
@@ -2911,58 +3009,134 @@ func (s *Service) accountToIdentity(acct *pb.Account, cfg *pb.IcConfig) *ga4gh.I
 	identities := make(map[string][]string)
 	for _, link := range acct.ConnectedAccounts {
 		subject := link.Properties.Subject
-		tags := s.permissions.IncludeTags(subject, link.Tags, cfg.AccountTags)
-		if len(tags) > 0 {
-			identities[subject] = tags
+		email := link.Properties.Email
+		if len(email) == 0 {
+			email = subject
 		}
+		tags := s.permissions.IncludeTags(subject, email, link.Tags, cfg.AccountTags)
+		if len(tags) == 0 {
+			tags = []string{"IC"}
+		}
+		identities[email] = tags
 		// TODO: consider skipping claims if idp=cfg.IdProvider[link.Provider] is missing (not <persona>) or idp.State != "ACTIVE".
-		populateLinkClaims(id, link, ttl)
+		if err := s.populateLinkClaims(ctx, id, link, ttl, cfg, secrets); err != nil {
+			return nil, err
+		}
 	}
 	if len(identities) > 0 {
 		id.Identities = identities
 	}
-	return id
+	return id, nil
 }
 
-func (s *Service) loginTokenToIdentity(tok string, idp *pb.IdentityProvider, r *http.Request, cfg *pb.IcConfig, secrets *pb.IcSecrets) (*ga4gh.Identity, int, error) {
-	t, err := s.getIssuerTranslator(s.ctx, idp.Issuer, cfg, secrets)
+func (s *Service) loginTokenToIdentity(acTok string, idp *pb.IdentityProvider, r *http.Request, cfg *pb.IcConfig, secrets *pb.IcSecrets) (*ga4gh.Identity, int, error) {
+	id, err := common.ConvertTokenToIdentityUnsafe(acTok)
+	if err != nil {
+		return nil, http.StatusUnauthorized, fmt.Errorf("inspecting token: %v", err)
+	}
+
+	iss := id.Issuer
+	t, err := s.getIssuerTranslator(s.ctx, iss, cfg, secrets)
 	if err != nil {
 		return nil, http.StatusUnauthorized, err
 	}
 
-	id, err := t.TranslateToken(s.ctx, tok)
+	id, err = t.TranslateToken(s.ctx, acTok)
 	if err != nil {
-		return nil, http.StatusUnauthorized, fmt.Errorf("translating token from issuer %q: %v", idp.Issuer, err)
+		return nil, http.StatusUnauthorized, fmt.Errorf("translating token from issuer %q: %v", iss, err)
 	}
-	if common.HasUserinfoClaims(id.UserinfoClaims) {
-		id, err = translator.FetchUserinfoClaims(s.ctx, tok, id, t)
+	if idp.GetUsePassportVisa() || common.HasUserinfoClaims(id) {
+		id, err = translator.FetchUserinfoClaims(s.ctx, acTok, id, t)
 		if err != nil {
-			return nil, http.StatusUnauthorized, fmt.Errorf("fetching user info from issuer %q: %v", idp.Issuer, err)
+			return nil, http.StatusUnauthorized, fmt.Errorf("fetching user info from issuer %q: %v", iss, err)
 		}
 	}
 
-	// TODO: add more checks here as appropriate.
-	if len(id.Email) > 0 {
-		// Use email as subject.
-		id.Subject = id.Email
-	}
 	return id, http.StatusOK, nil
 }
 
-func (s *Service) accountLinkToClaims(acct *pb.Account, subject string, cfg *pb.IcConfig) map[string][]ga4gh.Claim {
+func (s *Service) accountLinkToClaims(ctx context.Context, acct *pb.Account, subject string, cfg *pb.IcConfig, secrets *pb.IcSecrets) (map[string][]ga4gh.OldClaim, error) {
 	id := &ga4gh.Identity{
-		GA4GH: make(map[string][]ga4gh.Claim),
+		GA4GH: make(map[string][]ga4gh.OldClaim),
 	}
 	link, _ := findLinkedAccount(acct, subject)
 	if link == nil {
-		return id.GA4GH
+		return id.GA4GH, nil
 	}
 	ttl := getDurationOption(cfg.Options.ClaimTtlCap, descClaimTtlCap)
-	populateLinkClaims(id, link, ttl)
-	return id.GA4GH
+	if err := s.populateLinkClaims(ctx, id, link, ttl, cfg, secrets); err != nil {
+		return nil, err
+	}
+
+	return id.GA4GH, nil
 }
 
-func populateLinkClaims(id *ga4gh.Identity, link *pb.ConnectedAccount, ttl time.Duration) {
+func linkedIdentityValue(sub, iss string) string {
+	sub = url.QueryEscape(sub)
+	iss = url.QueryEscape(iss)
+	return fmt.Sprintf("%s,%s", sub, iss)
+}
+
+func (s *Service) addLinkedIdentities(id *ga4gh.Identity, link *pb.ConnectedAccount, privateKey *rsa.PrivateKey, cfg *pb.IcConfig) error {
+	if len(id.Subject) == 0 {
+		return nil
+	}
+
+	subjectIssuers := map[string]bool{}
+	now := time.Now().Unix()
+
+	// TODO: add config option for LinkedIdentities expiry.
+	exp := id.Expiry
+
+	idp, ok := cfg.IdentityProviders[link.Provider]
+	if !ok {
+		// admin has removed the IdP (temp or permanent) but the linked identity is still maintained, so ignore it.
+		return nil
+	}
+
+	iss := idp.Issuer
+
+	// Add ConnectedAccount identity to linked identities.
+	if len(link.Properties.Subject) != 0 {
+		subjectIssuers[linkedIdentityValue(link.Properties.Subject, iss)] = true
+	}
+
+	// Add email to linked identities.
+	if len(link.Properties.Email) != 0 {
+		subjectIssuers[linkedIdentityValue(link.Properties.Email, iss)] = true
+	}
+
+	var linked []string
+	for k := range subjectIssuers {
+		linked = append(linked, k)
+	}
+
+	d := &ga4gh.VisaData{
+		StdClaims: ga4gh.StdClaims{
+			Subject:   id.Subject,
+			Issuer:    s.getIssuerString(),
+			IssuedAt:  now,
+			ExpiresAt: exp,
+		},
+		Scope: "openid",
+		Assertion: ga4gh.Assertion{
+			Type:     ga4gh.LinkedIdentities,
+			Asserted: int64(link.Refreshed),
+			Value:    ga4gh.Value(strings.Join(linked, ";")),
+			Source:   ga4gh.Source(s.getIssuerString()),
+		},
+	}
+
+	v, err := ga4gh.NewVisaFromData(d, ga4gh.RS256, privateKey, keyID)
+	if err != nil {
+		return fmt.Errorf("ga4gh.NewVisaFromData(_) failed: %v", err)
+	}
+
+	id.VisaJWTs = append(id.VisaJWTs, string(v.JWT()))
+	return nil
+}
+
+func (s *Service) populateLinkClaims(ctx context.Context, id *ga4gh.Identity, link *pb.ConnectedAccount, ttl time.Duration, cfg *pb.IcConfig, secrets *pb.IcSecrets) error {
 	for cname, cl := range link.Claims {
 		if cl == nil || cl.List == nil {
 			continue
@@ -2971,13 +3145,31 @@ func populateLinkClaims(id *ga4gh.Identity, link *pb.ConnectedAccount, ttl time.
 			populateIdentityClaim(id, cname, claim, ttl)
 		}
 	}
+
+	jwts, err := s.decryptEmbeddedTokens(ctx, link.EcryptedTokens)
+	if err != nil {
+		return err
+	}
+
+	priv, err := s.privateKeyFromSecrets(s.getIssuerString(), secrets)
+	if err != nil {
+		return err
+	}
+
+	id.VisaJWTs = jwts
+
+	if err = s.addLinkedIdentities(id, link, priv, cfg); err != nil {
+		return fmt.Errorf("add linked identities to visas failed: %v", err)
+	}
+
+	return nil
 }
 
 func populateIdentityClaim(id *ga4gh.Identity, cname string, claim *pb.AccountClaim, ttl time.Duration) {
 	if _, ok := id.GA4GH[cname]; !ok {
-		id.GA4GH[cname] = make([]ga4gh.Claim, 0)
+		id.GA4GH[cname] = make([]ga4gh.OldClaim, 0)
 	}
-	c := ga4gh.Claim{
+	c := ga4gh.OldClaim{
 		Value:    claim.Value,
 		Source:   claim.Source,
 		Asserted: claim.Asserted,
@@ -2985,9 +3177,9 @@ func populateIdentityClaim(id *ga4gh.Identity, cname string, claim *pb.AccountCl
 		By:       claim.By,
 	}
 	if claim.Condition != nil {
-		c.Condition = make(map[string]ga4gh.ClaimCondition)
+		c.Condition = make(map[string]ga4gh.OldClaimCondition)
 		for k, v := range claim.Condition {
-			c.Condition[k] = ga4gh.ClaimCondition{
+			c.Condition[k] = ga4gh.OldClaimCondition{
 				Value:  v.Value,
 				Source: v.Source,
 				By:     v.By,
@@ -3012,7 +3204,7 @@ func populateIdentityClaim(id *ga4gh.Identity, cname string, claim *pb.AccountCl
 	id.GA4GH[cname] = append(id.GA4GH[cname], c)
 }
 
-func findSimilarClaim(claims []ga4gh.Claim, match *ga4gh.Claim) *ga4gh.Claim {
+func findSimilarClaim(claims []ga4gh.OldClaim, match *ga4gh.OldClaim) *ga4gh.OldClaim {
 	for _, c := range claims {
 		if c.Value == match.Value && c.Source == match.Source && c.By == match.By && conditionEqual(c.Condition, match.Condition) {
 			return &c
@@ -3021,7 +3213,7 @@ func findSimilarClaim(claims []ga4gh.Claim, match *ga4gh.Claim) *ga4gh.Claim {
 	return nil
 }
 
-func conditionEqual(a, b map[string]ga4gh.ClaimCondition) bool {
+func conditionEqual(a, b map[string]ga4gh.OldClaimCondition) bool {
 	if a == nil && b == nil {
 		return true
 	}
@@ -3081,29 +3273,11 @@ func hasScopes(want, got string, matchPrefix bool) bool {
 	return true
 }
 
-func shorten(identity *ga4gh.Identity) error {
-	bytes, err := json.Marshal(identity)
-	if err != nil {
-		return err
-	}
-
-	if len(string(bytes)) < maxClaimsLength {
-		return nil
-	}
-
-	for claim := range identity.GA4GH {
-		identity.UserinfoClaims = append(identity.UserinfoClaims, ga4ghClaimNamePrefix+claim)
-	}
-
-	identity.GA4GH = nil
-	return nil
-}
-
 func scopedIdentity(identity *ga4gh.Identity, scope, iss, subject, nonce string, iat, nbf, exp int64, aud []string, azp string) *ga4gh.Identity {
 	claims := &ga4gh.Identity{
 		Issuer:           iss,
 		Subject:          subject,
-		Audiences:        ga4gh.Audiences{Audiences: aud},
+		Audiences:        ga4gh.Audiences(aud),
 		IssuedAt:         iat,
 		NotBefore:        nbf,
 		ID:               common.GenerateGUID(),
@@ -3111,12 +3285,11 @@ func scopedIdentity(identity *ga4gh.Identity, scope, iss, subject, nonce string,
 		Expiry:           exp,
 		Scope:            scope,
 		IdentityProvider: identity.IdentityProvider,
-		UserinfoClaims:   []string{},
 		Nonce:            nonce,
 	}
 	if !hasScopes("refresh", scope, matchFullScope) {
 		// TODO: remove this extra "ga4gh" check once DDAP is compatible.
-		if hasScopes("identities", scope, matchFullScope) || hasScopes("ga4gh", scope, matchFullScope) {
+		if hasScopes("identities", scope, matchFullScope) || hasScopes(passportScope, scope, matchFullScope) || hasScopes(ga4ghScope, scope, matchFullScope) {
 			claims.Identities = identity.Identities
 		}
 		if hasScopes("profile", scope, matchFullScope) {
@@ -3128,9 +3301,6 @@ func scopedIdentity(identity *ga4gh.Identity, scope, iss, subject, nonce string,
 			claims.Locale = identity.Locale
 			claims.Email = identity.Email
 			claims.Picture = identity.Picture
-		}
-		if hasScopes("ga4gh", scope, matchFullScope) {
-			claims.GA4GH = identity.GA4GH
 		}
 	}
 
@@ -3207,13 +3377,7 @@ func (s *Service) createToken(identity *ga4gh.Identity, scope, aud, azp, realm, 
 	}
 
 	claims := scopedIdentity(identity, scope, iss, subject, nonce, now.Unix(), now.Add(-1*time.Minute).Unix(), exp.Unix(), audiences, azp)
-
-	if hasScopes("ga4gh", scope, matchFullScope) {
-		err = shorten(claims)
-		if err != nil {
-			return "", err
-		}
-	}
+	claims.Realm = realm
 
 	jot := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	// TODO: should set key id properly and sync with JWKS.
@@ -3323,7 +3487,7 @@ func matchRedirect(client *pb.Client, redirect string) bool {
 	return false
 }
 
-func newAccountWithLink(linkID *ga4gh.Identity, provider string, cfg *pb.IcConfig) *pb.Account {
+func (s *Service) newAccountWithLink(ctx context.Context, linkID *ga4gh.Identity, provider string, cfg *pb.IcConfig) (*pb.Account, error) {
 	now := common.GetNowInUnixNano()
 	genlen := getIntOption(cfg.Options.AccountNameLength, descAccountNameLength)
 	accountPrefix := "ic_"
@@ -3338,21 +3502,56 @@ func newAccountWithLink(linkID *ga4gh.Identity, provider string, cfg *pb.IcConfi
 		State:             "ACTIVE",
 		Ui:                make(map[string]string),
 	}
-	populateAccountClaims(acct, linkID, provider)
-	return acct
+	err := s.populateAccountClaims(ctx, acct, linkID, provider)
+	if err != nil {
+		return nil, err
+	}
+	return acct, nil
 }
 
-func populateAccountClaims(acct *pb.Account, id *ga4gh.Identity, provider string) {
+func (s *Service) encryptEmbeddedTokens(ctx context.Context, tokens []string) ([][]byte, error) {
+	var res [][]byte
+	for _, tok := range tokens {
+		encrypted, err := s.encryption.Encrypt(ctx, []byte(tok), "")
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, encrypted)
+	}
+
+	return res, nil
+}
+
+func (s *Service) decryptEmbeddedTokens(ctx context.Context, tokens [][]byte) ([]string, error) {
+	var res []string
+	for _, t := range tokens {
+		tok, err := s.encryption.Decrypt(ctx, t, "")
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, string(tok))
+	}
+
+	return res, nil
+}
+
+func (s *Service) populateAccountClaims(ctx context.Context, acct *pb.Account, id *ga4gh.Identity, provider string) error {
 	link, _ := findLinkedAccount(acct, id.Subject)
 	now := common.GetNowInUnixNano()
 	if link == nil {
+		tokens, err := s.encryptEmbeddedTokens(ctx, id.VisaJWTs)
+		if err != nil {
+			return err
+		}
+
 		link = &pb.ConnectedAccount{
-			Profile:      setupAccountProfile(id),
-			Properties:   setupAccountProperties(id, id.Subject, now, now),
-			Provider:     provider,
-			Refreshed:    now,
-			Revision:     1,
-			LinkRevision: 1,
+			Profile:        setupAccountProfile(id),
+			Properties:     setupAccountProperties(id, id.Subject, now, now),
+			Provider:       provider,
+			Refreshed:      now,
+			Revision:       1,
+			LinkRevision:   1,
+			EcryptedTokens: tokens,
 		}
 		acct.ConnectedAccounts = append(acct.ConnectedAccounts, link)
 	} else {
@@ -3378,9 +3577,11 @@ func populateAccountClaims(acct *pb.Account, id *ga4gh.Identity, provider string
 			List: cl,
 		}
 	}
+
+	return nil
 }
 
-func accountClaimCondition(cond map[string]ga4gh.ClaimCondition) map[string]*pb.AccountClaim_Condition {
+func accountClaimCondition(cond map[string]ga4gh.OldClaimCondition) map[string]*pb.AccountClaim_Condition {
 	if cond == nil {
 		return nil
 	}
@@ -3419,7 +3620,7 @@ func setupAccountProperties(id *ga4gh.Identity, subject string, created, modifie
 	}
 }
 
-func claimsAreEqual(a, b map[string][]ga4gh.Claim) bool {
+func claimsAreEqual(a, b map[string][]ga4gh.OldClaim) bool {
 	if len(a) != len(b) {
 		return false
 	}
@@ -3516,7 +3717,15 @@ func (s *Service) createIssuerTranslator(ctx context.Context, cfgIdp *pb.Identit
 	if ok {
 		publicKey = k.PublicKey
 	}
-	return translator.CreateTranslator(ctx, iss, cfgIdp.TranslateUsing, cfgIdp.ClientId, publicKey)
+
+	selfIssuer := s.getIssuerString()
+	signingPrivateKey := ""
+	k, ok = secrets.TokenKeys[selfIssuer]
+	if ok {
+		signingPrivateKey = k.PrivateKey
+	}
+
+	return translator.CreateTranslator(ctx, iss, cfgIdp.TranslateUsing, cfgIdp.ClientId, publicKey, selfIssuer, signingPrivateKey)
 }
 
 func (s *Service) checkConfigIntegrity(cfg *pb.IcConfig) error {
@@ -3779,19 +3988,6 @@ func configRevision(mod *pb.ConfigModification, cfg *pb.IcConfig) error {
 
 //////////////////////////////////////////////////////////////////
 
-func sendHTML(html string, w http.ResponseWriter) {
-	common.AddCorsHeaders(w)
-	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte(html))
-}
-
-func sendRedirect(url string, r *http.Request, w http.ResponseWriter) {
-	common.AddCorsHeaders(w)
-	url = strings.Replace(url, "%2526", "&", -1)
-	url = strings.Replace(url, "%253F", "?", -1)
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
-}
-
 func (s *Service) loadConfig(tx storage.Tx, realm string) (*pb.IcConfig, error) {
 	cfg := &pb.IcConfig{}
 	_, err := s.realmReadTx(storage.ConfigDatatype, realm, storage.DefaultUser, storage.DefaultID, storage.LatestRev, cfg, tx)
@@ -3856,6 +4052,19 @@ func (s *Service) getIssuerPrivateKey(iss string, tx storage.Tx) (*rsa.PrivateKe
 	k, err := s.getIssuerKeys(iss, tx)
 	if err != nil {
 		return nil, fmt.Errorf("fetching private key for issuer %q: %v", iss, err)
+	}
+	block, _ := pem.Decode([]byte(k.PrivateKey))
+	priv, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parsing private key for issuer %q: %v", iss, err)
+	}
+	return priv, nil
+}
+
+func (s *Service) privateKeyFromSecrets(iss string, secrets *pb.IcSecrets) (*rsa.PrivateKey, error) {
+	k, ok := secrets.TokenKeys[iss]
+	if !ok {
+		return nil, fmt.Errorf("token keys not found for passport issuer %q", iss)
 	}
 	block, _ := pem.Decode([]byte(k.PrivateKey))
 	priv, err := x509.ParsePKCS1PrivateKey(block.Bytes)
@@ -3969,18 +4178,11 @@ type damArgs struct {
 	persona      string
 }
 
-func loadFile(filename string) (string, error) {
-	bytes, err := ioutil.ReadFile(filepath.Join(storage.ProjectRoot, filename))
-	if err != nil {
-		return "", err
-	}
-	return string(bytes), nil
-}
-
-func (s *Service) importFiles() error {
-	// TODO: FIXME do not check in this destructive code.
-	if imp := os.Getenv("IMPORT"); imp == "AUTO_RESET" {
-		wipe := false
+// ImportFiles ingests bootstrap configuration files to the IC's storage sytem.
+func (s *Service) ImportFiles(importType string) error {
+	wipe := false
+	switch importType {
+	case "AUTO_RESET":
 		cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 		if err != nil {
 			if !storage.ErrNotFound(err) {
@@ -3989,11 +4191,13 @@ func (s *Service) importFiles() error {
 		} else if err := s.checkConfigIntegrity(cfg); err != nil {
 			wipe = true
 		}
-		if wipe {
-			log.Printf("prepare for IC config import: wipe data store for all realms")
-			if err = s.store.Wipe(storage.WipeAllRealms); err != nil {
-				return err
-			}
+	case "FORCE_WIPE":
+		wipe = true
+	}
+	if wipe {
+		glog.Infof("prepare for IC config import: wipe data store for all realms")
+		if err := s.store.Wipe(storage.WipeAllRealms); err != nil {
+			return err
 		}
 	}
 
@@ -4011,7 +4215,7 @@ func (s *Service) importFiles() error {
 		return nil
 	}
 
-	log.Printf("import IC config into data store")
+	glog.Infof("import IC config into data store")
 	history := &dampb.HistoryEntry{
 		Revision:   1,
 		User:       "admin",
@@ -4081,7 +4285,7 @@ func (s *Service) OidcWellKnownConfig(w http.ResponseWriter, r *http.Request) {
 func (s *Service) OidcKeys(w http.ResponseWriter, r *http.Request) {
 	pub, err := s.getIssuerPublicKey(s.getIssuerString(), nil)
 	if err != nil {
-		log.Printf("getIssuerPublicKey %q failed: %q", s.getIssuerString(), err)
+		glog.Infof("getIssuerPublicKey %q failed: %q", s.getIssuerString(), err)
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}
@@ -4099,7 +4303,7 @@ func (s *Service) OidcKeys(w http.ResponseWriter, r *http.Request) {
 
 	data, err := json.Marshal(jwks)
 	if err != nil {
-		log.Printf("Marshal failed: %q", err)
+		glog.Infof("Marshal failed: %q", err)
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}
@@ -4118,24 +4322,40 @@ func (s *Service) OidcUserInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Finish()
 
-	cfg, err := s.loadConfig(tx, getRealm(r))
+	realm, status, err := s.tokenRealm(r)
+	if err != nil {
+		common.HandleError(status, err, w)
+	}
+
+	cfg, err := s.loadConfig(tx, realm)
 	if err != nil {
 		common.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 
-	id, status, err := s.getIdentity(r, "", cfg, tx)
+	secrets, err := s.loadSecrets(tx)
+	if err != nil {
+		common.HandleError(http.StatusServiceUnavailable, err, w)
+		return
+	}
+
+	id, status, err := s.getIdentity(r, "", realm, cfg, secrets, tx)
 	if err != nil {
 		common.HandleError(status, err, w)
 		return
 	}
 
-	// scope down identity information based on the token scope.
-	id = scopedIdentity(id, id.Scope, id.Issuer, id.Subject, noNonce, id.IssuedAt, id.NotBefore, id.Expiry, nil, "")
+	// TODO: should also check the client id of access token is same as request client id.
 
-	data, err := json.Marshal(id)
+	// scope down identity information based on the token scope.
+	claims := scopedIdentity(id, id.Scope, id.Issuer, id.Subject, noNonce, id.IssuedAt, id.NotBefore, id.Expiry, nil, "")
+	if hasScopes(passportScope, id.Scope, matchFullScope) || hasScopes(ga4ghScope, id.Scope, matchFullScope) {
+		claims.VisaJWTs = id.VisaJWTs
+	}
+
+	data, err := json.Marshal(claims)
 	if err != nil {
-		log.Printf("cannot encode user identity into JSON: %v", err)
+		glog.Infof("cannot encode user identity into JSON: %v", err)
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}

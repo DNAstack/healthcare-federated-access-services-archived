@@ -27,13 +27,13 @@ import (
 )
 
 const (
-	requestTTLInNanoFloat64 = ga4gh.ContextKey("requested_ttl")
+	requestTTLInNanoFloat64 = "requested_ttl"
 )
 
 // valueType is the set of types which are treated like claims that have a
 // value and source as sociated with them.
 var valueType = map[reflect.Type]bool{
-	reflect.TypeOf([]ga4gh.Claim{}): true,
+	reflect.TypeOf([]ga4gh.OldClaim{}): true,
 }
 
 // ClaimValidator is a ga4gh.Validator that compares GA4GH claims.

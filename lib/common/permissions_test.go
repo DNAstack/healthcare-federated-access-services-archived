@@ -20,6 +20,7 @@ import (
 
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys"
 
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/models"
 )
@@ -40,6 +41,7 @@ func TestIncludeTags(t *testing.T) {
 	type includeTagsTest struct {
 		testName    string
 		subject     string
+		email       string
 		tags        []string
 		tagDefs     []string
 		expectation []string
@@ -49,6 +51,7 @@ func TestIncludeTags(t *testing.T) {
 		{
 			testName:    "tags in permission settings",
 			subject:     "admin_and_has_tags",
+			email:       "admin_and_has_tags@example.com",
 			tags:        []string{},
 			tagDefs:     []string{},
 			expectation: []string{"t1", "t2"},
@@ -56,6 +59,7 @@ func TestIncludeTags(t *testing.T) {
 		{
 			testName: "no tags in permission settings, tags in pass in tags and tagDefs",
 			subject:  "no_tags",
+			email:    "no_tags@example.com",
 			tags:     []string{"t3", "t4", "t5"},
 			tagDefs:  []string{"t3", "t4"},
 			// no t5 since t5 not in tagDefs
@@ -64,6 +68,7 @@ func TestIncludeTags(t *testing.T) {
 		{
 			testName: "user not in permission settings",
 			subject:  "not_a_user",
+			email:    "not_a_user@example.com",
 			tags:     []string{"t3", "t4", "t5"},
 			tagDefs:  []string{"t3", "t4"},
 			// no t5 since t5 not in tagDefs
@@ -72,6 +77,7 @@ func TestIncludeTags(t *testing.T) {
 		{
 			testName: "tags in  pass in tags and tagDefs",
 			subject:  "admin_and_has_tags",
+			email:    "admin_and_has_tags@example.com",
 			tags:     []string{"t3", "t4", "t5"},
 			tagDefs:  []string{"t3", "t4"},
 			// no t5 since t5 not in tagDefs
@@ -85,7 +91,7 @@ func TestIncludeTags(t *testing.T) {
 			tagDefs[tagDef] = &pb.AccountTag{}
 		}
 
-		result := perm.IncludeTags(test.subject, test.tags, tagDefs)
+		result := perm.IncludeTags(test.subject, test.email, test.tags, tagDefs)
 		if !reflect.DeepEqual(result, test.expectation) {
 			t.Fatalf("Test case [%q] failed. expected includedTags is %q, actual is %q", test.testName, test.expectation, result)
 		}
@@ -101,36 +107,62 @@ func TestCheckAdmin(t *testing.T) {
 	}
 
 	type adminTest struct {
-		testName      string
-		subject       string
-		identities    []string
-		expectIsAdmin bool
+		testName         string
+		subject          string
+		identities       []string
+		linkedIdentities string
+		expectIsAdmin    bool
 	}
 
 	tests := []adminTest{
 		{
-			testName:      "admin user in subject",
-			subject:       "admin_and_has_tags",
-			identities:    []string{},
-			expectIsAdmin: true,
+			testName:         "admin user in subject",
+			subject:          "admin_and_has_tags@example.com",
+			identities:       []string{},
+			linkedIdentities: "",
+			expectIsAdmin:    true,
 		},
 		{
-			testName:      "admin user in identities",
-			subject:       "no_admin",
-			identities:    []string{"admin_and_has_tags"},
-			expectIsAdmin: true,
+			testName:         "admin user in identities",
+			subject:          "no_admin@example.com",
+			identities:       []string{"admin_and_has_tags@example.com"},
+			linkedIdentities: "",
+			expectIsAdmin:    true,
 		},
 		{
-			testName:      "not admin user",
-			subject:       "no_admin",
-			identities:    []string{},
-			expectIsAdmin: false,
+			testName:         "admin user in linkedIdentities",
+			subject:          "no_admin@example.com",
+			identities:       []string{},
+			linkedIdentities: "admin_and_has_tags@example.com,https://example.com/oidc",
+			expectIsAdmin:    true,
 		},
 		{
-			testName:      "admin expired",
-			subject:       "expire_admin",
-			identities:    []string{},
-			expectIsAdmin: false,
+			testName:         "not admin user",
+			subject:          "no_admin@example.com",
+			identities:       []string{},
+			linkedIdentities: "",
+			expectIsAdmin:    false,
+		},
+		{
+			testName:         "admin expired",
+			subject:          "expire_admin@example.com",
+			identities:       []string{},
+			linkedIdentities: "",
+			expectIsAdmin:    false,
+		},
+		{
+			testName:         "admin expired",
+			subject:          "expire_admin@example.com",
+			identities:       []string{},
+			linkedIdentities: "",
+			expectIsAdmin:    false,
+		},
+		{
+			testName:         "admin expired",
+			subject:          "expire_admin@example.com",
+			identities:       []string{},
+			linkedIdentities: "",
+			expectIsAdmin:    false,
 		},
 	}
 
@@ -139,11 +171,23 @@ func TestCheckAdmin(t *testing.T) {
 		for _, identity := range test.identities {
 			identities[identity] = []string{}
 		}
+		d := &ga4gh.VisaData{
+			Assertion: ga4gh.Assertion{
+				Type:  ga4gh.LinkedIdentities,
+				Value: ga4gh.Value(test.linkedIdentities),
+			},
+		}
+		v, err := ga4gh.NewVisaFromData(d, ga4gh.RS256, testkeys.Keys[testkeys.VisaIssuer0].Private, string(testkeys.VisaIssuer0))
+		if err != nil {
+			t.Errorf("ga4gh.NewVisaFromData failed: %v", err)
+		}
+
 		id := &ga4gh.Identity{
 			Subject:    test.subject,
 			Identities: identities,
+			VisaJWTs:   []string{string(v.JWT())},
 		}
-		_, err := perm.CheckAdmin(id)
+		_, err = perm.CheckAdmin(id)
 		if test.expectIsAdmin != (err == nil) {
 			t.Fatalf("Test case [%q] failed. expected IsAdmin is %v, actual is %v", test.testName, test.expectIsAdmin, err == nil)
 		}

@@ -23,6 +23,10 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona"
+	dampb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
 )
 
 const (
@@ -30,6 +34,8 @@ const (
 	TestClientID = "00000000-0000-0000-0000-000000000000"
 	// TestClientSecret is the client secret for test client.
 	TestClientSecret = "00000000-0000-0000-0000-000000000001"
+	// TestIssuerURL is the URL of the fake OIDC Issuer service.
+	TestIssuerURL = "https://example.org/oidc"
 )
 
 var (
@@ -38,14 +44,15 @@ var (
 
 // HandlerTest holds the test variables for a service handler test.
 type HandlerTest struct {
-	Name    string
-	Method  string
-	Path    string
-	Input   string
-	IsForm  bool
-	Persona string
-	Output  string
-	Status  int
+	Name       string
+	Method     string
+	Path       string
+	Input      string
+	IsForm     bool
+	Persona    string
+	Output     string
+	CmpOptions cmp.Options
+	Status     int
 }
 
 type serviceHandler interface {
@@ -53,18 +60,26 @@ type serviceHandler interface {
 }
 
 // HandlerTests run tests on a service handler.
-func HandlerTests(t *testing.T, h serviceHandler, tests []HandlerTest) {
+func HandlerTests(t *testing.T, h serviceHandler, tests []HandlerTest, issuerURL string, cfg *dampb.DamConfig) {
 	testOutput := make(map[string]string)
 	for _, test := range tests {
 		name := test.Name
 		if len(name) == 0 {
 			name = test.Method + " " + test.Path
 		}
-		persona := "dr_joe_elixir"
+		pname := "dr_joe_elixir"
 		if len(test.Persona) > 0 {
-			persona = test.Persona
+			pname = test.Persona
 		}
-		target := fmt.Sprintf("%s?persona=%s&client_id=%s&client_secret=%s", test.Path, persona, TestClientID, TestClientSecret)
+		var p *dampb.TestPersona
+		if cfg != nil {
+			p = cfg.TestPersonas[pname]
+		}
+		acTok, _, err := persona.PersonaAccessToken(pname, issuerURL, TestClientID, p)
+		if err != nil {
+			t.Fatalf("persona.PersonaAccessToken(%q, %q, _, _) failed: %v", pname, issuerURL, err)
+		}
+		target := fmt.Sprintf("%s?client_id=%s&client_secret=%s", test.Path, TestClientID, TestClientSecret)
 		var Input io.Reader
 		varInput := false
 		InputStr := test.Input
@@ -83,7 +98,7 @@ func HandlerTests(t *testing.T, h serviceHandler, tests []HandlerTest) {
 		if test.IsForm {
 			r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		}
-		r.Header.Set("Authorization", "Bearer abc123")
+		r.Header.Set("Authorization", "Bearer "+string(acTok))
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		Output := w.Body.String()
@@ -103,9 +118,9 @@ func HandlerTests(t *testing.T, h serviceHandler, tests []HandlerTest) {
 				hasError = true
 				t.Errorf("test %q returned unexpected body: got %q want regexp match of %q", name, Output, test.Output)
 			}
-		} else if Output != test.Output {
+		} else if diff := cmp.Diff(test.Output, Output, test.CmpOptions); diff != "" {
 			hasError = true
-			t.Errorf("test %q returned unexpected body: got %q want %q", name, Output, test.Output)
+			t.Errorf("test %q returned mismatching body (-want +got):\n%s", name, diff)
 		}
 		if hasError && varInput {
 			t.Logf("test %q Input value was: %s", name, InputStr)
