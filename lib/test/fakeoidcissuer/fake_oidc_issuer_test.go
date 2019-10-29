@@ -21,7 +21,6 @@ import (
 
 	"github.com/dgrijalva/jwt-go"
 	"github.com/coreos/go-oidc"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"
@@ -70,21 +69,17 @@ func TestServer(t *testing.T) {
 	if !ok {
 		t.Fatalf("test persona %q not found in config", pname)
 	}
-	acTok, sub, err := persona.PersonaAccessToken(pname, issuerURL, aud, p)
+	acTok, sub, err := persona.NewAccessToken(pname, issuerURL, aud, p)
 	if err != nil {
 		t.Fatalf("persona.PersonaAccessToken(%q, %q, _) failed: %v", pname, issuerURL, err)
-	}
-	user := &ga4gh.Identity{
-		Issuer:  issuerURL,
-		Subject: sub,
 	}
 	trans, err := translator.NewOIDCIdentityTranslator(ctx, issuerURL, "")
 	if err != nil {
 		t.Fatalf("translator.NewOIDCIdentityTranslator(ctx, %q, _) failed: %v", issuerURL, err)
 	}
-	id, err := translator.FetchUserinfoClaims(ctx, string(acTok), user, trans)
+	id, err := translator.FetchUserinfoClaims(ctx, string(acTok), issuerURL, sub, trans)
 	if err != nil {
-		t.Fatalf("translator.FetchUserinfoClaims(ctx, tok, user, trans) failed: %v", err)
+		t.Fatalf("translator.FetchUserinfoClaims(ctx, tok, %q, %q, trans) failed: %v", issuerURL, sub, err)
 	}
 	if len(id.VisaJWTs) == 0 {
 		t.Errorf("id.VisaJWTs: wanted more than zero, got none")
