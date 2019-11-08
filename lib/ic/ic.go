@@ -1188,11 +1188,12 @@ func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, cli
 			return
 		}
 		claims, err := s.accountLinkToClaims(r.Context(), acct, id.Subject, cfg, secrets)
+		visas, err := s.accountLinkToVisas(r.Context(), acct, id.Subject, cfg, secrets)
 		if err != nil {
 			common.HandleError(http.StatusServiceUnavailable, err, w)
 			return
 		}
-		if !claimsAreEqual(claims, id.GA4GH) {
+		if !claimsAreEqual(claims, id.GA4GH) || !visasAreEqual(visas, id.VisaJWTs) {
 			// Refresh the claims in the storage layer.
 			if err := s.populateAccountClaims(r.Context(), acct, id, provider); err != nil {
 				common.HandleError(http.StatusServiceUnavailable, err, w)
@@ -2909,6 +2910,22 @@ func (s *Service) accountLinkToClaims(ctx context.Context, acct *pb.Account, sub
 	return id.GA4GH, nil
 }
 
+func (s *Service) accountLinkToVisas(ctx context.Context, acct *pb.Account, subject string, cfg *pb.IcConfig, secrets *pb.IcSecrets) ([]string, error) {
+	id := &ga4gh.Identity{
+		VisaJWTs: make([]string, 0),
+	}
+	link, _ := findLinkedAccount(acct, subject)
+	if link == nil {
+		return id.VisaJWTs, nil
+	}
+	ttl := getDurationOption(cfg.Options.ClaimTtlCap, descClaimTtlCap)
+	if err := s.populateLinkVisas(ctx, id, link, ttl, cfg, secrets); err != nil {
+		return nil, err
+	}
+
+	return id.VisaJWTs, nil
+}
+
 func linkedIdentityValue(sub, iss string) string {
 	sub = url.QueryEscape(sub)
 	iss = url.QueryEscape(iss)
@@ -3407,6 +3424,26 @@ func claimsAreEqual(a, b map[string][]ga4gh.OldClaim) bool {
 			}
 		}
 	}
+	return true
+}
+
+func visasAreEqual(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	found := make(map[string]int, len(a))
+
+	for i := 0; i < len(a); i++ {
+		found[a[i]] += 1
+		found[b[i]] += 1
+	}
+
+	for _, count := range found {
+		if count != 2 {
+			return false
+		}
+	}
+
 	return true
 }
 
