@@ -92,6 +92,8 @@
                                 <E2E_SCREENSHOT_DIR>/target</E2E_SCREENSHOT_DIR>
                             </environmentVariables>
 
+                            <trimStackTrace>false</trimStackTrace>
+
                         </configuration>
                     </plugin>
                 </plugins>
