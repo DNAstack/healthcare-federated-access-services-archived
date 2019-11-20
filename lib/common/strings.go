@@ -15,7 +15,9 @@
 package common
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"unicode"
 
@@ -94,4 +96,53 @@ func ToTitle(str string) string {
 		l++
 	}
 	return strings.Title(out)
+}
+
+// IsURL returns true if the format of the string appears to be a fully qualified URL
+func IsURL(v string) bool {
+	if len(v) < 7 || !(strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://")) || !(strings.Contains(v, ".") || strings.Contains(v, "localhost")) || len(strings.Split(v, ":")) > 3 || strings.Contains(v, "//http") {
+		return false
+	}
+	if _, err := url.Parse(v); err != nil {
+		return false
+	}
+	return true
+}
+
+// ReplaceVariables replaces all substrings of the form "${var-name}"
+// based on args like {"var-name":"var-value"}.
+func ReplaceVariables(v string, args map[string]string) (string, error) {
+	if idx := strings.Index(v, "${"); idx < 0 {
+		return v, nil
+	}
+	parts := strings.Split(v, "${")
+	out := parts[0]
+	for i := 1; i < len(parts); i++ {
+		p := strings.SplitN(parts[i], "}", 2)
+		if len(p) < 2 {
+			out += parts[i]
+			continue
+		}
+		arg := p[0]
+		val, ok := args[arg]
+		if !ok {
+			return "", fmt.Errorf("variable %q not defined", arg)
+		}
+		out += val + p[1]
+	}
+	return out, nil
+}
+
+// ExtractVariables returns a map of variable names found within an input string.
+func ExtractVariables(v string) (map[string]bool, error) {
+	args := make(map[string]bool)
+	parts := strings.Split(v, "${")
+	for i := 1; i < len(parts); i++ {
+		p := strings.SplitN(parts[i], "}", 2)
+		if len(p) < 2 {
+			return nil, fmt.Errorf("variable mismatched brackets")
+		}
+		args[p[0]] = true
+	}
+	return args, nil
 }

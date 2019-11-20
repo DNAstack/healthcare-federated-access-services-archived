@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package fakehttp
+package httputil
 
 import (
 	"net/http"
@@ -21,11 +21,18 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// WARNING: do not change the mappings in this file.
+
 // 499 is a non-standard code for "Client Closed Request" and is the code
 // mapped to Canceled in C++, so we do that here too for consistency.
 const canceled = 499
 
-var canonical2http = map[codes.Code]int{
+// Notes:
+//  1. FailedPrecondtion: 416 "Requested range not satisfiable" is not used
+//     because it has HTTP-specific semantics that will not always apply.
+//  2. OutOfRange: 416 "Requested range not satisfiable" is not used because it
+//     has HTTP-specific semantics that will not always apply.
+var rpc2http = map[codes.Code]int{
 	codes.OK:                 http.StatusOK,
 	codes.Canceled:           canceled,
 	codes.InvalidArgument:    http.StatusBadRequest,
@@ -45,7 +52,7 @@ var canonical2http = map[codes.Code]int{
 
 // In the mappings above, some Codes are mapped to the same HTTP
 // status. Here, the HTTP status is mapped to the most general codes.Code.
-var http2canonical = map[int]codes.Code{
+var http2rpc = map[int]codes.Code{
 	http.StatusOK:                           codes.OK,
 	http.StatusBadRequest:                   codes.InvalidArgument,
 	http.StatusForbidden:                    codes.PermissionDenied,
@@ -60,9 +67,9 @@ var http2canonical = map[int]codes.Code{
 	http.StatusUnauthorized:                 codes.Unauthenticated,
 }
 
-// ToCode translates an HTTP status into a codes.Code
-func ToCode(code int) codes.Code {
-	if code, ok := http2canonical[code]; ok {
+// RPCCode translates an HTTP status into a codes.Code
+func RPCCode(code int) codes.Code {
+	if code, ok := http2rpc[code]; ok {
 		return code
 	}
 
@@ -77,9 +84,9 @@ func ToCode(code int) codes.Code {
 	return codes.Unknown
 }
 
-// FromCode translates a codes.Code into an HTTP status.
-func FromCode(code codes.Code) int {
-	if code, ok := canonical2http[code]; ok {
+// HTTPStatus translates a codes.Code into an HTTP status.
+func HTTPStatus(code codes.Code) int {
+	if code, ok := rpc2http[code]; ok {
 		return code
 	}
 	return http.StatusInternalServerError
@@ -87,5 +94,5 @@ func FromCode(code codes.Code) int {
 
 // FromError translates a canonical error into an HTTP status.
 func FromError(err error) int {
-	return FromCode(status.Code(err))
+	return HTTPStatus(status.Code(err))
 }

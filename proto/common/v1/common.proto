@@ -19,22 +19,27 @@ package common;
 
 option go_package = "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1";
 
+message Condition {
+  string type = 1;
+  string source = 2;
+  string value = 3;
+  string by = 4;
+}
+
+message ConditionSet {
+  repeated Condition all_of = 1;
+}
+
 message Assertion {
-  message ConditionClause {
-    string type = 1;
-    string source = 2;
-    string value = 3;
-    string by = 4;
-  }
-  message Condition {
-    repeated ConditionClause clauses = 1;
-  }
   string type = 1;
   string source = 2;
   string value = 3;
   string asserted_duration = 4;
   string expires_duration = 5;
-  repeated Condition conditions = 6;
+  // Disjunction of Conjunctions (OR of ANDs).
+  // If at least one of these ConditionSets evaluates to true, then the
+  // conditions on this assertion have been met.
+  repeated ConditionSet any_of_conditions = 6;
   string by = 7;
   int64 asserted = 8;
   int64 exp = 9;
@@ -72,23 +77,28 @@ message AccountTag {
 message LoginState {
   string idp_name = 1;
   string realm = 2;
-  string client_id = 3;
+  string client_id = 3 [deprecated = true];
+  // TODO should also deprecate scope after hydra integration
+  // complete.
   string scope = 4;
-  string redirect = 5;
-  string state = 7;
-  string nonce = 6;
+  string redirect = 5 [deprecated = true];
+  string state = 7 [deprecated = true];
+  string nonce = 6 [deprecated = true];
+  string challenge = 8;
 }
 
 // AuthTokenState records states for create auth token.
 message AuthTokenState {
-  string redirect = 1;
+  string redirect = 1 [deprecated = true];
   string subject = 2;
   string scope = 3;
   string provider = 4;
   string realm = 5;
-  string state = 8;
-  string nonce = 6;
+  string state = 8 [deprecated = true];
+  string nonce = 6 [deprecated = true];
   string login_hint = 7;
+  string consent_challenge = 9;
+  repeated string audience = 10;
 }
 
 message TokenMetadata {

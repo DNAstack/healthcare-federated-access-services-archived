@@ -15,6 +15,7 @@
 package common
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -27,6 +28,7 @@ import (
 	"github.com/golang/protobuf/jsonpb"
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/mux"
+	"google.golang.org/grpc/status"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
 )
 
@@ -72,7 +74,7 @@ type HandlerInterface interface {
 	Put(name string) error
 	Patch(name string) error
 	Remove(name string) error
-	CheckIntegrity() (proto.Message, int, error)
+	CheckIntegrity() *status.Status
 	Save(tx storage.Tx, name string, vars map[string]string, desc, typeName string) error
 }
 
@@ -142,9 +144,9 @@ func MakeHandler(s ServiceInterface, hri *HandlerFactory) http.HandlerFunc {
 				HandleError(http.StatusBadRequest, err, w)
 				return
 			}
-			if results, status, err := hi.CheckIntegrity(); err != nil {
+			if stat := hi.CheckIntegrity(); stat != nil {
 				tx.Rollback()
-				handleIntegrityError(w, results, status, err)
+				handleIntegrityError(stat, w)
 				return
 			}
 			if err := hi.Save(tx, name, vars, desc, typ); err != nil {
@@ -169,9 +171,9 @@ func MakeHandler(s ServiceInterface, hri *HandlerFactory) http.HandlerFunc {
 				HandleError(http.StatusBadRequest, err, w)
 				return
 			}
-			if results, status, err := hi.CheckIntegrity(); err != nil {
+			if stat := hi.CheckIntegrity(); stat != nil {
 				tx.Rollback()
-				handleIntegrityError(w, results, status, err)
+				handleIntegrityError(stat, w)
 				return
 			}
 			if err := hi.Save(tx, name, vars, desc, typ); err != nil {
@@ -184,9 +186,9 @@ func MakeHandler(s ServiceInterface, hri *HandlerFactory) http.HandlerFunc {
 				HandleError(http.StatusBadRequest, err, w)
 				return
 			}
-			if results, status, err := hi.CheckIntegrity(); err != nil {
+			if stat := hi.CheckIntegrity(); stat != nil {
 				tx.Rollback()
-				handleIntegrityError(w, results, status, err)
+				handleIntegrityError(stat, w)
 				return
 			}
 			if err := hi.Save(tx, name, vars, desc, typ); err != nil {
@@ -218,6 +220,14 @@ func GetParamOrDefault(r *http.Request, name, defaultValue string) string {
 	return out
 }
 
+// GetParamList returns a list of URL query parameter values.
+func GetParamList(r *http.Request, name string) []string {
+	if set, ok := r.Form[name]; ok {
+		return set
+	}
+	return nil
+}
+
 func HandleError(num int, err error, w http.ResponseWriter) {
 	AddCorsHeaders(w)
 	w.WriteHeader(num)
@@ -226,13 +236,13 @@ func HandleError(num int, err error, w http.ResponseWriter) {
 	glog.Infof(msg)
 }
 
-func handleIntegrityError(w http.ResponseWriter, results proto.Message, status int, err error) {
+func handleIntegrityError(stat *status.Status, w http.ResponseWriter) {
 	AddCorsHeaders(w)
-	w.WriteHeader(status)
-	if results != nil {
-		SendResponse(results, w)
+	w.WriteHeader(FromCode(stat.Code()))
+	if len(stat.Details()) > 0 {
+		SendStatus(stat, w)
 	} else {
-		msg := fmt.Sprintf("%d request error: %v\n", http.StatusFailedDependency, err)
+		msg := fmt.Sprintf("%d request error: %v\n", http.StatusFailedDependency, stat.Message())
 		w.Write([]byte(msg))
 	}
 }
@@ -255,6 +265,7 @@ func IsJSON(str string) bool {
 	return str == "application/json" || str == "JSON" || str == "json"
 }
 
+// SendResponse puts a proto message in the response.
 func SendResponse(resp proto.Message, w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -262,6 +273,11 @@ func SendResponse(resp proto.Message, w http.ResponseWriter) error {
 	AddCorsHeaders(w)
 	ma := jsonpb.Marshaler{}
 	return ma.Marshal(w, resp)
+}
+
+// SendStatus puts a status.Status message in the response.
+func SendStatus(stat *status.Status, w http.ResponseWriter) error {
+	return SendResponse(stat.Proto(), w)
 }
 
 // SendHTML writes a "text/html" type string to the ResponseWriter.
@@ -289,6 +305,36 @@ func SendRedirect(url string, r *http.Request, w http.ResponseWriter) {
 	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
+// DecodeJSONFromBody decodes json in http request/response body.
+func DecodeJSONFromBody(body io.ReadCloser, o interface{}) error {
+	defer body.Close()
+
+	b, err := ioutil.ReadAll(body)
+	if err != nil {
+		return fmt.Errorf("ioutil.ReadAll failed: %v", err)
+	}
+
+	err = json.Unmarshal(b, o)
+	if err != nil {
+		return fmt.Errorf("json.Unmarshal(%s) failed: %v", string(b), err)
+	}
+	return nil
+}
+
+// EncodeJSONToResponse encode o to json to http response body.
+// No Cors and no-cache header will apply.
+func EncodeJSONToResponse(w http.ResponseWriter, status int, o interface{}) error {
+	b, err := json.Marshal(o)
+	if err != nil {
+		return fmt.Errorf("json.Marshal(%v) failed: %v", o, err)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, err = w.Write(b)
+	return err
+}
+
+// CheckName checks name following the given rule.
 func CheckName(field, name string, rem map[string]*regexp.Regexp) error {
 	if len(name) == 0 {
 		return fmt.Errorf("invalid %s: empty", field)

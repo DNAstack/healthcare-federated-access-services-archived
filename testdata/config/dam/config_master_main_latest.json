@@ -151,40 +151,27 @@
     }
   },
   "policies": {
-    "GRU": {
-      "allow": {
-        "dataUse": "DUO:0000005"
-      },
-      "ui": {
-        "label": "General Research Use",
-        "description": "This primary category consent code indicates that use is allowed for health/medical/biomedical purposes and other biological research, including the study of population origins or ancestry",
-        "infoUrl": "https://www.ebi.ac.uk/ols/ontologies/duo/terms?iri=http%3A%2F%2Fpurl.obolibrary.org%2Fobo%2FDUO_0000005"
-      }
-    },
     "bona_fide": {
-      "allow": {
-        "anyTrue": [
-          {
-            "claim": "BonaFide",
-            "values": ["https://doi.org/10.1038/s41431-018-0219-y"],
-            "from": [
-              "nih_institutes",
-              "eu_universities",
-              "us_universities",
-              "research_companies"
-            ]
-          },
-          {
-            "claim": "AcceptedTermsAndPolicies",
-            "values": ["https://librarycard.broadinstitute.org/v1"],
-            "from": ["the_broad"]
-          }
-        ]
-      },
-      "disallow": {
-        "claim": "nih.Blacklisted",
-        "values": ["true"]
-      },
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "type": "BonaFide",
+              "value": "split_pattern:https://doi.org/10.1038/s41431-018-0219-y;http://www.ga4gh.org/beacon/bonafide/ver1.0",
+              "source": "split_pattern:elixir_institutes;nih_institutes;eu_universities;us_universities;research_companies"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "type": "AcceptedTermsAndPolicies",
+              "value": "const:https://librarycard.broadinstitute.org/v1",
+              "source": "split_pattern:the_broad"
+            }
+          ]
+        }
+      ],
       "ui": {
         "label": "Bona Fide",
         "description": "NIH custom Bona Fide reseacher status that makes use of Registered Access Bona Fide status and/or Library Cards",
@@ -192,10 +179,17 @@
       }
     },
     "ethics": {
-      "allow": {
-        "claim": "AcceptedTermsAndPolicies",
-        "values": ["https://doi.org/10.1038/s41431-018-0219-y"]
-      },
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "type": "AcceptedTermsAndPolicies",
+              "value": "const:https://doi.org/10.1038/s41431-018-0219-y",
+              "by": "split_pattern:self;so"
+            }
+          ]
+        }
+      ],
       "ui": {
         "label": "Researcher Ethics Agreement",
         "description": "Based on Registered Access ethics terms",
@@ -203,71 +197,30 @@
       }
     },
     "dac": {
-      "allow": {
-        "claim": "ControlledAccessGrants",
-        "from": ["nih_institutes"],
-        "values": ["${DATASETS}"]
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "type": "ControlledAccessGrants",
+              "value": "const:https://dac.nih.gov/datasets/${DATASET}",
+              "source": "split_pattern:nih_institutes",
+              "by": "const:dac"
+            }
+          ]
+        }
+      ],
+      "variableDefinitions": {
+        "DATASET": {
+          "regexp": "^phs\\d{6}$",
+          "ui": {
+            "description": "The name of an NIH dataset of the form 'phsXXXXXX'"
+          }
+        }
       },
       "ui": {
         "label": "Data Access Committee Approval",
         "description": "Approval from a DAC for the researcher to access specific datasets",
         "infoUrl": "https://osp.od.nih.gov/scientific-sharing/policy-oversight/"
-      }
-    },
-    "discovery_access": {
-      "allow": {
-        "allTrue": [
-          {
-            "anyTrue": [
-              {
-                "claim": "BonaFide",
-                "values": [
-                  "https://doi.org/10.1038/s41431-018-0219-y",
-                  "https://www.nature.com/articles/s99999-999-9999-z"
-                ],
-                "from": [
-                  "nih_institutes",
-                  "eu_universities",
-                  "us_universities",
-                  "research_companies"
-                ]
-              },
-              {
-                "claim": "nih.DiscoveryAccess",
-                "values": [
-                  "https://nih.gov/access/level1",
-                  "https://nih.gov/access/level2"
-                ],
-                "from": [
-                  "nih_institutes"
-                ]
-              }
-            ]
-          },
-          {
-            "anyTrue": [
-              {
-                "claim": "ControlledAccessGrants",
-                "values": [
-                  "^.*$"
-                ],
-                "from": [
-                  "nih_institutes"
-                ]
-              },
-              {
-                "claim": "AcceptedTermsAndPolicies",
-                "values": ["https://librarycard.nih.gov/v1"],
-                "from": ["nih_institutes"]
-              }
-            ]
-          }
-        ]
-      },
-      "ui": {
-        "label": "NIH Discovery Access",
-        "description": "NIH Discovery Access policy accepting a combination of Bona Fide or special Discovery Access approval in combination with preexisiting grants or library cards",
-        "infoUrl": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC5961811/"
       }
     }
   },
@@ -290,7 +243,8 @@
                 "project": "dataset-example-project",
                 "dataset": "dataset-example-view1"
               }
-            }, {
+            },
+            {
               "vars": {
                 "project": "dataset-example-project",
                 "dataset": "dataset-example-view2"
@@ -299,7 +253,14 @@
           ],
           "roles": {
             "viewer": {
-              "policies": ["dac(DATASETS=^https?://dac\\.nih\\.gov/datasets/phs000709$,^https?://dac\\.nih\\.gov/datasets/phs000710$,https://dac.nih.gov/datasets/phs000711)"]
+              "policies": [
+                {
+                  "name": "dac",
+                  "vars": {
+                    "DATASET": "phs000710"
+                  }
+                }
+              ]
             }
           },
           "defaultRole": "viewer",
@@ -324,7 +285,8 @@
                 "project": "dataset-example-project",
                 "bucket": "dataset-example-bucket1"
               }
-            }, {
+            },
+            {
               "vars": {
                 "project": "dataset-example-project",
                 "bucket": "dataset-example-bucket2"
@@ -333,7 +295,14 @@
           ],
           "roles": {
             "viewer": {
-              "policies": ["dac(DATASETS=^https?://dac\\.nih\\.gov/datasets/phs000709$,^https?://dac\\.nih\\.gov/datasets/phs000710$,https://dac.nih.gov/datasets/phs000711)"]
+              "policies": [
+                {
+                  "name": "dac",
+                  "vars": {
+                    "DATASET": "phs000710"
+                  }
+                }
+              ]
             }
           },
           "defaultRole": "viewer",
@@ -358,7 +327,8 @@
                 "project": "dataset-example-project",
                 "requester-pays-bucket": "dataset-example-payer-bucket1"
               }
-            }, {
+            },
+            {
               "vars": {
                 "project": "dataset-example-project",
                 "requester-pays-bucket": "dataset-example-payer-bucket2"
@@ -367,7 +337,14 @@
           ],
           "roles": {
             "viewer": {
-              "policies": ["dac(DATASETS=^https?://dac\\.nih\\.gov/datasets/phs000709$,^https?://dac\\.nih\\.gov/datasets/phs000710$,https://dac.nih.gov/datasets/phs000711)"]
+              "policies": [
+                {
+                  "name": "dac",
+                  "vars": {
+                    "DATASET": "phs000710"
+                  }
+                }
+              ]
             }
           },
           "defaultRole": "viewer",
@@ -392,7 +369,8 @@
                 "resource": "dataset_example",
                 "view": "bq_read"
               }
-            }, {
+            },
+            {
               "vars": {
                 "resource": "dataset_example",
                 "view": "gcs_read"
@@ -401,7 +379,14 @@
           ],
           "roles": {
             "viewer": {
-              "policies": ["dac(DATASETS=https://dac.nih.gov/datasets/phs000711)"]
+              "policies": [
+                {
+                  "name": "dac",
+                  "vars": {
+                    "DATASET": "phs000711"
+                  }
+                }
+              ]
             }
           },
           "defaultRole": "viewer",
@@ -443,11 +428,15 @@
           "aud": "https://ga4gh-apis-beacon.dnastack.com",
           "roles": {
             "discovery": {
-              "policies": ["bona_fide"]
+              "policies": [
+                {
+                  "name": "bona_fide"
+                }
+              ]
             }
           },
           "defaultRole": "discovery",
-          "ui":{
+          "ui": {
             "label": "Beacon Discovery",
             "description": "Search data from Beacon Discovery"
           }
@@ -472,7 +461,14 @@
           ],
           "roles": {
             "viewer": {
-              "policies": ["bona_fide", "ethics", "GRU"]
+              "policies": [
+                {
+                  "name": "bona_fide"
+                },
+                {
+                  "name": "ethics"
+                }
+              ]
             }
           },
           "defaultRole": "viewer",
@@ -497,12 +493,14 @@
     "beacon": {
       "targetAdapter": "token:jwt:gatekeeper",
       "itemFormat": "url",
-      "roles" : {
+      "roles": {
         "basic_discovery": {
           "targetScopes": [
             "registered"
           ],
-          "damRoleCategories": ["exists"],
+          "damRoleCategories": [
+            "exists"
+          ],
           "ui": {
             "label": "Discovery Beacon Search without Metadata",
             "description": "Query genome data and return 'found' or 'not found' status"
@@ -513,7 +511,9 @@
             "registered",
             "controlled"
           ],
-          "damRoleCategories": ["metadata"],
+          "damRoleCategories": [
+            "metadata"
+          ],
           "ui": {
             "label": "Discovery Beacon Search with Metadata",
             "description": "Query genome data and receive metadata results"
@@ -533,19 +533,29 @@
       "itemFormat": "gcs",
       "roles": {
         "viewer": {
-          "targetRoles": ["roles/storage.objectViewer"],
+          "targetRoles": [
+            "roles/storage.objectViewer"
+          ],
           "targetScopes": [
             "https://www.googleapis.com/auth/cloud-platform"
           ],
-          "damRoleCategories": ["metadata", "list", "read"],
+          "damRoleCategories": [
+            "metadata",
+            "list",
+            "read"
+          ],
           "ui": {
             "label": "File Viewer",
             "description": "List and read files"
           }
         },
         "creator": {
-          "targetRoles": ["roles/storage.objectCreator"],
-          "damRoleCategories": ["write"],
+          "targetRoles": [
+            "roles/storage.objectCreator"
+          ],
+          "damRoleCategories": [
+            "write"
+          ],
           "ui": {
             "label": "File Creator",
             "description": "Write files (without read access)"
@@ -559,7 +569,12 @@
           "targetScopes": [
             "https://www.googleapis.com/auth/cloud-platform"
           ],
-          "damRoleCategories": ["metadata", "list", "read", "write"],
+          "damRoleCategories": [
+            "metadata",
+            "list",
+            "read",
+            "write"
+          ],
           "ui": {
             "label": "File Editor",
             "description": "Read and write files plus manipulate file metadata"
@@ -580,11 +595,17 @@
       "itemFormat": "gcs",
       "roles": {
         "viewer": {
-          "targetRoles": ["roles/storage.objectViewer"],
+          "targetRoles": [
+            "roles/storage.objectViewer"
+          ],
           "targetScopes": [
             "https://www.googleapis.com/auth/cloud-platform"
           ],
-          "damRoleCategories": ["metadata", "list", "read"],
+          "damRoleCategories": [
+            "metadata",
+            "list",
+            "read"
+          ],
           "ui": {
             "label": "File Viewer",
             "description": "List and read files"
@@ -605,22 +626,35 @@
       "itemFormat": "bigquery",
       "roles": {
         "viewer": {
-          "targetRoles": ["roles/BQReader"],
+          "targetRoles": [
+            "roles/BQReader"
+          ],
           "targetScopes": [
             "https://www.googleapis.com/auth/cloud-platform"
           ],
-          "damRoleCategories": ["metadata", "list", "read"],
+          "damRoleCategories": [
+            "metadata",
+            "list",
+            "read"
+          ],
           "ui": {
             "label": "BigQuery Viewer",
             "description": "Query tables and view table metadata"
           }
         },
         "editor": {
-          "targetRoles": ["roles/bigquery.dataEditor"],
+          "targetRoles": [
+            "roles/bigquery.dataEditor"
+          ],
           "targetScopes": [
             "https://www.googleapis.com/auth/cloud-platform"
           ],
-          "damRoleCategories": ["metadata", "list", "read", "write"],
+          "damRoleCategories": [
+            "metadata",
+            "list",
+            "read",
+            "write"
+          ],
           "ui": {
             "label": "BigQuery Editor",
             "description": "Query and modify tables and table metadata"
@@ -633,7 +667,6 @@
       "ui": {
         "label": "Google BigQuery",
         "description": "Google BigQuery"
-
       }
     },
     "views": {
@@ -641,7 +674,11 @@
       "itemFormat": "view",
       "roles": {
         "viewer": {
-          "damRoleCategories": ["metadata", "list", "read"],
+          "damRoleCategories": [
+            "metadata",
+            "list",
+            "read"
+          ],
           "ui": {
             "label": "Viewer",
             "description": "Offers Viewer access across multiple views"
@@ -738,7 +775,7 @@
           }
         ]
       },
-      "access" : [
+      "access": [
         "ga4gh-apis/beacon/discovery",
         "ga4gh-apis/gcs_read/viewer"
       ]
@@ -769,9 +806,9 @@
             "assertedDuration": "1d",
             "expiresDuration": "30d",
             "by": "dac",
-            "conditions": [
+            "anyOfConditions": [
               {
-                "clauses": [
+                "allOf": [
                   {
                     "type": "AffiliationAndRole",
                     "value": "const:faculty@example.edu",

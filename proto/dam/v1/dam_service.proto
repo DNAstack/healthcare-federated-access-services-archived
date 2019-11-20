@@ -53,30 +53,10 @@ message TrustedSource {
   map<string, string> ui = 3;
 }
 
-message Condition {
-  oneof key {
-    string claim = 1;
-    string data_use = 2;
-    string user_list = 3;
-  }
-  string is = 4;
-  repeated string values = 5;
-  repeated string from = 6;
-  repeated string by = 7;
-  repeated Condition all_true = 8;
-  repeated Condition any_true = 9;
-}
-
 message Policy {
-  Condition allow = 1;
-  Condition disallow = 2;
+  repeated common.ConditionSet any_of = 1;
+  map<string, VariableFormat> variable_definitions = 2;
   map<string, string> ui = 3;
-}
-
-message PolicyBasis {
-  string name = 1;
-  string type = 2;
-  repeated string clauses = 3;
 }
 
 message View {
@@ -135,8 +115,12 @@ message ServiceRole {
 }
 
 message AccessRole {
-  repeated string policies = 1;
-  repeated PolicyBasis computed_policy_basis = 3 [json_name = "policyBasis"];
+  message AccessPolicy {
+    string name = 1;
+    map<string, string> vars = 2;
+  }
+  repeated AccessPolicy policies = 1;
+  map<string, bool> computed_policy_basis = 3 [json_name = "policyBasis"];
 }
 
 message ConfigOptions {
@@ -512,16 +496,19 @@ message ConfigClientRequest {
 }
 
 message ResourceTokenRequestState {
-  string realm = 1;
+  message Resource {
+    string realm = 1;
+    string resource = 2;
+    string view = 3;
+    string role = 4;
+  }
+  repeated Resource resources = 1;
   string client_id = 2;
-  string resource = 3;
-  string view = 4;
-  string role = 5;
-  string state = 6;
-  string broker = 7;
-  string redirect = 8;
-  int64 ttl = 9;
-  bool response_key_file = 10;
+  string state = 3;
+  string broker = 4;
+  string redirect = 5;
+  int64 ttl = 6;
+  bool response_key_file = 7;
 }
 
 message AuthCode {
