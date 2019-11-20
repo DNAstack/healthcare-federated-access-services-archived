@@ -79,9 +79,10 @@ func (s *Service) checkBasicIntegrity(cfg *pb.DamConfig) *status.Status {
 		if path, err := common.CheckUI(ti.Ui, true); err != nil {
 			return common.NewInfoStatus(codes.InvalidArgument, common.StatusPath(cfgTrustedPassportIssuer, n, path), fmt.Sprintf("trusted passport issuer UI settings: %v", err))
 		}
-		if stat := checkTrustedIssuerClientCredentials(n, s.defaultBroker, ti); stat != nil {
-			return stat
-		}
+		// Ignoring, since it is not used anywhere at the moment
+		//if stat := checkTrustedIssuerClientCredentials(n, s.defaultBroker, ti); stat != nil {
+		//	return stat
+		//}
 	}
 
 	for n, ts := range cfg.TrustedSources {
