@@ -22,6 +22,6 @@ public class DamSmokeTest extends BaseE2eTest {
             .statusCode(200)
             .contentType(ContentType.JSON)
             .body("name", equalTo("Data Access Manager"))
-            .body("ui.label", not(isEmptyOrNullString()));
+            .body("startTime", not(isEmptyOrNullString()));
     }
 }
