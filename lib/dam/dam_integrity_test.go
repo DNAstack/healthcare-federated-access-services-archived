@@ -18,15 +18,22 @@ import (
 	"context"
 	"testing"
 
+	"github.com/golang/protobuf/proto"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dam"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
 
+	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1"
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
+)
+
+const (
+	hydraAdminURL = "https://admin.hydra.example.com"
+	notUseHydra   = false
 )
 
 func TestCheckIntegrity(t *testing.T) {
 	store := storage.NewMemoryStorage("dam", "testdata/config")
-	s := dam.NewService(context.Background(), "test.org", "no-broker", store, nil)
+	s := dam.NewService(context.Background(), "test.org", "no-broker", hydraAdminURL, store, nil, notUseHydra)
 	cfg := &pb.DamConfig{}
 	if err := store.Read(storage.ConfigDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev, cfg); err != nil {
 		t.Fatalf("error reading config: %v", err)
@@ -42,8 +49,17 @@ func TestCheckIntegrity(t *testing.T) {
 	if err := s.CheckIntegrity(cfg); err != nil {
 		t.Errorf("CheckIntegrity(cfg) on empty bucket name: expected success, got error: %v", err)
 	}
-	cfg.ServiceTemplates["gcs"].Interfaces["http:test"] = "https://example.com/${bad-variable}"
-	if err := s.CheckIntegrity(cfg); err == nil {
-		t.Errorf("CheckIntegrity(cfg) on bad variable in interface: expected error, got success")
+	badcfg := &pb.DamConfig{}
+	proto.Merge(badcfg, cfg)
+	badcfg.ServiceTemplates["gcs"].Interfaces["http:test"] = "https://example.com/${bad-variable}"
+	if err := s.CheckIntegrity(badcfg); err == nil {
+		t.Errorf("CheckIntegrity(badcfg) on bad variable in interface: expected error, got success")
+	}
+	badcfg.Reset()
+	proto.Merge(badcfg, cfg)
+	assert := badcfg.TestPersonas["dr_joe_era_commons"].Passport.Ga4GhAssertions[1].AnyOfConditions[0]
+	assert.AllOf = append(assert.AllOf, &cpb.Condition{})
+	if err := s.CheckIntegrity(badcfg); err == nil {
+		t.Errorf("CheckIntegrity(badcfg) on empty condition: expected error, got success")
 	}
 }

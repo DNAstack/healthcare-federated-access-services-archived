@@ -25,6 +25,7 @@ import (
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
 
@@ -32,16 +33,12 @@ import (
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1"
 )
 
-const (
-	stateIDInHydra = "state"
-)
-
 // HydraLogin handles login request from hydra.
 func (s *Service) HydraLogin(w http.ResponseWriter, r *http.Request) {
 	// Use login_challenge fetch information from hydra.
-	challenge, err := extractLoginChallenge(r)
-	if err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+	challenge, status := hydra.ExtractLoginChallenge(r)
+	if status != nil {
+		httputil.WriteStatus(w, status)
 		return
 	}
 
@@ -51,27 +48,7 @@ func (s *Service) HydraLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If hydra was already able to authenticate the user, skip will be true and we do not need to re-authenticate
-	// the user.
-	if login.Skip {
-		// You can apply logic here, for example update the number of times the user logged in.
-
-		// TODO: provide metrics / audit logs for this case
-
-		// Now it's time to grant the login request. You could also deny the request if something went terribly wrong
-		resp, err := hydra.AcceptLoginRequest(s.httpClient, s.hydraAdminURL, challenge, &hydraapi.HandledLoginRequest{Subject: &login.Subject})
-		if err != nil {
-			common.HandleError(http.StatusServiceUnavailable, err, w)
-			return
-		}
-
-		common.SendRedirect(resp.RedirectTo, r, w)
-		return
-	}
-
-	cfg, err := s.loadConfig(nil, getRealm(r))
-	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+	if hydra.LoginSkip(w, r, s.httpClient, login, s.hydraAdminURL, challenge) {
 		return
 	}
 
@@ -84,6 +61,12 @@ func (s *Service) HydraLogin(w http.ResponseWriter, r *http.Request) {
 	realm := u.Query().Get("realm")
 	if len(realm) == 0 {
 		realm = storage.DefaultRealm
+	}
+
+	cfg, err := s.loadConfig(nil, realm)
+	if err != nil {
+		common.HandleError(http.StatusServiceUnavailable, err, w)
+		return
 	}
 
 	scopes := login.RequestedScope
@@ -99,22 +82,6 @@ func (s *Service) HydraLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	common.SendHTML(page, w)
-}
-
-func (s *Service) hydraLoginSuccess(w http.ResponseWriter, r *http.Request, challenge, subject, stateID string) {
-	req := &hydraapi.HandledLoginRequest{
-		Subject: &subject,
-		Context: map[string]interface{}{
-			stateIDInHydra: stateID,
-		},
-	}
-	resp, err := hydra.AcceptLoginRequest(s.httpClient, s.hydraAdminURL, challenge, req)
-	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
-		return
-	}
-
-	common.SendRedirect(resp.RedirectTo, r, w)
 }
 
 func (s *Service) hydraLoginError(w http.ResponseWriter, r *http.Request, state, errName, errDesc string) {
@@ -135,7 +102,7 @@ func (s *Service) hydraLoginError(w http.ResponseWriter, r *http.Request, state,
 		Name:        errName,
 		Description: errDesc,
 	}
-	resp, err := hydra.RejectLoginRequest(s.httpClient, s.hydraAdminURL, loginState.Challenge, hyErr)
+	resp, err := hydra.RejectLogin(s.httpClient, s.hydraAdminURL, loginState.Challenge, hyErr)
 	if err != nil {
 		common.HandleError(http.StatusServiceUnavailable, err, w)
 		return
@@ -144,39 +111,12 @@ func (s *Service) hydraLoginError(w http.ResponseWriter, r *http.Request, state,
 	common.SendRedirect(resp.RedirectTo, r, w)
 }
 
-func (s *Service) hydraConsentSkip(consent *hydraapi.ConsentRequest, challenge string, w http.ResponseWriter, r *http.Request) bool {
-	if !consent.Skip {
-		return false
-	}
-
-	// If hydra was already able to consent the user, skip will be true and we do not need to re-consent the user.
-
-	// You can apply logic here, for example update the number of times the user consent.
-
-	// TODO: provide metrics / audit logs for this case
-
-	// Now it's time to grant the consent request. You could also deny the request if something went terribly wrong
-	consentReq := &hydraapi.HandledConsentRequest{
-		GrantedAudience: consent.RequestedAudience,
-		GrantedScope:    consent.RequestedScope,
-		// TODO: need double check token has correct info.
-	}
-	resp, err := hydra.AcceptConsentRequest(s.httpClient, s.hydraAdminURL, challenge, consentReq)
-	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
-		return true
-	}
-
-	common.SendRedirect(resp.RedirectTo, r, w)
-	return true
-}
-
 // HydraConsent handles consent request from hydra.
 func (s *Service) HydraConsent(w http.ResponseWriter, r *http.Request) {
 	// Use consent_challenge fetch information from hydra.
-	challenge, err := extractConsentChallenge(r)
-	if err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+	challenge, status := hydra.ExtractConsentChallenge(r)
+	if status != nil {
+		httputil.WriteStatus(w, status)
 		return
 	}
 
@@ -186,7 +126,7 @@ func (s *Service) HydraConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.hydraConsentSkip(consent, challenge, w, r) {
+	if hydra.ConsentSkip(w, r, s.httpClient, consent, s.hydraAdminURL, challenge) {
 		return
 	}
 
@@ -205,15 +145,9 @@ func (s *Service) HydraConsent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	st, ok := consent.Context[stateIDInHydra]
-	if !ok {
-		common.HandleError(http.StatusServiceUnavailable, fmt.Errorf("consent.Context[%s] not found", stateIDInHydra), w)
-		return
-	}
-
-	stateID, ok := st.(string)
-	if !ok {
-		common.HandleError(http.StatusServiceUnavailable, fmt.Errorf("consent.Context[%s] in wrong type", stateIDInHydra), w)
+	stateID, status := hydra.ExtractStateIDInConsent(consent)
+	if status != nil {
+		httputil.WriteStatus(w, status)
 		return
 	}
 
@@ -233,16 +167,16 @@ func (s *Service) HydraConsent(w http.ResponseWriter, r *http.Request) {
 
 	state.ConsentChallenge = challenge
 	state.Scope = strings.Join(consent.RequestedScope, " ")
-	state.Audience = consent.RequestedAudience
+	state.Audience = append(consent.RequestedAudience, consent.Client.ClientID)
 	err = s.store.WriteTx(storage.AuthTokenStateDatatype, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, state, nil, tx)
 	if err != nil {
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}
 
-	acct, status, err := s.loadAccount(sub, state.Realm, tx)
+	acct, st, err := s.loadAccount(sub, state.Realm, tx)
 	if err != nil {
-		common.HandleError(status, err, w)
+		common.HandleError(st, err, w)
 		return
 	}
 
@@ -297,7 +231,7 @@ func (s *Service) hydraRejectConsent(w http.ResponseWriter, r *http.Request, sta
 		Description: "User deny consent",
 	}
 
-	resp, err := hydra.RejectConsentRequest(s.httpClient, s.hydraAdminURL, state.ConsentChallenge, req)
+	resp, err := hydra.RejectConsent(s.httpClient, s.hydraAdminURL, state.ConsentChallenge, req)
 	if err != nil {
 		common.HandleError(http.StatusServiceUnavailable, err, w)
 		return
@@ -364,7 +298,7 @@ func (s *Service) hydraAcceptConsent(w http.ResponseWriter, r *http.Request, sta
 		},
 	}
 
-	resp, err := hydra.AcceptConsentRequest(s.httpClient, s.hydraAdminURL, state.ConsentChallenge, req)
+	resp, err := hydra.AcceptConsent(s.httpClient, s.hydraAdminURL, state.ConsentChallenge, req)
 	if err != nil {
 		common.HandleError(http.StatusServiceUnavailable, err, w)
 		return

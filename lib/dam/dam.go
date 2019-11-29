@@ -81,6 +81,7 @@ const (
 	processPath           = methodPrefix + "processes/{name}"
 	tokensPath            = methodPrefix + "tokens"
 	tokenPath             = methodPrefix + "tokens/{name}"
+	resourceTokensPath    = basePath + "/checkout"
 
 	oidcPrefix          = basePath + "/oidc/"
 	loggedInPath        = oidcPrefix + "loggedin"
@@ -106,6 +107,12 @@ const (
 	configHistoryRevisionPath       = configHistoryPath + "/{name}"
 	configResetPath                 = configPath + "/reset"
 	configClientSecretPath          = configPath + "/clientSecret/{name}"
+
+	hydraLoginPath   = basePath + "/login"
+	hydraConsentPath = basePath + "/consent"
+	hydraTestPage    = basePath + "/hydra-test"
+
+	hydraDAMTestPageFile = "pages/hydra-dam-test.html"
 
 	maxNameLength = 32
 	minNameLength = 3
@@ -136,13 +143,17 @@ type Service struct {
 	roleCategories map[string]*pb.RoleCategory
 	domainURL      string
 	defaultBroker  string
+	hydraAdminURL  string
 	store          storage.Store
 	warehouse      clouds.ResourceTokenCreator
 	permissions    *common.Permissions
 	Handler        *ServiceHandler
 	ctx            context.Context
+	httpClient     *http.Client
 	startTime      int64
 	translators    sync.Map
+	useHydra       bool
+	hydraTestPage  string
 }
 
 type ServiceHandler struct {
@@ -154,9 +165,10 @@ type ServiceHandler struct {
 // - ctx: pass in http.Client can replace the one used in oidc request
 // - domain: domain used to host DAM service
 // - defaultBroker: default identity broker
+// - hydraAdminURL: hydra admin endpoints url
 // - store: data storage and configuration storage
 // - warehouse: resource token creator service
-func NewService(ctx context.Context, domain, defaultBroker string, store storage.Store, warehouse clouds.ResourceTokenCreator) *Service {
+func NewService(ctx context.Context, domain, defaultBroker, hydraAdminURL string, store storage.Store, warehouse clouds.ResourceTokenCreator, useHydra bool) *Service {
 	fs := getFileStore(store, damStaticService)
 	var roleCat pb.DamRoleCategoriesResponse
 	if err := fs.Read("role", storage.DefaultRealm, storage.DefaultUser, "en", storage.LatestRev, &roleCat); err != nil {
@@ -167,17 +179,26 @@ func NewService(ctx context.Context, domain, defaultBroker string, store storage
 		glog.Fatalf("cannot load permissions: %v", err)
 	}
 
+	tp, err := common.LoadFile(hydraDAMTestPageFile)
+	if err != nil {
+		glog.Fatalf("common.LoadFile(%s) failed: %v", hydraDAMTestPageFile, err)
+	}
+
 	sh := &ServiceHandler{}
 	s := &Service{
 		roleCategories: roleCat.DamRoleCategories,
 		domainURL:      domain,
 		defaultBroker:  defaultBroker,
+		hydraAdminURL:  hydraAdminURL,
 		store:          store,
 		warehouse:      warehouse,
 		permissions:    perms,
 		Handler:        sh,
 		ctx:            ctx,
+		httpClient:     http.DefaultClient,
 		startTime:      time.Now().Unix(),
+		hydraTestPage:  tp,
+		useHydra:       useHydra,
 	}
 
 	secrets, err := s.loadSecrets(nil)
@@ -281,7 +302,7 @@ func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.ParseForm()
-	if r.URL.Path == infoPath || r.URL.Path == loggedInPath || strings.HasPrefix(r.URL.Path, oidcWellKnownPrefix) {
+	if r.URL.Path == infoPath || r.URL.Path == loggedInPath || strings.HasPrefix(r.URL.Path, oidcWellKnownPrefix) || r.URL.Path == hydraLoginPath || r.URL.Path == hydraConsentPath || r.URL.Path == hydraTestPage {
 		sh.Handler.ServeHTTP(w, r)
 		return
 	}
@@ -356,6 +377,7 @@ func (s *Service) buildHandlerMux() *mux.Router {
 	r.HandleFunc(resourceAuthPath, s.ResourceAuthHandler)
 	r.HandleFunc(resourceTokenPath, s.ExchangeResourceTokenHandler)
 	r.HandleFunc(loggedInPath, s.LoggedInHandler)
+	r.HandleFunc(resourceTokensPath, s.ResourceTokens).Methods("GET", "POST")
 
 	r.HandleFunc(oidcConfiguarePath, s.OidcWellKnownConfig)
 	r.HandleFunc(oidcJwksPath, s.OidcKeys)
@@ -377,6 +399,10 @@ func (s *Service) buildHandlerMux() *mux.Router {
 	r.HandleFunc(configServiceTemplatePath, common.MakeHandler(s, s.configServiceTemplateFactory()))
 	r.HandleFunc(configTestPersonaPath, common.MakeHandler(s, s.configPersonaFactory()))
 	r.HandleFunc(configClientPath, common.MakeHandler(s, s.configClientFactory()))
+
+	r.HandleFunc(hydraLoginPath, s.HydraLogin).Methods(http.MethodGet)
+	r.HandleFunc(hydraConsentPath, s.HydraConsent).Methods(http.MethodGet)
+	r.HandleFunc(hydraTestPage, s.HydraTestPage).Methods(http.MethodGet)
 
 	return r
 }
@@ -722,6 +748,11 @@ func (s *Service) GetFlatViews(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			for rolename := range v.AccessRoles {
+				var roleCat []string
+				if sr := st.ServiceRoles[rolename]; sr != nil {
+					roleCat = sr.DamRoleCategories
+					sort.Strings(roleCat)
+				}
 				for interfaceName, iface := range v.ComputedInterfaces {
 					for _, interfaceURI := range iface.Uri {
 						if len(v.ContentTypes) == 0 {
@@ -751,6 +782,7 @@ func (s *Service) GetFlatViews(w http.ResponseWriter, r *http.Request) {
 								ResourceUi:      res.Ui,
 								ViewUi:          v.Ui,
 								RoleUi:          st.Ui,
+								RoleCategories:  roleCat,
 							}
 						}
 					}
@@ -1552,8 +1584,8 @@ func (s *Service) makeView(viewName string, v *pb.View, r *pb.Resource, cfg *pb.
 	}
 }
 
-func (s *Service) makeViewInterfaces(srcView *pb.View, srcRes *pb.Resource, cfg *pb.DamConfig) map[string]*pb.View_Interface {
-	out := make(map[string]*pb.View_Interface)
+func (s *Service) makeViewInterfaces(srcView *pb.View, srcRes *pb.Resource, cfg *pb.DamConfig) map[string]*pb.Interface {
+	out := make(map[string]*pb.Interface)
 	entries, err := s.resolveAggregates(srcRes, srcView, cfg)
 	if err != nil {
 		return out
@@ -1586,7 +1618,7 @@ func (s *Service) makeViewInterfaces(srcView *pb.View, srcRes *pb.Resource, cfg 
 		}
 	}
 	for k, v := range cliMap {
-		vi := &pb.View_Interface{
+		vi := &pb.Interface{
 			Uri: []string{},
 		}
 		for uri := range v {
@@ -1596,6 +1628,19 @@ func (s *Service) makeViewInterfaces(srcView *pb.View, srcRes *pb.Resource, cfg 
 		out[k] = vi
 	}
 	return out
+}
+
+func (s *Service) makeRoleCategories(view *pb.View, role string, cfg *pb.DamConfig) []string {
+	st, ok := cfg.ServiceTemplates[view.ServiceTemplate]
+	if !ok {
+		return nil
+	}
+	sr, ok := st.ServiceRoles[role]
+	if !ok {
+		return nil
+	}
+	sort.Strings(sr.DamRoleCategories)
+	return sr.DamRoleCategories
 }
 
 func hasItemVariable(str string) bool {

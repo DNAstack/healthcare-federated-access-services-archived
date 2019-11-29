@@ -21,7 +21,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"google3/third_party/golang/protobuf/v2/testing/protocmp/protocmp"
+	"google.golang.org/protobuf/testing/protocmp"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/jsonutil"
 
@@ -128,6 +128,6 @@ func TestTokenJSONFormat(t *testing.T) {
 
 	want := fakeTokenJSON
 	if diff := cmp.Diff(jsonutil.MustCanonical(want), jsonutil.MustCanonical(got)); diff != "" {
-		t.Errorf("Token JSON diff (-want +got):\n%s", name, diff)
+		t.Errorf("Token JSON diff (-want +got):\n%s", diff)
 	}
 }

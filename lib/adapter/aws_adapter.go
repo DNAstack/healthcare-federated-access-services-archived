@@ -44,6 +44,10 @@ func (a *AwsAdapter) Descriptor() *pb.TargetAdapter {
 	return a.desc
 }
 
+func (a *AwsAdapter) Platform() string {
+	return Aws
+}
+
 func (a *AwsAdapter) IsAggregator() bool {
 	return false
 }
