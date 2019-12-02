@@ -35,23 +35,24 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
-	"github.com/gorilla/mux"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"gopkg.in/square/go-jose.v2"
-	"github.com/dgrijalva/jwt-go"
-	"golang.org/x/oauth2"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"
+	"github.com/dgrijalva/jwt-go"
+	"github.com/golang/protobuf/jsonpb"
+	"github.com/golang/protobuf/proto"
+	"github.com/gorilla/mux"
+	"golang.org/x/oauth2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"gopkg.in/square/go-jose.v2"
 
-	glog "github.com/golang/glog"
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1"
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1"
+	tpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/tokens/v1"
+	"github.com/golang/glog"
 )
 
 const (
@@ -519,9 +520,28 @@ func (s *Service) buildHandlerMux() *mux.Router {
 	r.HandleFunc(hydraConsentPath, s.HydraConsent).Methods(http.MethodGet)
 	r.HandleFunc(hydraTestPage, s.HydraTestPage).Methods(http.MethodGet)
 
-	r.HandleFunc("/tokens", NewTokensHandler(&stubTokens{}).ListTokens).Methods(http.MethodGet)
-	r.HandleFunc("/tokens/", NewTokensHandler(&stubTokens{}).GetToken).Methods(http.MethodGet)
-	r.HandleFunc("/tokens/", NewTokensHandler(&stubTokens{}).DeleteToken).Methods(http.MethodDelete)
+	tokenMeta := make(map[string]string, 2)
+	tokenMeta["client_id"] = "0000-0000-0000-0000"
+	tokenMeta["client_desc"] = "A Fictional client for a fictional token"
+	stubTokens := &stubTokens{
+		token: &tpb.Token{
+			Name:      "test_token",
+			Audience:  "https://identity-concentrator.staging.dnsatack.com/oidc",
+			ExpiresAt: 1609372800,
+			IssuedAt:  1575313259,
+			Scope:     "openid profile ga4gh_passport_v1",
+			Client: &tpb.Client{
+				Id:          tokenMeta["client_id"],
+				Name:        "fictional_client",
+				Description: tokenMeta["client_desc"],
+			},
+			Target:   tokenMeta["client_id"],
+			Metadata: tokenMeta,
+		},
+	}
+	r.HandleFunc("/tokens", NewTokensHandler(stubTokens).ListTokens).Methods(http.MethodGet)
+	r.HandleFunc("/tokens/{token_id}", NewTokensHandler(stubTokens).GetToken).Methods(http.MethodGet)
+	r.HandleFunc("/tokens/{token_id}", NewTokensHandler(stubTokens).DeleteToken).Methods(http.MethodDelete)
 
 	sfs := http.StripPrefix(staticFilePath, http.FileServer(http.Dir(filepath.Join(storage.ProjectRoot, staticDirectory))))
 	r.PathPrefix(staticFilePath).Handler(sfs)
