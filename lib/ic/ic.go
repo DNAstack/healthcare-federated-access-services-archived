@@ -35,19 +35,20 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"
-	"github.com/dgrijalva/jwt-go"
 	"github.com/golang/protobuf/jsonpb"
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/mux"
-	"golang.org/x/oauth2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"gopkg.in/square/go-jose.v2"
+	"github.com/dgrijalva/jwt-go"
+	"golang.org/x/oauth2"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"
 
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1"
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1"
@@ -110,6 +111,11 @@ const (
 	personaPath        = personasPath + "/{name}"
 	accountPath        = methodPrefix + "accounts/{name}"
 	accountSubjectPath = accountPath + "/subjects/{subject}"
+
+	scimPrefix    = basePath + "/scim/v2/" + common.RealmVariable + "/"
+	scimUsersPath = scimPrefix + "Users"
+	scimUserPath  = scimPrefix + "Users/{name}"
+	scimMePath    = scimPrefix + "Me"
 
 	adminPathPrefix        = methodPrefix + "admin"
 	adminClaimsPath        = adminPathPrefix + "/subjects/{name}/account/claims"
@@ -435,47 +441,57 @@ func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.ParseForm()
-	// Allow some requests to proceed without client IDs and/or secrets.
-	path := common.RequestAbstractPath(r)
-	if path == infoPath || strings.HasPrefix(path, staticFilePath) || strings.HasPrefix(path, testPath) || strings.HasPrefix(path, tokenFlowTestPath) || strings.HasPrefix(path, acceptLoginPath) || path == acceptInformationReleasePath || strings.HasPrefix(path, oidcPath) || path == hydraLoginPath || path == hydraConsentPath || path == hydraTestPage {
-		sh.Handler.ServeHTTP(w, r)
+
+	if err := sh.s.checkClientCreds(r); err != nil {
+		httputil.WriteStatus(w, status.Convert(err))
 		return
 	}
 
-	// OAuth2 client logic will include in hydra.
-	// TODO: remove unused endpoints.
-	if sh.s.useHydra {
-		sh.Handler.ServeHTTP(w, r)
-		return
-	}
-
-	if status, err := sh.s.verifyClient(path, r); err != nil {
-		http.Error(w, err.Error(), status)
-		return
-	}
 	sh.Handler.ServeHTTP(w, r)
 }
 
-func (s *Service) verifyClient(abstractPath string, r *http.Request) (int, error) {
+func (s *Service) checkClientCreds(r *http.Request) error {
+	// TODO: will remove after integrate hydra.
+	if s.useHydra {
+		return nil
+	}
+
+	// Allow some requests to proceed without client IDs and/or secrets.
+	path := common.RequestAbstractPath(r)
+	if path == infoPath || strings.HasPrefix(path, staticFilePath) || strings.HasPrefix(path, testPath) || strings.HasPrefix(path, tokenFlowTestPath) || strings.HasPrefix(path, acceptLoginPath) || path == acceptInformationReleasePath || strings.HasPrefix(path, oidcPath) || path == hydraLoginPath || path == hydraConsentPath || path == hydraTestPage {
+		return nil
+	}
+
+	return s.checkClient(path, r)
+}
+
+func (s *Service) checkClient(path string, r *http.Request) error {
 	cid := getClientID(r)
 	if len(cid) == 0 {
-		return http.StatusUnauthorized, fmt.Errorf("authorization requires a client ID")
+		return status.Error(codes.Unauthenticated, "authorization requires a client ID")
 	}
-	cliOnly := isClientOnly(abstractPath)
+
+	// TODO: should also check the client id in config.
+
+	if isClientOnly(path) {
+		return nil
+	}
+
 	cs := getClientSecret(r)
-	if len(cs) == 0 && !cliOnly {
-		return http.StatusUnauthorized, fmt.Errorf("authorization requires a client secret")
+	if len(cs) == 0 {
+		return status.Error(codes.Unauthenticated, "authorization requires a client secret")
 	}
 
 	secrets, err := s.loadSecrets(nil)
 	if err != nil {
-		return http.StatusServiceUnavailable, fmt.Errorf("configuration unavailable")
+		return status.Error(codes.Unavailable, "configuration unavailable")
 	}
 
-	if secret, ok := secrets.ClientSecrets[cid]; !ok || (secret != cs && !cliOnly) {
-		return http.StatusUnauthorized, fmt.Errorf("unauthorized client")
+	if secret, ok := secrets.ClientSecrets[cid]; !ok || secret != cs {
+		return status.Error(codes.Unauthenticated, "unauthorized client")
 	}
-	return http.StatusOK, nil
+
+	return nil
 }
 
 func isClientOnly(path string) bool {
@@ -511,6 +527,10 @@ func (s *Service) buildHandlerMux() *mux.Router {
 	r.HandleFunc(accountPath, common.MakeHandler(s, s.accountFactory()))
 	r.HandleFunc(accountSubjectPath, common.MakeHandler(s, s.accountSubjectFactory()))
 	r.HandleFunc(adminClaimsPath, common.MakeHandler(s, s.adminClaimsFactory()))
+
+	r.HandleFunc(scimMePath, common.MakeHandler(s, s.scimMeFactory()))
+	r.HandleFunc(scimUserPath, common.MakeHandler(s, s.scimUserFactory()))
+	r.HandleFunc(scimUsersPath, common.MakeHandler(s, s.scimUsersFactory()))
 
 	r.HandleFunc(oidcConfiguarePath, s.OidcWellKnownConfig).Methods("GET")
 	r.HandleFunc(oidcJwksPath, s.OidcKeys).Methods("GET")
@@ -556,7 +576,7 @@ func (s *Service) GetInfo(w http.ResponseWriter, r *http.Request) {
 		Versions:  []string{version},
 		StartTime: s.startTime,
 	}
-	if _, err := s.verifyClient(common.RequestAbstractPath(r), r); err == nil {
+	if err := s.checkClient(common.RequestAbstractPath(r), r); err == nil {
 		out.Modules = []string{}
 	}
 
@@ -2457,7 +2477,7 @@ func (c *account) Patch(name string) error {
 		if err != nil {
 			return err
 		}
-		if linkAcct.State != "ACTIVE" {
+		if linkAcct.State != storage.StateActive {
 			return fmt.Errorf("the link account is not found or no longer available")
 		}
 		for _, acct := range linkAcct.ConnectedAccounts {
@@ -2470,7 +2490,7 @@ func (c *account) Patch(name string) error {
 			lookup := &pb.AccountLookup{
 				Subject:  c.item.Properties.Subject,
 				Revision: acct.LinkRevision,
-				State:    "ACTIVE",
+				State:    storage.StateActive,
 			}
 			if err := c.s.saveAccountLookup(lookup, getRealm(c.r), acct.Properties.Subject, c.r, c.id, c.tx); err != nil {
 				return fmt.Errorf("service dependencies not available; try again later")
@@ -3440,7 +3460,7 @@ func (s *Service) newAccountWithLink(ctx context.Context, linkID *ga4gh.Identity
 		Profile:           setupAccountProfile(linkID),
 		Properties:        setupAccountProperties(linkID, subject, now, now),
 		ConnectedAccounts: make([]*pb.ConnectedAccount, 0),
-		State:             "ACTIVE",
+		State:             storage.StateActive,
 		Ui:                make(map[string]string),
 	}
 	err := s.populateAccountClaims(ctx, acct, linkID, provider)
@@ -3847,7 +3867,7 @@ func (s *Service) loadAccount(name, realm string, tx storage.Tx) (*pb.Account, i
 	if err != nil {
 		return nil, status, err
 	}
-	if acct.State != "ACTIVE" {
+	if acct.State != storage.StateActive {
 		return nil, http.StatusNotFound, fmt.Errorf("not found")
 	}
 	return acct, http.StatusOK, nil
@@ -3875,7 +3895,7 @@ func (s *Service) saveNewLinkedAccount(newAcct *pb.Account, id *ga4gh.Identity, 
 	lookup = &pb.AccountLookup{
 		Subject:  newAcct.Properties.Subject,
 		Revision: rev,
-		State:    "ACTIVE",
+		State:    storage.StateActive,
 	}
 	if err := s.saveAccountLookup(lookup, getRealm(r), id.Subject, r, id, tx); err != nil {
 		return fmt.Errorf("service dependencies not available; try again later")
@@ -4105,7 +4125,7 @@ func (s *Service) realmReadTx(datatype, realm, user, id string, rev int64, item 
 }
 
 func isLookupActive(lookup *pb.AccountLookup) bool {
-	return lookup != nil && lookup.State == "ACTIVE"
+	return lookup != nil && lookup.State == storage.StateActive
 }
 
 func normalizeConfig(cfg *pb.IcConfig) error {
