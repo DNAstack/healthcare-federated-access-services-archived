@@ -370,18 +370,21 @@ func (s *Service) resourceAuth(ctx context.Context, in resourceAuthHandlerIn) (*
 		}
 		if !s.useHydra {
 			for name, client := range cfg.Clients {
-				if client.ClientId != in.clientID {
-					continue
-				}
-				urlAllow := false
-				for _, uri := range client.RedirectUris {
-					if uri == in.redirect {
-						urlAllow = true
-						break
+				if client.ClientId == in.clientID {
+					urlAllow := false
+					for _, uri := range client.RedirectUris {
+						if strings.HasPrefix(in.redirect, uri) {
+							urlAllow = true
+							break
+						}
 					}
-				}
-				if !urlAllow {
-					return nil, http.StatusBadRequest, fmt.Errorf("redirect url %q is not allow for client %q", in.redirect, name)
+					if !urlAllow {
+						if len(client.RedirectUris) == 0 {
+							return nil, http.StatusBadRequest, fmt.Errorf("client %q has no allowable redirect urls", name)
+						} else {
+							return nil, http.StatusBadRequest, fmt.Errorf("redirect url %q is not allow for client %q", in.redirect, name)
+						}
+					}
 				}
 			}
 		}
