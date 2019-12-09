@@ -17,6 +17,7 @@ package ic
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +56,8 @@ var (
 			return acctProto(p).GetProperties().Subject
 		},
 	}
+
+	photoPathRE = regexp.MustCompile(`^photos.*\.value$`)
 )
 
 //////////////////////////////////////////////////////////////////
@@ -179,9 +182,19 @@ type scimUser struct {
 // Setup initializes the handler
 func (h *scimUser) Setup(tx storage.Tx, isAdmin bool) (int, error) {
 	_, _, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+	if err != nil {
+		return status, err
+	}
 	h.id = id
 	h.tx = tx
-	return status, err
+
+	if h.s.permissions.IsAdmin(id) || h.r.Method == http.MethodGet {
+		return http.StatusOK, nil
+	}
+	if !hasScopes("account_admin", id.Scope, false) {
+		return http.StatusUnauthorized, fmt.Errorf("unauthorized")
+	}
+	return http.StatusOK, nil
 }
 
 // LookupItem returns true if the named object is found
@@ -233,7 +246,12 @@ func (h *scimUser) Patch(name string) error {
 	for i, patch := range h.input.Operations {
 		src := patch.Value
 		var dst *string
-		switch patch.Path {
+		path := patch.Path
+		// When updating a photo from the list, always update the photo in the primary profile.
+		if photoPathRE.MatchString(path) {
+			path = "photo"
+		}
+		switch path {
 		case "active":
 			// TODO: support for boolean input for "active" field instead of strings
 			switch {
@@ -250,7 +268,7 @@ func (h *scimUser) Patch(name string) error {
 		case "name.formatted":
 			dst = &h.save.Profile.Name
 			if patch.Op == "remove" {
-				return fmt.Errorf("operation %d: cannot set %q to an empty value", i, patch.Path)
+				return fmt.Errorf("operation %d: cannot set %q to an empty value", i, path)
 			}
 
 		case "name.familyName":
@@ -262,8 +280,14 @@ func (h *scimUser) Patch(name string) error {
 		case "name.middleName":
 			dst = &h.save.Profile.MiddleName
 
+		case "photo":
+			dst = &h.save.Profile.Picture
+			if !common.IsImageURL(src) {
+				return fmt.Errorf("invalid photo URL %q", src)
+			}
+
 		default:
-			return fmt.Errorf("operation %d: invalid path %q", i, patch.Path)
+			return fmt.Errorf("operation %d: invalid path %q", i, path)
 		}
 		if patch.Op != "remove" && len(src) == 0 {
 			return fmt.Errorf("operation %d: cannot set an empty value", i)
@@ -365,8 +389,21 @@ func (h *scimUsers) Get(name string) error {
 	if err != nil {
 		return err
 	}
+	// "startIndex" is a 1-based starting location, to be converted to an offset for the query.
+	start := common.ExtractIntParam(h.r, "startIndex")
+	if start == 0 {
+		start = 1
+	}
+	offset := start - 1
+	// "count" is the number of results desired on this request's page.
+	max := common.ExtractIntParam(h.r, "count")
+	if len(common.GetParam(h.r, "count")) == 0 {
+		max = storage.DefaultPageSize
+	}
+
 	m := make(map[string]map[string]proto.Message)
-	if err := h.s.store.MultiReadTx(storage.AccountDatatype, getRealm(h.r), storage.DefaultUser, filters, m, &pb.Account{}, h.tx); err != nil {
+	count, err := h.s.store.MultiReadTx(storage.AccountDatatype, getRealm(h.r), storage.DefaultUser, filters, offset, max, m, &pb.Account{}, h.tx)
+	if err != nil {
 		return err
 	}
 	accts := make(map[string]*pb.Account)
@@ -386,12 +423,14 @@ func (h *scimUsers) Get(name string) error {
 		list = append(list, h.s.newScimUser(accts[sub], realm))
 	}
 
-	count := uint32(len(subjects))
+	if max < count {
+		max = count
+	}
 	resp := &spb.ListUsersResponse{
 		Schemas:      []string{"urn:ietf:params:scim:api:messages:2.0:ListResponse"},
-		TotalResults: count,
-		ItemsPerPage: count,
-		StartIndex:   0,
+		TotalResults: uint32(offset + count),
+		ItemsPerPage: uint32(len(list)),
+		StartIndex:   uint32(start),
 		Resources:    list,
 	}
 	return common.SendResponse(resp, h.w)
@@ -429,11 +468,22 @@ func (h *scimUsers) Save(tx storage.Tx, name string, vars map[string]string, des
 
 func (s *Service) newScimUser(acct *pb.Account, realm string) *spb.User {
 	var emails []*spb.Attribute
+	var photos []*spb.Attribute
+	primaryPic := acct.GetProfile().GetPicture()
+	if len(primaryPic) > 0 {
+		photos = append(photos, &spb.Attribute{Value: primaryPic, Primary: true})
+	}
 	for _, ca := range acct.ConnectedAccounts {
 		emails = append(emails, &spb.Attribute{
 			Value:             ca.Properties.Email,
 			ExtensionVerified: ca.Properties.EmailVerified,
 		})
+		if ca.Profile == nil {
+			continue
+		}
+		if pic := ca.GetProfile().GetPicture(); len(pic) > 0 && pic != primaryPic {
+			photos = append(photos, &spb.Attribute{Value: pic})
+		}
 	}
 	return &spb.User{
 		Schemas:    []string{"urn:ietf:params:scim:schemas:core:2.0:User"},
@@ -454,6 +504,7 @@ func (s *Service) newScimUser(acct *pb.Account, realm string) *spb.User {
 		},
 		UserName: acct.Properties.Subject,
 		Emails:   emails,
+		Photos:   photos,
 		Active:   acct.State == storage.StateActive,
 	}
 }
