@@ -19,17 +19,78 @@
 <head>
   <meta charset="UTF-8">
   <title>Title</title>
+  <style>
+    body {
+      margin: 0;
+      font-family: 'Roboto', sans-serif;
+      font-size: 16px;
+      color: #2B2B2B;
+    }
+    #main-container {
+      background: url(${ASSET_DIR}/info_bg.png) center center / cover no-repeat;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-grow: 1;
+    }
+    #information-release {
+      padding: 2rem;
+      width: 65%;
+      max-width: 30rem;
+      background: #ffffff;
+    }
+    #list {
+      padding-left: 1rem;
+    }
+    #list li{
+      font-size: 0.9rem;
+      line-height: 1.6rem;
+    }
+    .action-items {
+      display: flex;
+      justify-content: flex-end;
+    }
+    .action-button {
+      -webkit-appearance: none;
+      padding: 0.5rem 0.8rem;
+      margin: 0;
+      border: none;
+      text-transform: uppercase;
+    }
+    #agree {
+      background: #005F6B;
+      color: #ffffff;
+    }
+    #disagree {
+      background: #e2e2e2;
+      margin-right: 0.2rem;
+    }
+    h4{
+      font-size: 2rem;
+      font-weight: normal;
+      margin: 0;
+    }
+    p {
+      font-size: 0.7rem;
+    }
+  </style>
 </head>
 <body>
 
-<div id="information-release">
-  By clicking "Agree", you agree to release your following information to ${APPLICATION_NAME}
-  <ul id="list">
-  </ul>
-</div>
+<div id="main-container">
+  <div id="information-release">
+    <h4>We need your permission</h4>
+    <p>By clicking "Agree", you agree to release your following information to ${APPLICATION_NAME}</p>
+    <ul id="list">
+    </ul>
+    <div class="action-items">
+      <button class="action-button" id="disagree">Disagree</button>
+      <button class="action-button" id="agree">Agree</button>
+    </div>
 
-<button id="agree">Agree</button>
-<button id="disagree">Disagree</button>
+  </div>
+</div>
 
 <script>
   let ul = document.getElementById("list");
