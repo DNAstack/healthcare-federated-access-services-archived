@@ -130,5 +130,38 @@
                 </plugins>
             </build>
         </profile>
+        <profile>
+            <id>playground</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <!-- This version fixes a path issue when trying to fork a surefire test VM
+                             https://stackoverflow.com/a/53016532 -->
+                        <version>3.0.0-M1</version>
+                        <configuration>
+
+                            <!-- Tells surefire to run the tests in our fat jar -->
+                            <dependenciesToScan>
+                                <dependency>com.dnastack:local-e2e-tests</dependency>
+                            </dependenciesToScan>
+
+                            <!-- Only run the tests we wrote: the fat jar tends to contain other JUnit @Test annotated methods. -->
+                            <includes>
+                                <include>%regex[com.dnastack.playground.*\.class]</include>
+                            </includes>
+
+                            <!-- Sets location for selenium screenshots so that they are copied out of test container. -->
+                            <environmentVariables>
+                                <E2E_SCREENSHOT_DIR>/target</E2E_SCREENSHOT_DIR>
+                            </environmentVariables>
+
+                            <trimStackTrace>false</trimStackTrace>
+
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
     </profiles>
 </project>
