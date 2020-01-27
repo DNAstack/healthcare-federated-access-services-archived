@@ -17,14 +17,15 @@ package storage
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
+	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
 
-	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1"
+	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 )
 
 var (
@@ -55,8 +56,7 @@ func MakeConfigHistory(desc, resType string, rev int64, ts float64, r *http.Requ
 			if _, ok := secretParams[name]; ok {
 				value = "***"
 			}
-			// TODO: escape name and value
-			query += name + "=" + value
+			query += url.QueryEscape(name) + "=" + url.QueryEscape(value)
 		}
 	}
 	m := jsonpb.Marshaler{}

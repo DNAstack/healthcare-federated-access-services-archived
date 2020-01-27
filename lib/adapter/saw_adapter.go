@@ -18,11 +18,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
 const (
@@ -127,14 +127,17 @@ func resourceTokenCreationParams(role string, template *pb.ServiceTemplate, sRol
 			}
 		}
 	}
-
+	billingProject := cfg.Options.GcpIamBillingProject
+	if len(billingProject) == 0 {
+		billingProject = cfg.Options.GcpServiceAccountProject
+	}
 	return &clouds.ResourceTokenCreationParams{
 		AccountProject: cfg.Options.GcpServiceAccountProject,
 		Items:          items,
 		Roles:          roles,
 		Scopes:         scopes,
 		TokenFormat:    format,
-		UserProject:    userProject,
+		BillingProject: billingProject,
 	}, nil
 }
 

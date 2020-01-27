@@ -21,11 +21,11 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/coreos/go-oidc"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
+	"github.com/coreos/go-oidc" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 
-	jose "gopkg.in/square/go-jose.v2"
-	josejwt "gopkg.in/square/go-jose.v2/jwt"
+	jose "gopkg.in/square/go-jose.v2" /* copybara-comment */
+	josejwt "gopkg.in/square/go-jose.v2/jwt" /* copybara-comment */
 )
 
 // IsAudience returns true if the token's "azp" or "aud" contains the self string or clientID.
@@ -105,9 +105,16 @@ func ConvertTokenToIdentityUnsafe(tok string) (*ga4gh.Identity, error) {
 // HasUserinfoClaims checks if /userinfo endpoint needs to be called to fetch additional claims for
 // a particular identity.
 func HasUserinfoClaims(id *ga4gh.Identity) bool {
-	scopes := strings.Split(id.Scope, " ")
+	var scopes []string
+	// Hydra is using "scp" claims in access token.
+	if len(id.Scp) > 0 {
+		scopes = id.Scp
+	} else {
+		scopes = strings.Split(id.Scope, " ")
+	}
+
 	for _, scope := range scopes {
-		if scope == "ga4gh" || scope == "ga4gh_passport_v1" {
+		if scope == "ga4gh" || scope == "ga4gh_passport_v1" || scope == "identities" {
 			return true
 		}
 	}

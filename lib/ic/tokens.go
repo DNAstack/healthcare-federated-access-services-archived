@@ -18,11 +18,11 @@ import (
 	"context"
 	"net/http"
 
-	glog "github.com/golang/glog"
-	epb "github.com/golang/protobuf/ptypes/empty"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil"
-	tpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/tokens/v1"
-	tgpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/tokens/v1"
+	glog "github.com/golang/glog" /* copybara-comment */
+	epb "github.com/golang/protobuf/ptypes/empty" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	tpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/tokens/v1" /* copybara-comment: go_proto */
+	tgpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/tokens/v1" /* copybara-comment: go_proto_grpc */
 )
 
 // TokensHandler is a HTTP handler wrapping a GRPC server.
@@ -74,3 +74,36 @@ func (s *stubTokens) ListTokens(_ context.Context, req *tpb.ListTokensRequest) (
 	glog.Infof("ListTokens %v", req)
 	return &tpb.ListTokensResponse{Tokens: []*tpb.Token{s.token}}, nil
 }
+
+// TODO: move these fakes to test file once implemented.
+var fakeToken = &tpb.Token{
+	Name:      "fake-token",
+	IssuedAt:  1573850929,
+	ExpiresAt: 1573847329,
+	Scope:     "fake-scope",
+	Client: &tpb.Client{
+		Id:          "fake-client-id",
+		Name:        "fake-client-name",
+		Description: "fake-client-description",
+	},
+	Target: "fake-target",
+	Metadata: map[string]string{
+		"client_desc": "fake-client-ui-description",
+	},
+}
+
+const fakeTokenJSON = `{
+  "client": {
+    "description": "fake-client-description",
+    "id": "fake-client-id",
+    "name": "fake-client-name"
+  },
+  "expires_at": 1573847329,
+  "issued_at": 1573850929,
+  "metadata": {
+    "client_desc": "fake-client-ui-description"
+  },
+  "name": "fake-token",
+  "scope": "fake-scope",
+  "target": "fake-target"
+}`

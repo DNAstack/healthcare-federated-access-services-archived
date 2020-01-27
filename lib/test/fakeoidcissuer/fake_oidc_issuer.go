@@ -19,12 +19,12 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/dgrijalva/jwt-go"
-	"github.com/coreos/go-oidc"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/httptestclient"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys"
-	dampb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
+	"github.com/dgrijalva/jwt-go" /* copybara-comment */
+	"github.com/coreos/go-oidc" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/httptestclient" /* copybara-comment: httptestclient */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys" /* copybara-comment: testkeys */
+	dampb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
 // Server is a fake OIDC issuer server for testing.
@@ -34,8 +34,8 @@ type Server struct {
 }
 
 // New returns Server
-func New(issuerURL string, key *testkeys.Key, service, path string) (*Server, error) {
-	broker, err := persona.NewBroker(issuerURL, key, service, path)
+func New(issuerURL string, key *testkeys.Key, service, path string, useOIDCPrefix bool) (*Server, error) {
+	broker, err := persona.NewBroker(issuerURL, key, service, path, useOIDCPrefix)
 	if err != nil {
 		return nil, err
 	}

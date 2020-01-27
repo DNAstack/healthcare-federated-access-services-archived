@@ -19,7 +19,7 @@ import (
 	"context"
 	"time"
 
-	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1"
+	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 )
 
 // ResourceTokenCreationParams provides information on a set of items to perform an action upon.
@@ -29,7 +29,7 @@ type ResourceTokenCreationParams struct {
 	Roles          []string
 	Scopes         []string
 	TokenFormat    string
-	UserProject    string
+	BillingProject string
 }
 
 // ResourceTokenResult is returned from GetTokenWithTTL().

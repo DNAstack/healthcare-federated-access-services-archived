@@ -18,22 +18,23 @@ import (
 	"context"
 	"testing"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dam"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dam" /* copybara-comment: dam */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
-	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1"
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
+	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
 const (
 	hydraAdminURL = "https://admin.hydra.example.com"
-	notUseHydra   = false
+	hydraURL      = "https://example.com/oidc"
+	useHydra      = true
 )
 
 func TestCheckIntegrity(t *testing.T) {
 	store := storage.NewMemoryStorage("dam", "testdata/config")
-	s := dam.NewService(context.Background(), "test.org", "no-broker", hydraAdminURL, store, nil, notUseHydra)
+	s := dam.NewService(context.Background(), "test.org", "no-broker", hydraAdminURL, hydraURL, store, nil, useHydra)
 	cfg := &pb.DamConfig{}
 	if err := store.Read(storage.ConfigDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev, cfg); err != nil {
 		t.Fatalf("error reading config: %v", err)

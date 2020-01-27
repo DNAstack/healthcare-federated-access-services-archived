@@ -18,18 +18,17 @@ import (
 	"context"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms/fakeencryption"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/credtest"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakeoidcissuer"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys"
+	"github.com/google/go-cmp/cmp" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms/fakeencryption" /* copybara-comment: fakeencryption */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/credtest" /* copybara-comment: credtest */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakeoidcissuer" /* copybara-comment: fakeoidcissuer */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test" /* copybara-comment: test */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys" /* copybara-comment: testkeys */
 )
 
 var paths = map[string]credtest.Requirement{
 	infoPath:                     {ClientID: false, ClientSecret: false},
-	realmPath:                    {ClientID: true, ClientSecret: true},
 	clientPath:                   {ClientID: true, ClientSecret: true},
 	configPath:                   {ClientID: true, ClientSecret: true},
 	configHistoryPath:            {ClientID: true, ClientSecret: true},
@@ -40,44 +39,35 @@ var paths = map[string]credtest.Requirement{
 	configOptionsPath:            {ClientID: true, ClientSecret: true},
 	identityProvidersPath:        {ClientID: true, ClientSecret: false},
 	translatorsPath:              {ClientID: true, ClientSecret: false},
-	tokenPath:                    {ClientID: true, ClientSecret: true},
-	tokenMetadataPath:            {ClientID: true, ClientSecret: true},
 	adminTokenMetadataPath:       {ClientID: true, ClientSecret: true},
-	revocationPath:               {ClientID: true, ClientSecret: true},
-	loginPagePath:                {ClientID: true, ClientSecret: false},
-	loginPath:                    {ClientID: true, ClientSecret: false},
+	loginPath:                    {ClientID: false, ClientSecret: false},
 	acceptLoginPath:              {ClientID: false, ClientSecret: false},
-	finishLoginPath:              {ClientID: true, ClientSecret: false},
+	finishLoginPath:              {ClientID: false, ClientSecret: false},
 	acceptInformationReleasePath: {ClientID: false, ClientSecret: false},
-	testPath:                     {ClientID: false, ClientSecret: false},
-	tokenFlowTestPath:            {ClientID: false, ClientSecret: false},
 	scimMePath:                   {ClientID: true, ClientSecret: true},
 	scimUsersPath:                {ClientID: true, ClientSecret: true},
 	scimUserPath:                 {ClientID: true, ClientSecret: true},
-	authorizePath:                {ClientID: true, ClientSecret: false},
 	accountPath:                  {ClientID: true, ClientSecret: true},
 	accountSubjectPath:           {ClientID: true, ClientSecret: true},
 	adminClaimsPath:              {ClientID: true, ClientSecret: true},
-	oidcConfiguarePath:           {ClientID: false, ClientSecret: false},
-	oidcJwksPath:                 {ClientID: false, ClientSecret: false},
-	oidcUserInfoPath:             {ClientID: false, ClientSecret: false},
 	hydraLoginPath:               {ClientID: false, ClientSecret: false},
 	hydraConsentPath:             {ClientID: false, ClientSecret: false},
-	hydraTestPage:                {ClientID: false, ClientSecret: false},
-	"/tokens":                    {ClientID: true, ClientSecret: true},
-	"/tokens/":                   {ClientID: true, ClientSecret: true},
+	tokensPath:                   {ClientID: true, ClientSecret: true},
+	tokenPath:                    {ClientID: true, ClientSecret: true},
+	consentsPath:                 {ClientID: true, ClientSecret: true},
+	consentPath:                  {ClientID: true, ClientSecret: true},
 	staticFilePath:               {ClientID: false, ClientSecret: false},
 }
 
 func setup(t *testing.T) *Service {
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	server, err := fakeoidcissuer.New(oidcIssuer, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config")
+	server, err := fakeoidcissuer.New(hydraURL, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config", false)
 	if err != nil {
 		t.Fatalf("fakeoidcissuer.New() failed: %v", err)
 	}
 	ctx := server.ContextWithClient(context.Background())
 	crypt := fakeencryption.New()
-	s := NewService(ctx, domain, domain, hydraAdminURL, store, crypt, notUseHydra)
+	s := NewService(ctx, domain, domain, hydraAdminURL, hydraURL, store, crypt, useHydra)
 	return s
 }
 

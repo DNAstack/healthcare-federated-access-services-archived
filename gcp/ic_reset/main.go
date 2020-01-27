@@ -19,9 +19,9 @@ import (
 	"context"
 	"os"
 
-	glog "github.com/golang/glog"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/storage"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ic"
+	glog "github.com/golang/glog" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/storage" /* copybara-comment: gcp_storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ic" /* copybara-comment: ic */
 )
 
 func main() {
@@ -33,7 +33,7 @@ func main() {
 	path := "deploy/config"
 
 	store := gcp_storage.NewDatastoreStorage(context.Background(), project, service, path)
-	ics := ic.NewService(context.Background(), "reset.example.org", "reset.example.org", "https://reset.example.org", store, nil, false)
+	ics := ic.NewService(context.Background(), "reset.example.org", "reset.example.org", "https://reset.example.org", "https://reset.example.org", store, nil, false)
 
 	if err := ics.ImportFiles("FORCE_WIPE"); err != nil {
 		glog.Fatalf("error importing files: %v", err)

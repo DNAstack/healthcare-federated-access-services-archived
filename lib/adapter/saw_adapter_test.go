@@ -20,12 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter" /* copybara-comment: adapter */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
 func TestSawAdapter(t *testing.T) {
@@ -126,8 +126,9 @@ func TestSawAdapter(t *testing.T) {
 								"project": "dataset-example-project",
 							},
 						},
-						Roles:  []string{"roles/storage.objectViewer"},
-						Scopes: []string{"https://www.googleapis.com/auth/cloud-platform"},
+						Roles:          []string{"roles/storage.objectViewer"},
+						Scopes:         []string{"https://www.googleapis.com/auth/cloud-platform"},
+						BillingProject: "example-project-id",
 					},
 				},
 			},
@@ -143,7 +144,7 @@ func TestSawAdapter(t *testing.T) {
 				MaxTTL:          168 * time.Hour,
 				Resource:        payres,
 				ServiceRole:     paysRole,
-				ServiceTemplate: cfg.ServiceTemplates["gcs_requester_pays"],
+				ServiceTemplate: cfg.ServiceTemplates["gcs"],
 				TTL:             60 * time.Second,
 				View:            payview,
 			},
@@ -163,14 +164,18 @@ func TestSawAdapter(t *testing.T) {
 							{
 								"bucket":  "dataset-example-payer-bucket1",
 								"project": "dataset-example-project",
+								"type":    "requester-pays",
 							},
 							{
 								"bucket":  "dataset-example-payer-bucket2",
 								"project": "dataset-example-project",
+								"type":    "requester-pays",
+								"paths":   "/hello/there*;/goodbye/charlie",
 							},
 						},
-						Roles:  []string{"roles/storage.objectViewer"},
-						Scopes: []string{"https://www.googleapis.com/auth/cloud-platform"},
+						Roles:          []string{"roles/storage.objectViewer"},
+						Scopes:         []string{"https://www.googleapis.com/auth/cloud-platform"},
+						BillingProject: "example-project-id",
 					},
 				},
 			},

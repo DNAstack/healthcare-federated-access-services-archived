@@ -19,13 +19,14 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
 const (
@@ -184,11 +185,26 @@ func createVariableREs(descriptors map[string]*pb.TargetAdapter) map[string]map[
 				fEntry[fk] = vEntry
 				for vk, vv := range fv.Variables {
 					if len(vv.Regexp) > 0 {
-						vEntry[vk] = regexp.MustCompile(vv.Regexp)
+						restr := vv.Regexp
+						if vv.Type == "split_pattern" {
+							frag := stripAnchors(restr)
+							restr = "^" + frag + "(;" + frag + ")*$"
+						}
+						vEntry[vk] = regexp.MustCompile(restr)
 					}
 				}
 			}
 		}
 	}
 	return varRE
+}
+
+func stripAnchors(restr string) string {
+	if strings.HasPrefix(restr, "^") {
+		restr = restr[1:]
+	}
+	if strings.HasSuffix(restr, "$") {
+		restr = restr[0 : len(restr)-1]
+	}
+	return restr
 }

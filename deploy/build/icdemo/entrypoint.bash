@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # Copyright 2019 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,13 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-runtime: go112
-service: "your-ic-app-engine-service-name"
+export ICDEMO_PORT="8080"
+export IC_URL="https://ic-dot-${PROJECT}.appspot.com/"
+export HYDRA_PUBLIC_URL="https://ic-dot-${PROJECT}.appspot.com/"
 
-env_variables:
-  # DAM_SERVICE_NAME points to the service name of DAM persona config storage.
-  DAM_SERVICE_NAME: "dam"
-  # CONFIG_PATH is the path used for reading and writing config files.
-  CONFIG_PATH: "deploy/config"
-  # OIDC_URL is the URL to the OIDC endpoint service.
-  OIDC_URL: "https://your-issuer-domain/oidc"
+echo ICDEMO Started
+cd /hcls-fa
+./icdemo
+echo ICDEMO Finished

@@ -23,10 +23,11 @@ import (
 	"strings"
 	"sync"
 
-	glog "github.com/golang/glog"
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
-	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1"
+	glog "github.com/golang/glog" /* copybara-comment */
+	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/srcutil" /* copybara-comment: srcutil */
+	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 )
 
 const (
@@ -34,30 +35,24 @@ const (
 	storageVersion = "v0"
 )
 
-var (
-	// ProjectRoot locates resources of project.
-	ProjectRoot = os.Getenv("PROJECT_ROOT")
-)
-
 type FileStorage struct {
 	service string
 	path    string
-
-	mu    sync.Mutex
-	cache *StorageCache
+	mu      sync.Mutex
+	cache   *StorageCache
 }
 
 func NewFileStorage(service, path string) *FileStorage {
-	path = filepath.Join(ProjectRoot, path)
 	// Add the service name directory to the path:
 	// 1. Add the full service name if the subdirectory exists; or
 	// 2. The base service name (i.e. before the first "-" character).
-	servicePath := filepath.Join(path, service)
+	servicePath := srcutil.Path(filepath.Join(path, service))
 	if err := checkFile(servicePath); err == nil {
 		path = servicePath
 	} else {
-		path = filepath.Join(path, strings.Split(service, "-")[0])
+		path = srcutil.Path(filepath.Join(path, strings.Split(service, "-")[0]))
 	}
+
 	glog.Infof("file storage for service %q using path %q.", service, path)
 	f := &FileStorage{
 		service: strings.Split(service, "-")[0],
@@ -85,7 +80,8 @@ func (f *FileStorage) Exists(datatype, realm, user, id string, rev int64) (bool,
 	err := checkFile(fn)
 	if err == nil {
 		return true, nil
-	} else if os.IsNotExist(err) {
+	}
+	if os.IsNotExist(err) {
 		return false, nil
 	}
 	return false, err
@@ -205,24 +201,6 @@ func (f *FileStorage) Tx(update bool) (Tx, error) {
 	return &FileTx{
 		writer: update,
 	}, nil
-}
-
-func (f *FileStorage) fname(datatype, realm, user, id string, rev int64) string {
-	r := LatestRevName
-	if rev > 0 {
-		r = fmt.Sprintf("%06d", rev)
-	}
-	// TODO: use path.Join(...)
-	return fmt.Sprintf("%s/%s_%s%s_%s_%s.json", f.path, datatype, realm, UserFragment(user), id, r)
-}
-
-func (f *FileStorage) historyName(datatype, realm, user, id string) string {
-	return fmt.Sprintf("%s/%s_%s%s_%s_%s.json", f.path, datatype, realm, UserFragment(user), id, HistoryRevName)
-}
-
-func checkFile(path string) error {
-	_, err := os.Stat(path)
-	return err
 }
 
 type FileTx struct {

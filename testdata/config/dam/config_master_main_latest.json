@@ -8,7 +8,7 @@
   },
   "trustedPassportIssuers": {
     "test": {
-      "issuer": "https://example.org/oidc",
+      "issuer": "https://hydra.example.com/",
       "clientId": "00000000-0000-0000-0000-000000000000",
       "ui": {
         "label": "Test",
@@ -61,10 +61,10 @@
       }
     },
     "testBroker": {
-      "issuer": "https://example.com/oidc",
-      "authUrl": "https://example.com/authorize",
-      "tokenUrl": "https://example.com/oidc/token",
-      "clientId": "cid",
+      "issuer": "https://hydra.example.com/",
+      "authUrl": "https://hydra.example.com/authorize",
+      "tokenUrl": "https://hydra.example.com/token",
+      "clientId": "00000000-0000-0000-0000-000000000000",
       "ui": {
         "label": "Local IC Dev",
         "description": "Local IC Dev passport issuer"
@@ -322,7 +322,7 @@
           }
         },
         "gcs_payer": {
-          "serviceTemplate": "gcs_requester_pays",
+          "serviceTemplate": "gcs",
           "version": "dataset v1",
           "topic": "FHIR",
           "partition": "all",
@@ -335,13 +335,16 @@
             {
               "vars": {
                 "project": "dataset-example-project",
-                "requester-pays-bucket": "dataset-example-payer-bucket1"
+                "bucket": "dataset-example-payer-bucket1",
+                "type": "requester-pays"
               }
             },
             {
               "vars": {
                 "project": "dataset-example-project",
-                "requester-pays-bucket": "dataset-example-payer-bucket2"
+                "bucket": "dataset-example-payer-bucket2",
+                "type": "requester-pays",
+                "paths": "/hello/there*;/goodbye/charlie"
               }
             }
           ],
@@ -600,37 +603,6 @@
         "description": "Google Cloud Storage"
       }
     },
-    "gcs_requester_pays": {
-      "targetAdapter": "token:gcp:sa",
-      "itemFormat": "gcs",
-      "roles": {
-        "viewer": {
-          "targetRoles": [
-            "roles/storage.objectViewer"
-          ],
-          "targetScopes": [
-            "https://www.googleapis.com/auth/cloud-platform"
-          ],
-          "damRoleCategories": [
-            "metadata",
-            "list",
-            "read"
-          ],
-          "ui": {
-            "label": "File Viewer",
-            "description": "List and read files"
-          }
-        }
-      },
-      "interfaces": {
-        "gcp:gs": "gs://${requester-pays-bucket}",
-        "http:gcp:gs": "https://www.googleapis.com/storage/v1/b/${requester-pays-bucket}"
-      },
-      "ui": {
-        "label": "Google Cloud Storage",
-        "description": "Google Cloud Storage (GCS) requester-pays bucket"
-      }
-    },
     "bigquery": {
       "targetAdapter": "token:gcp:sa",
       "itemFormat": "bigquery",
@@ -756,6 +728,30 @@
     }
   },
   "testPersonas": {
+    "non-admin": {
+      "ui": {
+        "label": "Non Admin"
+      },
+      "passport": {
+        "standardClaims": {
+          "iss": "https://ic-dot-example.appspot.com/oidc",
+          "email": "non-admin@faculty.example.edu"
+        },
+        "ga4ghAssertions": []
+      }
+    },
+    "admin": {
+      "ui": {
+        "label": "Admin"
+      },
+      "passport": {
+        "standardClaims": {
+          "iss": "https://ic-dot-example.appspot.com/oidc",
+          "email": "admin@faculty.example.edu"
+        },
+        "ga4ghAssertions": []
+      }
+    },
     "dr_joe_elixir": {
       "ui": {
         "label": "Dr. Joe (Elixir)"
@@ -844,7 +840,26 @@
       "ui": {
         "label": "Test Client",
         "description": "Unit test client"
-      }
+      },
+      "redirectUris": [
+        "http://example.com"
+      ],
+      "scope": "openid offline ga4gh_passport_v1 profile email identities account_admin",
+      "grantTypes": ["authorization_code"],
+      "responseTypes": ["token", "code", "id_token"]
+    },
+    "test_client2": {
+      "clientId": "00000000-0000-0000-0000-000000000002",
+      "ui": {
+        "label": "Test Client",
+        "description": "Unit test client 2"
+      },
+      "redirectUris": [
+        "http://example.com"
+      ],
+      "scope": "openid offline ga4gh_passport_v1 profile email identities account_admin",
+      "grantTypes": ["authorization_code"],
+      "responseTypes": ["token", "code", "id_token"]
     }
   },
   "options": {

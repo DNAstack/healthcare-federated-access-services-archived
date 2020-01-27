@@ -26,23 +26,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
-	"github.com/cenkalti/backoff"
-	"golang.org/x/crypto/sha3"
+	"github.com/cenkalti/backoff" /* copybara-comment */
+	"golang.org/x/crypto/sha3" /* copybara-comment */
 
 	// Using a deprecated library because the new version doesn't support setting IAM roles in
 	// BigQuery datasets yet.
-	"google.golang.org/api/bigquery/v2"
-	"google.golang.org/api/cloudresourcemanager/v1"
-	"google.golang.org/api/googleapi"
-	"google.golang.org/api/iam/v1"
-	"google.golang.org/api/iamcredentials/v1"
-	cloudstorage "google.golang.org/api/storage/v1"
+	"google.golang.org/api/bigquery/v2" /* copybara-comment: bigquery */
+	"google.golang.org/api/cloudresourcemanager/v1" /* copybara-comment: cloudresourcemanager */
+	"google.golang.org/api/googleapi" /* copybara-comment: googleapi */
+	"google.golang.org/api/iam/v1" /* copybara-comment: iam */
+	"google.golang.org/api/iamcredentials/v1" /* copybara-comment: iamcredentials */
+	cloudstorage "google.golang.org/api/storage/v1" /* copybara-comment: storage */
 
-	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1"
+	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 )
 
 const (
@@ -364,7 +364,10 @@ func (wh *AccountWarehouse) getBackingAccount(ctx context.Context, id string, pa
 	name := accountName(proj, hid)
 	account, err := service.Get(name).Context(ctx).Do()
 	if err == nil {
-		// TODO: verify there are no user_id->SA_account collisions.
+		// The DisplayName is used as a managed field for auditing and collision detection.
+		if account.DisplayName != id {
+			return "", fmt.Errorf("user account unavailable for use by user %q", id)
+		}
 		if err := wh.configureRoles(ctx, account.Email, params); err != nil {
 			return "", fmt.Errorf("configuring role for existing account: %v", err)
 		}
@@ -476,26 +479,26 @@ func (wh *AccountWarehouse) configureRoles(ctx context.Context, email string, pa
 		var prevErr error
 		if err := backoff.Retry(func() error {
 			policyCall := wh.cs.Buckets.GetIamPolicy(bkt)
-			if params.UserProject != "" {
-				policyCall = policyCall.UserProject(params.UserProject)
+			if params.BillingProject != "" {
+				policyCall = policyCall.UserProject(params.BillingProject)
 			}
-			getIamPolicy, err := policyCall.Context(ctx).Do()
+			policy, err := policyCall.Context(ctx).Do()
 			if err != nil {
 				return convertToPermanentErrorIfApplicable(err, fmt.Errorf("getting IAM policy for bucket %q: %v", bkt, err))
 			}
-			if len(failedEtag) > 0 && failedEtag == getIamPolicy.Etag {
+			if len(failedEtag) > 0 && failedEtag == policy.Etag {
 				return convertToPermanentErrorIfApplicable(prevErr, fmt.Errorf("setting IAM policy for bucket %q on service account %q: %v", bkt, email, prevErr))
 			}
 			for _, role := range roles {
-				wh.configureBucketRole(getIamPolicy, role, email)
+				wh.configureBucketRole(policy, role, email)
 			}
-			setIamPolicyCall := wh.cs.Buckets.SetIamPolicy(bkt, getIamPolicy)
-			if params.UserProject != "" {
-				setIamPolicyCall.UserProject(params.UserProject)
+			set := wh.cs.Buckets.SetIamPolicy(bkt, policy)
+			if params.BillingProject != "" {
+				set.UserProject(params.BillingProject)
 			}
-			_, err = setIamPolicyCall.Context(ctx).Do()
+			_, err = set.Context(ctx).Do()
 			if err != nil {
-				failedEtag = getIamPolicy.Etag
+				failedEtag = policy.Etag
 				prevErr = err
 			}
 			return err

@@ -19,7 +19,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/golang/protobuf/proto"
+	"github.com/golang/protobuf/proto" /* copybara-comment */
 )
 
 const (
@@ -33,7 +33,6 @@ const (
 
 	AccountDatatype        = "account"
 	AccountLookupDatatype  = "acct_lookup"
-	AuthCodeDatatype       = "auth_code"
 	ClientDatatype         = "client"
 	ConfigDatatype         = "config"
 	LoginStateDatatype     = "login_state"
