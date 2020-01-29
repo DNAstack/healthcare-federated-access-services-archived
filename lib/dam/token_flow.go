@@ -24,16 +24,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/mux"
-	"golang.org/x/oauth2"
-	"github.com/pborman/uuid"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"github.com/gorilla/mux" /* copybara-comment */
+	"golang.org/x/oauth2" /* copybara-comment */
+	"github.com/pborman/uuid" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter" /* copybara-comment: adapter */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
 const (
@@ -628,7 +629,17 @@ func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
 		common.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
-	state, id, err := s.resourceTokenState(auth, tx)
+
+	cart := auth
+	if s.useHydra {
+		cart, err = s.extractCartFromAccessToken(auth)
+		if err != nil {
+			httputil.WriteRPCResp(w, nil, err)
+			return
+		}
+	}
+
+	state, id, err := s.resourceTokenState(cart, tx)
 	if err != nil {
 		common.HandleError(http.StatusBadRequest, err, w)
 		return
@@ -684,13 +695,9 @@ func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
 	common.SendResponse(out, w)
 }
 
-func (s *Service) resourceTokenState(tok string, tx storage.Tx) (*pb.ResourceTokenRequestState, *ga4gh.Identity, error) {
-	if len(tok) < 10 || len(tok) > 50 {
-		return nil, nil, fmt.Errorf("invalid token format")
-	}
-
+func (s *Service) resourceTokenState(stateID string, tx storage.Tx) (*pb.ResourceTokenRequestState, *ga4gh.Identity, error) {
 	state := &pb.ResourceTokenRequestState{}
-	err := s.store.ReadTx(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, tok, storage.LatestRev, state, tx)
+	err := s.store.ReadTx(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, state, tx)
 	if err != nil {
 		return nil, nil, err
 	}

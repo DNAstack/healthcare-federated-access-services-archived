@@ -35,25 +35,26 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
-	"github.com/gorilla/mux"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"gopkg.in/square/go-jose.v2"
-	"github.com/dgrijalva/jwt-go"
-	"golang.org/x/oauth2"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"
+	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"github.com/gorilla/mux" /* copybara-comment */
+	"google.golang.org/grpc/codes" /* copybara-comment */
+	"google.golang.org/grpc/status" /* copybara-comment */
+	"gopkg.in/square/go-jose.v2" /* copybara-comment */
+	"github.com/dgrijalva/jwt-go" /* copybara-comment */
+	"golang.org/x/oauth2" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
 
-	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1"
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1"
-	tpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/tokens/v1"
-	"github.com/golang/glog"
+	glog "github.com/golang/glog" /* copybara-comment */
+	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
+	tpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/tokens/v1" /* copybara-comment: go_proto */
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1" /* copybara-comment: go_proto */
 )
 
 const (
@@ -102,7 +103,8 @@ const (
 	tokenMetadataPath            = methodPrefix + "token/{sub}/{jti}"
 	revocationPath               = methodPrefix + "revoke"
 	loginPagePath                = methodPrefix + "login"
-	loginPath                    = methodPrefix + "login/{name}"
+	loginPathPrefix              = methodPrefix + "login/"
+	loginPath                    = loginPathPrefix + "{name}"
 	finishLoginPrefix            = methodPrefix + "loggedin/"
 	finishLoginPath              = finishLoginPrefix + "{name}"
 	acceptInformationReleasePath = methodPrefix + "inforelease"
@@ -264,6 +266,25 @@ var (
 	skipURLValidationInTokenURL = regexp.MustCompile("^[A-Z_]*=https://.*$")
 
 	importDefault = os.Getenv("IMPORT")
+
+	// skipClientCredsPaths are the paths for which we don't check client credentials.
+	skipClientCredsPaths = map[string]bool{
+		infoPath:                     true,
+		hydraLoginPath:               true,
+		hydraConsentPath:             true,
+		acceptInformationReleasePath: true,
+		testPath:                     true,
+		tokenFlowTestPath:            true,
+		hydraTestPage:                true,
+	}
+	// skipClientCredsPaths are the path prefixes for which we don't check client credentials.
+	skipClientCredPrefixes = []string{
+		staticFilePath,
+		loginPathPrefix,
+		acceptLoginPath,
+		finishLoginPrefix,
+		oidcPath,
+	}
 )
 
 type Service struct {
@@ -451,15 +472,19 @@ func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) checkClientCreds(r *http.Request) error {
-	// TODO: will remove after integrate hydra.
-	if s.useHydra {
-		return nil
-	}
-
 	// Allow some requests to proceed without client IDs and/or secrets.
 	path := common.RequestAbstractPath(r)
-	if path == infoPath || strings.HasPrefix(path, staticFilePath) || strings.HasPrefix(path, testPath) || strings.HasPrefix(path, tokenFlowTestPath) || strings.HasPrefix(path, acceptLoginPath) || path == acceptInformationReleasePath || strings.HasPrefix(path, oidcPath) || path == hydraLoginPath || path == hydraConsentPath || path == hydraTestPage {
-		return nil
+
+	for p := range skipClientCredsPaths {
+		if path == p {
+			return nil
+		}
+	}
+
+	for _, p := range skipClientCredPrefixes {
+		if strings.HasPrefix(path, p) {
+			return nil
+		}
 	}
 
 	return s.checkClient(path, r)
@@ -563,6 +588,10 @@ func (s *Service) buildHandlerMux() *mux.Router {
 	r.HandleFunc("/tokens/{token_id}", NewTokensHandler(stubTokens).GetToken).Methods(http.MethodGet)
 	r.HandleFunc("/tokens/{token_id}", NewTokensHandler(stubTokens).DeleteToken).Methods(http.MethodDelete)
 
+	consents := &stubConsents{consent: fakeConsent}
+	r.HandleFunc("/consents", NewConsentsHandler(consents).ListConsents).Methods(http.MethodGet)
+	r.HandleFunc("/consents/", NewConsentsHandler(consents).DeleteConsent).Methods(http.MethodDelete)
+
 	sfs := http.StripPrefix(staticFilePath, http.FileServer(http.Dir(filepath.Join(storage.ProjectRoot, staticDirectory))))
 	r.PathPrefix(staticFilePath).Handler(sfs)
 	return r
@@ -650,6 +679,26 @@ func (s *Service) ConfigReset(w http.ResponseWriter, r *http.Request) {
 	if err = s.ImportFiles(importDefault); err != nil {
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
+	}
+
+	// Reset clients in Hyrdra
+	if s.useHydra {
+		conf, err := s.loadConfig(nil, storage.DefaultRealm)
+		if err != nil {
+			common.HandleError(http.StatusServiceUnavailable, err, w)
+			return
+		}
+
+		secrets, err := s.loadSecrets(nil)
+		if err != nil {
+			common.HandleError(http.StatusServiceUnavailable, err, w)
+			return
+		}
+
+		if err := oathclients.ResetClients(s.httpClient, s.hydraAdminURL, conf.Clients, secrets.ClientSecrets); err != nil {
+			common.HandleError(http.StatusServiceUnavailable, err, w)
+			return
+		}
 	}
 }
 
@@ -997,6 +1046,10 @@ func (s *Service) login(w http.ResponseWriter, r *http.Request, cfg *pb.IcConfig
 			common.HandleError(http.StatusBadRequest, err, w)
 			return
 		}
+		if clientID := getClientID(r); len(clientID) == 0 {
+			common.HandleError(http.StatusBadRequest, err, w)
+			return
+		}
 	}
 
 	idp, ok := cfg.IdentityProviders[idpName]
@@ -1101,8 +1154,7 @@ func (s *Service) AcceptLogin(w http.ResponseWriter, r *http.Request) {
 		common.HandleError(http.StatusInternalServerError, fmt.Errorf("bad redirect format: %v", err), w)
 		return
 	}
-	r.Form.Set("client_id", loginState.ClientId)
-	u.RawQuery = r.Form.Encode()
+	u.RawQuery = r.URL.RawQuery
 	common.SendRedirect(u.String(), r, w)
 }
 
@@ -1191,13 +1243,7 @@ func (s *Service) FinishLogin(w http.ResponseWriter, r *http.Request) {
 	scope := loginState.Scope
 	state := loginState.State
 	nonce := loginState.Nonce
-	clientID := getClientID(r)
-	if !s.useHydra {
-		if clientID != loginState.ClientId {
-			common.HandleError(http.StatusUnauthorized, fmt.Errorf("request client id does not match login state, want %q, got %q", loginState.ClientId, clientID), w)
-			return
-		}
-	}
+	clientID := loginState.ClientId
 
 	if idpName != loginState.IdpName {
 		common.HandleError(http.StatusUnauthorized, fmt.Errorf("request idp does not match login state, want %q, got %q", loginState.IdpName, idpName), w)
@@ -1646,89 +1692,6 @@ func (c *realm) Save(tx storage.Tx, name string, vars map[string]string, desc, t
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) clientFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
-		TypeName:            "client",
-		PathPrefix:          clientPath,
-		HasNamedIdentifiers: true,
-		IsAdmin:             false,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
-			return &client{
-				s:     s,
-				w:     w,
-				r:     r,
-				input: &pb.ClientRequest{},
-			}
-		},
-	}
-}
-
-type client struct {
-	s     *Service
-	w     http.ResponseWriter
-	r     *http.Request
-	input *pb.ClientRequest
-	item  *pb.Client
-	cfg   *pb.IcConfig
-	id    *ga4gh.Identity
-}
-
-func (c *client) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, _, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
-	c.cfg = cfg
-	c.id = id
-	return status, err
-}
-func (c *client) LookupItem(name string, vars map[string]string) bool {
-	item, ok := c.cfg.Clients[name]
-	if !ok {
-		return false
-	}
-	c.item = item
-	return true
-}
-func (c *client) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(c.input, c.r); err != nil {
-		return err
-	}
-	if c.input.Item == nil {
-		c.input.Item = &pb.Client{}
-	}
-	if c.input.Item.Ui == nil {
-		c.input.Item.Ui = make(map[string]string)
-	}
-	return nil
-}
-func (c *client) Get(name string) error {
-	if c.item != nil {
-		common.SendResponse(&pb.ClientResponse{
-			Client: c.item,
-		}, c.w)
-	}
-	return nil
-}
-func (c *client) Post(name string) error {
-	return fmt.Errorf("POST not allowed")
-}
-func (c *client) Put(name string) error {
-	return fmt.Errorf("PUT not allowed")
-}
-func (c *client) Patch(name string) error {
-	return fmt.Errorf("PATCH not allowed")
-}
-func (c *client) Remove(name string) error {
-	return fmt.Errorf("REMOVE not allowed")
-}
-func (c *client) CheckIntegrity() *status.Status {
-	return nil
-}
-func (c *client) Save(tx storage.Tx, name string, vars map[string]string, desc, typeName string) error {
-	// Accept, but do nothing.
-	return nil
-}
-
-//////////////////////////////////////////////////////////////////
-
 func (s *Service) configFactory() *common.HandlerFactory {
 	return &common.HandlerFactory{
 		TypeName:            "config",
@@ -1779,7 +1742,7 @@ func (c *config) NormalizeInput(name string, vars map[string]string) error {
 		c.input.Item.IdentityProviders = make(map[string]*pb.IdentityProvider)
 	}
 	if c.input.Item.Clients == nil {
-		c.input.Item.Clients = make(map[string]*pb.Client)
+		c.input.Item.Clients = make(map[string]*cpb.Client)
 	}
 	if c.input.Item.Options == nil {
 		c.input.Item.Options = &pb.ConfigOptions{}
@@ -1934,117 +1897,6 @@ func (c *configIDP) CheckIntegrity() *status.Status {
 	return nil
 }
 func (c *configIDP) Save(tx storage.Tx, name string, vars map[string]string, desc, typeName string) error {
-	if c.save == nil || (c.input.Modification != nil && c.input.Modification.DryRun) {
-		return nil
-	}
-	if err := c.s.saveConfig(c.cfg, desc, typeName, c.r, c.id, c.item, c.save, c.input.Modification, c.tx); err != nil {
-		return err
-	}
-	return nil
-}
-
-//////////////////////////////////////////////////////////////////
-
-func (s *Service) configClientFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
-		TypeName:            "configClient",
-		PathPrefix:          configClientsPath,
-		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
-			return &configClient{
-				s:     s,
-				w:     w,
-				r:     r,
-				input: &pb.ConfigClientRequest{},
-			}
-		},
-	}
-}
-
-type configClient struct {
-	s     *Service
-	w     http.ResponseWriter
-	r     *http.Request
-	input *pb.ConfigClientRequest
-	item  *pb.Client
-	save  *pb.Client
-	cfg   *pb.IcConfig
-	id    *ga4gh.Identity
-	tx    storage.Tx
-}
-
-func (c *configClient) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, _, id, status, err := c.s.handlerSetup(tx, isAdmin, c.r, noScope, c.input)
-	c.cfg = cfg
-	c.id = id
-	c.tx = tx
-	return status, err
-}
-func (c *configClient) LookupItem(name string, vars map[string]string) bool {
-	if item, ok := c.cfg.Clients[name]; ok {
-		c.item = item
-		return true
-	}
-	return false
-}
-func (c *configClient) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(c.input, c.r); err != nil {
-		return err
-	}
-	if c.input.Item == nil {
-		c.input.Item = &pb.Client{}
-	}
-	if c.input.Item.RedirectUris == nil {
-		c.input.Item.RedirectUris = []string{}
-	}
-	if c.input.Item.Ui == nil {
-		c.input.Item.Ui = make(map[string]string)
-	}
-	return nil
-}
-func (c *configClient) Get(name string) error {
-	common.SendResponse(c.item, c.w)
-	return nil
-}
-func (c *configClient) Post(name string) error {
-	c.save = c.input.Item
-	c.cfg.Clients[name] = c.save
-	return nil
-}
-func (c *configClient) Put(name string) error {
-	c.save = c.input.Item
-	c.cfg.Clients[name] = c.save
-	return nil
-}
-func (c *configClient) Patch(name string) error {
-	c.save = &pb.Client{}
-	proto.Merge(c.save, c.item)
-	proto.Merge(c.save, c.input.Item)
-	c.save.RedirectUris = c.input.Item.RedirectUris
-	c.save.Ui = c.input.Item.Ui
-	c.cfg.Clients[name] = c.save
-	return nil
-}
-func (c *configClient) Remove(name string) error {
-	delete(c.cfg.Clients, name)
-	c.save = &pb.Client{}
-	return nil
-}
-func (c *configClient) CheckIntegrity() *status.Status {
-	bad := codes.InvalidArgument
-	if err := common.CheckReadOnly(getRealm(c.r), c.cfg.Options.ReadOnlyMasterRealm, c.cfg.Options.WhitelistedRealms); err != nil {
-		return common.NewStatus(bad, err.Error())
-	}
-	if err := configRevision(c.input.Modification, c.cfg); err != nil {
-		return common.NewStatus(bad, err.Error())
-	}
-	if err := c.s.checkConfigIntegrity(c.cfg); err != nil {
-		return common.NewStatus(bad, err.Error())
-	}
-	return nil
-}
-func (c *configClient) Save(tx storage.Tx, name string, vars map[string]string, desc, typeName string) error {
 	if c.save == nil || (c.input.Modification != nil && c.input.Modification.DryRun) {
 		return nil
 	}
@@ -3419,7 +3271,7 @@ func (s *Service) getDomainURL() string {
 	return "https://" + domain
 }
 
-func getClient(cfg *pb.IcConfig, r *http.Request) *pb.Client {
+func getClient(cfg *pb.IcConfig, r *http.Request) *cpb.Client {
 	cid := getClientID(r)
 	if cid == "" {
 		return nil
@@ -3432,7 +3284,7 @@ func getClient(cfg *pb.IcConfig, r *http.Request) *pb.Client {
 	return nil
 }
 
-func matchRedirect(client *pb.Client, redirect string) bool {
+func matchRedirect(client *cpb.Client, redirect string) bool {
 	if client == nil || len(redirect) == 0 {
 		return false
 	}
@@ -3708,24 +3560,8 @@ func (s *Service) checkConfigIntegrity(cfg *pb.IcConfig) error {
 
 	// Check Clients.
 	for name, client := range cfg.Clients {
-		if err := common.CheckName("name", name, nil); err != nil {
-			return fmt.Errorf("invalid client name %q: %v", name, err)
-		}
-		if len(client.ClientId) == 0 {
-			return fmt.Errorf("client %q is missing a client ID", name)
-		}
-		for i, uri := range client.RedirectUris {
-			if strings.HasPrefix(uri, "/") {
-				continue
-			}
-			if err := validateURLs(map[string]string{
-				fmt.Sprintf("client '%s' redirect URI %d", name, i+1): uri,
-			}); err != nil {
-				return err
-			}
-		}
-		if _, err := common.CheckUI(client.Ui, true); err != nil {
-			return fmt.Errorf("client %q: %v", name, err)
+		if err := oathclients.CheckClientIntegrity(name, client); err != nil {
+			return err
 		}
 	}
 

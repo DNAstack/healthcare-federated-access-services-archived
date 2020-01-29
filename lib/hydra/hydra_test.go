@@ -18,13 +18,13 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/gorilla/mux"
-	"github.com/go-openapi/strfmt"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakehydra"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/httptestclient"
+	"github.com/google/go-cmp/cmp" /* copybara-comment */
+	"github.com/google/go-cmp/cmp/cmpopts" /* copybara-comment */
+	"github.com/gorilla/mux" /* copybara-comment */
+	"github.com/go-openapi/strfmt" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakehydra" /* copybara-comment: fakehydra */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/httptestclient" /* copybara-comment: httptestclient */
 )
 
 const (
@@ -402,5 +402,36 @@ func TestDeleteClient_Error(t *testing.T) {
 	s.DeleteClientErr = genericError
 	if err := DeleteClient(c, hydraAdminURL, clientID); err == nil {
 		t.Errorf("DeleteClient wants error")
+	}
+}
+
+func TestIntrospect(t *testing.T) {
+	s, c := setup()
+
+	tok := "tok"
+	s.IntrospectionResp = &hydraapi.Introspection{ClientID: "cid"}
+
+	i, err := Introspect(c, hydraAdminURL, tok)
+	if err != nil {
+		t.Errorf("Introspect return error: %v", err)
+	}
+
+	if s.IntrospectionReqToken != tok {
+		t.Errorf("s.IntrospectionReqToken = %s, wants %s", s.IntrospectionReqToken, tok)
+	}
+
+	if i.ClientID != s.IntrospectionResp.ClientID {
+		t.Errorf("i.ClientID = %s, wants %s", i.ClientID, s.IntrospectionResp.ClientID)
+	}
+}
+
+func TestIntrospect_Error(t *testing.T) {
+	s, c := setup()
+
+	tok := "tok"
+	s.IntrospectionErr = genericError
+
+	if _, err := Introspect(c, hydraAdminURL, tok); err == nil {
+		t.Errorf("Introspect wants error: %v", err)
 	}
 }

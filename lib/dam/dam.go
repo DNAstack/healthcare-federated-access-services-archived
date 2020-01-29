@@ -34,25 +34,26 @@ import (
 	"time"
 	"unicode"
 
-	glog "github.com/golang/glog"
-	"github.com/golang/protobuf/jsonpb"
-	"github.com/golang/protobuf/proto"
-	"github.com/gorilla/mux"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"gopkg.in/square/go-jose.v2"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator"
+	glog "github.com/golang/glog" /* copybara-comment */
+	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"github.com/gorilla/mux" /* copybara-comment */
+	"google.golang.org/grpc/codes" /* copybara-comment */
+	"google.golang.org/grpc/status" /* copybara-comment */
+	"gopkg.in/square/go-jose.v2" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter" /* copybara-comment: adapter */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator" /* copybara-comment: validator */
 
-	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1"
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
+	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
 const (
@@ -65,6 +66,7 @@ const (
 	infoPath              = basePath
 	versionPath           = basePath + "/" + version
 	realmPath             = versionPath + "/" + common.RealmVariable
+	clientPath            = methodPrefix + "client/{name}"
 	resourcesPath         = methodPrefix + "resources"
 	resourcePath          = methodPrefix + "resources/{name}"
 	flatViewsPath         = methodPrefix + "flatViews"
@@ -357,6 +359,7 @@ func (s *Service) checkClientCreds(r *http.Request) error {
 func (s *Service) buildHandlerMux() *mux.Router {
 	r := mux.NewRouter()
 	r.HandleFunc(infoPath, s.GetInfo)
+	r.HandleFunc(clientPath, common.MakeHandler(s, s.clientFactory()))
 	r.HandleFunc(resourcesPath, s.GetResources)
 	r.HandleFunc(resourcePath, s.GetResource)
 	r.HandleFunc(viewsPath, s.GetViews)
@@ -1123,6 +1126,26 @@ func (s *Service) ConfigReset(w http.ResponseWriter, r *http.Request) {
 		common.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}
+
+	// Reset clients in Hyrdra
+	if s.useHydra {
+		conf, err := s.loadConfig(nil, storage.DefaultRealm)
+		if err != nil {
+			common.HandleError(http.StatusServiceUnavailable, err, w)
+			return
+		}
+
+		secrets, err := s.loadSecrets(nil)
+		if err != nil {
+			common.HandleError(http.StatusServiceUnavailable, err, w)
+			return
+		}
+
+		if err := oathclients.ResetClients(s.httpClient, s.hydraAdminURL, conf.Clients, secrets.ClientSecrets); err != nil {
+			common.HandleError(http.StatusServiceUnavailable, err, w)
+			return
+		}
+	}
 }
 
 // ConfigClientSecret implements the ClientSecretConfig RPC method.
@@ -1220,7 +1243,7 @@ func (s *Service) ClientSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cid := getClientID(r)
-	var client *pb.Client
+	var client *cpb.Client
 	for _, c := range cfg.Clients {
 		if c.ClientId == cid {
 			client = c
@@ -1551,18 +1574,6 @@ func (s *Service) configPersonaFactory() *common.HandlerFactory {
 	}
 }
 
-func (s *Service) configClientFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
-		TypeName:            "configClient",
-		PathPrefix:          configClientPath,
-		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
-			return NewConfigClientHandler(s, w, r)
-		},
-	}
-}
-
 /////////////////////////////////////////////////////////
 
 func (s *Service) makeViews(r *pb.Resource, cfg *pb.DamConfig) map[string]*pb.View {
@@ -1800,6 +1811,12 @@ func makeConfigOptions(opts *pb.ConfigOptions) *pb.ConfigOptions {
 			Type:        "string",
 			Regexp:      "^[A-Za-z][-A-Za-z0-9]{1,30}[A-Za-z]$",
 		},
+		"gcpIamBillingProject": {
+			Label:       "GCP IAM Billing Project",
+			Description: "The GCP Project ID that DAM can use for billing when making API calls that require a billing account (e.g. IAM calls on requester-pays buckets). If unset, billing will inherit the gcpServiceAccountProject setting.",
+			Type:        "string",
+			Regexp:      "^[A-Za-z][-A-Za-z0-9]{1,30}[A-Za-z]$",
+		},
 	}
 	return out
 }
@@ -1818,7 +1835,7 @@ func receiveConfigOptions(opts *pb.ConfigOptions, cfg *pb.DamConfig) *pb.ConfigO
 
 func normalizeConfig(cfg *pb.DamConfig) error {
 	if cfg.Clients == nil {
-		cfg.Clients = make(map[string]*pb.Client)
+		cfg.Clients = make(map[string]*cpb.Client)
 	}
 	for _, p := range cfg.TestPersonas {
 		sort.Strings(p.Access)

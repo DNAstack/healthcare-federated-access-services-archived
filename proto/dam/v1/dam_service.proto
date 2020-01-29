@@ -18,7 +18,8 @@ syntax = "proto3";
 // end points to receive requests and returns responses using these messages.
 package dam.v1;
 
-import "proto/common/v1/common.proto";
+import "proto/common/v1/common.proto"; /* copybara-comment */
+import "proto/common/v1/oauthclient.proto"; /* copybara-comment */
 
 option go_package = "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1";
 
@@ -30,7 +31,7 @@ message DamConfig {
   map<string, TrustedSource> trusted_sources = 5;
   map<string, Policy> policies = 6;
   map<string, Resource> resources = 7;
-  map<string, Client> clients = 8;
+  map<string, common.Client> clients = 8;
   map<string, ServiceTemplate> service_templates = 9;
   map<string, ClaimDefinition> claim_definitions = 10;
   map<string, common.TestPersona> test_personas = 11;
@@ -92,14 +93,6 @@ message Resource {
   map<string, string> ui = 5;
 }
 
-message Client {
-  string client_id = 1;
-  int64 revision = 2;
-  double commit_time = 3;
-  map<string, string> ui = 4;
-  repeated string redirect_uris = 5;
-}
-
 message ServiceTemplate {
   string target_adapter = 1;
   string item_format = 2;
@@ -142,6 +135,7 @@ message ConfigOptions {
   int32 gcp_managed_keys_per_account = 4;
   string gcp_service_account_project = 5;
   map<string, Descriptor> computed_descriptors = 6 [json_name = "descriptors"];
+  string gcp_iam_billing_project = 7;
 }
 
 message ClaimDefinition {
@@ -473,11 +467,6 @@ message ConfigServiceTemplateRequest {
 
 message ConfigTestPersonaRequest {
   common.TestPersona item = 1;
-  ConfigModification modification = 2;
-}
-
-message ConfigClientRequest {
-  Client item = 1;
   ConfigModification modification = 2;
 }
 

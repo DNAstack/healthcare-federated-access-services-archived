@@ -22,11 +22,11 @@ import (
 	"net/http"
 	"os"
 
-	glog "github.com/golang/glog"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/internal/appengine"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/storage"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dam"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	glog "github.com/golang/glog" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/internal/appengine" /* copybara-comment: appengine */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/storage" /* copybara-comment: gcp_storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dam" /* copybara-comment: dam */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 )
 
 const (
@@ -79,7 +79,7 @@ func main() {
 	useHydra := os.Getenv("USE_HYDRA") != ""
 
 	d := dam.NewService(ctx, domain, defaultBroker, hydraAdminURL, store, wh, useHydra)
-	port := os.Getenv("PORT")
+	port := os.Getenv("DAM_PORT")
 	if len(port) == 0 {
 		port = "8080"
 	}

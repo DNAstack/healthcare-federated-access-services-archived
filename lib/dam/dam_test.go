@@ -15,6 +15,7 @@
 package dam
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,21 +27,27 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/gorilla/mux"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakehydra"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakeoidcissuer"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/httptestclient"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys"
+	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/google/go-cmp/cmp" /* copybara-comment */
+	"github.com/google/go-cmp/cmp/cmpopts" /* copybara-comment */
+	"github.com/gorilla/mux" /* copybara-comment */
+	"github.com/go-openapi/strfmt" /* copybara-comment */
+	"google.golang.org/protobuf/testing/protocmp" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakehydra" /* copybara-comment: fakehydra */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakeoidcissuer" /* copybara-comment: fakeoidcissuer */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/httptestclient" /* copybara-comment: httptestclient */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test" /* copybara-comment: test */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/testhttp" /* copybara-comment: testhttp */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys" /* copybara-comment: testkeys */
 
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
+	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
 const (
@@ -54,6 +61,12 @@ const (
 	loginStateID     = "ls-1234"
 	consentChallenge = "cc-1234"
 	consentStateID   = "cs-1234"
+)
+
+var (
+	defaultScope         = "openid offline ga4gh_passport_v1 profile email identities account_admin"
+	defaultGrantTypes    = []string{"authorization_code"}
+	defaultResponseTypes = []string{"token", "code", "id_token"}
 )
 
 // transformJSON is a cmp.Option that transform strings into structured objects
@@ -593,37 +606,6 @@ func TestHandlers(t *testing.T) {
 			Status: http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/config/clients/test_client",
-			Output: `^.*"clientId"`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/clients/new-client",
-			Input:  `{"item":{"ui":{"label":"new-client","description":"bar"}}}`,
-			Output: ``,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/clients/new-client",
-			Input:  `{"item":{"ui":{"label":"new-client2","description":"bar"}}}`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/clients/new-client",
-			Input:  `{"item":{"ui":{"label":"new-client3","description":"bar"}}}`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/config/clients/new-client",
-			Output: ``,
-			Status: http.StatusOK,
-		},
-		{
 			Name:   "Claim condition dependency check (student vs. faculty)",
 			Method: "PATCH",
 			Path:   "/dam/v1alpha/test/config/testPersonas/dr_joe_era_commons",
@@ -988,11 +970,11 @@ func TestCheckAuthorization(t *testing.T) {
 	// TODO: we need more tests for other condition in checkAuthorization()
 }
 
-func setupHydraTest() (*Service, *pb.DamConfig, *fakehydra.Server, error) {
+func setupHydraTest() (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Server, *fakeoidcissuer.Server, error) {
 	store := storage.NewMemoryStorage("dam", "testdata/config")
 	server, err := fakeoidcissuer.New(hydraURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config")
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("fakeoidcissuer.New(%q, _, _) failed: %v", test.TestIssuerURL, err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraURL, err)
 	}
 	ctx := server.ContextWithClient(context.Background())
 	wh := clouds.NewMockTokenCreator(false)
@@ -1000,14 +982,19 @@ func setupHydraTest() (*Service, *pb.DamConfig, *fakehydra.Server, error) {
 
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
+	}
+
+	sec, err := s.loadSecrets(nil)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
 	}
 
 	r := mux.NewRouter()
 	h := fakehydra.New(r)
 	s.httpClient = httptestclient.New(r)
 
-	return s, cfg, h, nil
+	return s, cfg, sec, h, server, nil
 }
 
 func sendLogin(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, authParams string) *http.Response {
@@ -1029,7 +1016,7 @@ func sendLogin(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, authParams st
 }
 
 func TestLogin_Hydra_Success(t *testing.T) {
-	s, cfg, h, err := setupHydraTest()
+	s, cfg, _, h, _, err := setupHydraTest()
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1132,7 +1119,7 @@ func TestLogin_Hydra_Success(t *testing.T) {
 }
 
 func TestLogin_Hydra_Error(t *testing.T) {
-	s, cfg, h, err := setupHydraTest()
+	s, cfg, _, h, _, err := setupHydraTest()
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1252,7 +1239,7 @@ func sendLoggedIn(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, code, stat
 }
 
 func TestLoggedIn_Hydra_Success(t *testing.T) {
-	s, cfg, h, err := setupHydraTest()
+	s, cfg, _, h, _, err := setupHydraTest()
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1308,7 +1295,7 @@ func TestLoggedIn_Hydra_Success(t *testing.T) {
 }
 
 func TestLoggedIn_Hydra_Errors(t *testing.T) {
-	s, cfg, h, err := setupHydraTest()
+	s, cfg, _, h, _, err := setupHydraTest()
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1356,7 +1343,7 @@ func TestLoggedIn_Hydra_Errors(t *testing.T) {
 }
 
 func TestHydraConsent(t *testing.T) {
-	s, _, h, err := setupHydraTest()
+	s, _, _, h, _, err := setupHydraTest()
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1393,5 +1380,977 @@ func TestHydraConsent(t *testing.T) {
 
 	if h.AcceptConsentReq.Session.AccessToken["cart"] != consentStateID {
 		t.Errorf("AccessToken.cart = %v wants %v", h.AcceptConsentReq.Session.AccessToken["cart"], consentStateID)
+	}
+}
+
+func sendResourceTokens(t *testing.T, s *Service) *http.Response {
+	t.Helper()
+
+	state := &pb.ResourceTokenRequestState{
+		Challenge: loginChallenge,
+		Resources: []*pb.ResourceTokenRequestState_Resource{
+			{
+				Realm:    storage.DefaultRealm,
+				Resource: "ga4gh-apis",
+				View:     "gcs_read",
+				Role:     "viewer",
+			},
+		},
+		Ttl:          int64(time.Hour),
+		Broker:       testBroker,
+		Issuer:       test.TestIssuerURL,
+		Subject:      "subject",
+		EpochSeconds: time.Now().Unix(),
+	}
+	err := s.store.Write(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, consentStateID, storage.LatestRev, state, nil)
+	if err != nil {
+		t.Fatalf("Write state failed: %v", err)
+	}
+
+	q := url.Values{
+		"client_id":     []string{test.TestClientID},
+		"client_secret": []string{test.TestClientSecret},
+	}
+	header := http.Header{"Authorization": []string{"Bearer this_is_a_token"}}
+	return testhttp.SendTestRequest(t, s.Handler, http.MethodPost, resourceTokensPath, q, nil, header)
+}
+
+func TestResourceTokens(t *testing.T) {
+	s, _, _, h, _, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	h.IntrospectionResp = &hydraapi.Introspection{
+		Extra: map[string]interface{}{"cart": consentStateID},
+	}
+
+	resp := sendResourceTokens(t, s)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, wants %d", resp.StatusCode, http.StatusOK)
+	}
+}
+
+func TestResourceTokens_HydraError(t *testing.T) {
+	s, _, _, h, _, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	n := "token expired"
+	h.IntrospectionErr = &hydraapi.GenericError{
+		Code: http.StatusUnauthorized,
+		Name: &n,
+	}
+
+	resp := sendResourceTokens(t, s)
+	// TODO: Should convert Hydra API error to grpc status.
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status = %d, wants %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+}
+
+func TestResourceTokens_CartNotExistsInToken(t *testing.T) {
+	s, _, _, h, _, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	h.IntrospectionResp = &hydraapi.Introspection{}
+	resp := sendResourceTokens(t, s)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, wants %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestResourceTokens_CartNotExistsInStorage(t *testing.T) {
+	s, _, _, h, _, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	h.IntrospectionResp = &hydraapi.Introspection{
+		Extra: map[string]interface{}{"cart": "invalid"},
+	}
+
+	resp := sendResourceTokens(t, s)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, wants %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func sendClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+	t.Helper()
+
+	var p *cpb.TestPersona
+	if iss.Config() != nil {
+		p = iss.Config().TestPersonas[pname]
+	}
+
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
+	if err != nil {
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+	}
+
+	path := strings.ReplaceAll(clientPath, "{realm}", "test")
+	path = strings.ReplaceAll(path, "{name}", clientName)
+	q := url.Values{
+		"client_id":     []string{clientID},
+		"client_secret": []string{clientSecret},
+	}
+	h := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
+	return testhttp.SendTestRequest(t, s.Handler, http.MethodGet, path, q, nil, h)
+}
+
+func TestClients_Get(t *testing.T) {
+	s, cfg, sec, _, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+	pname := "non-admin"
+	cli := cfg.Clients[clientName]
+
+	resp := sendClientsGet(t, pname, clientName, cli.ClientId, sec.ClientSecrets[cli.ClientId], s, iss)
+
+	got := &cpb.ClientResponse{}
+	if err := jsonpb.Unmarshal(resp.Body, got); err != nil && err != io.EOF {
+		t.Fatalf("jsonpb.Unmarshal() failed: %v", err)
+	}
+
+	want := &cpb.ClientResponse{Client: cli}
+
+	if diff := cmp.Diff(want, got, protocmp.Transform()); len(diff) > 0 {
+		t.Errorf("response (-want, +got): %s", diff)
+	}
+}
+
+func TestClients_Get_Error(t *testing.T) {
+	s, _, _, _, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		clientName string
+		status     int
+	}{
+		{
+			name:       "client not exists",
+			clientName: "invalid",
+			status:     http.StatusNotFound,
+		},
+		{
+			name:       "client id and client name not match",
+			clientName: "test_client2",
+			status:     http.StatusNotFound,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			pname := "non-admin"
+
+			resp := sendClientsGet(t, pname, tc.clientName, test.TestClientID, test.TestClientSecret, s, iss)
+
+			if resp.StatusCode != tc.status {
+				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
+			}
+		})
+	}
+}
+
+func sendConfigClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+	t.Helper()
+
+	var p *cpb.TestPersona
+	if iss.Config() != nil {
+		p = iss.Config().TestPersonas[pname]
+	}
+
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
+	if err != nil {
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+	}
+
+	path := strings.ReplaceAll(configClientPath, "{realm}", "test")
+	path = strings.ReplaceAll(path, "{name}", clientName)
+	q := url.Values{
+		"client_id":     []string{clientID},
+		"client_secret": []string{clientSecret},
+	}
+	h := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
+	return testhttp.SendTestRequest(t, s.Handler, http.MethodGet, path, q, nil, h)
+}
+
+func TestConfigClients_Get(t *testing.T) {
+	s, cfg, sec, _, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+	pname := "admin"
+	cli := cfg.Clients[clientName]
+
+	resp := sendConfigClientsGet(t, pname, clientName, cli.ClientId, sec.ClientSecrets[cli.ClientId], s, iss)
+
+	got := &cpb.ConfigClientResponse{}
+	if err := jsonpb.Unmarshal(resp.Body, got); err != nil && err != io.EOF {
+		t.Fatalf("jsonpb.Unmarshal() failed: %v", err)
+	}
+
+	want := &cpb.ConfigClientResponse{Client: cli}
+
+	if diff := cmp.Diff(want, got, protocmp.Transform()); len(diff) > 0 {
+		t.Errorf("response (-want, +got): %s", diff)
+	}
+}
+
+func TestConfigClients_Get_Error(t *testing.T) {
+	s, _, _, _, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		persona    string
+		clientName string
+		status     int
+	}{
+		{
+			name:       "client not exists",
+			persona:    "admin",
+			clientName: "invalid",
+			status:     http.StatusNotFound,
+		},
+		{
+			name:       "not admin",
+			persona:    "non-admin",
+			clientName: "test_client",
+			status:     http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := sendConfigClientsGet(t, tc.persona, tc.clientName, test.TestClientID, test.TestClientSecret, s, iss)
+
+			if resp.StatusCode != tc.status {
+				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
+			}
+		})
+	}
+}
+
+func diffOfHydraClientIgnoreClientIDAndSecret(c1 *hydraapi.Client, c2 *hydraapi.Client) string {
+	return cmp.Diff(c1, c2, cmpopts.IgnoreFields(hydraapi.Client{}, "ClientID", "Secret"), cmpopts.IgnoreUnexported(strfmt.DateTime{}))
+}
+
+func sendConfigClientsCreate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+	t.Helper()
+
+	var p *cpb.TestPersona
+	if iss.Config() != nil {
+		p = iss.Config().TestPersonas[pname]
+	}
+
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
+	if err != nil {
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+	}
+
+	m := jsonpb.Marshaler{}
+	var buf bytes.Buffer
+	if err := m.Marshal(&buf, &cpb.ConfigClientRequest{Item: cli}); err != nil {
+		t.Fatal(err)
+	}
+
+	path := strings.ReplaceAll(configClientPath, "{realm}", "test")
+	path = strings.ReplaceAll(path, "{name}", clientName)
+	q := url.Values{
+		"client_id":     []string{clientID},
+		"client_secret": []string{clientSecret},
+	}
+	h := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
+	return testhttp.SendTestRequest(t, s.Handler, http.MethodPost, path, q, &buf, h)
+}
+
+func TestConfigClients_Create_Success(t *testing.T) {
+	s, _, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "new_client"
+	newClientID := "00000000-0000-0000-0000-100000000000"
+
+	cli := &cpb.Client{
+		RedirectUris: []string{"http://client.example.com"},
+		Ui: map[string]string{
+			"label":       "l",
+			"description": "d",
+		},
+	}
+
+	pname := "admin"
+
+	h.CreateClientResp = &hydraapi.Client{
+		ClientID:      newClientID,
+		Name:          clientName,
+		Secret:        "secret",
+		RedirectURIs:  cli.RedirectUris,
+		Scope:         defaultScope,
+		GrantTypes:    defaultGrantTypes,
+		ResponseTypes: defaultResponseTypes,
+	}
+
+	resp := sendConfigClientsCreate(t, pname, clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status=%d, wants %d", resp.StatusCode, http.StatusOK)
+	}
+
+	got := &cpb.ConfigClientResponse{}
+	if err := jsonpb.Unmarshal(resp.Body, got); err != nil && err != io.EOF {
+		t.Fatalf("jsonpb.Unmarshal() failed: %v", err)
+	}
+
+	if got.ClientSecret != h.CreateClientResp.Secret {
+		t.Errorf("got.ClientSecret = %s, wants %s", got.ClientSecret, h.CreateClientResp.Secret)
+	}
+
+	if len(h.CreateClientReq.ClientID) == 0 {
+		t.Errorf("should pass client id in hydra request")
+	}
+
+	if len(h.CreateClientReq.Secret) == 0 {
+		t.Errorf("should pass secret in hydra request")
+	}
+
+	wantReq := &hydraapi.Client{
+		Name:          clientName,
+		GrantTypes:    defaultGrantTypes,
+		ResponseTypes: defaultResponseTypes,
+		Scope:         defaultScope,
+		RedirectURIs:  cli.RedirectUris,
+	}
+	if diff := diffOfHydraClientIgnoreClientIDAndSecret(wantReq, h.CreateClientReq); len(diff) > 0 {
+		t.Errorf("client (-want, +got): %s", diff)
+	}
+
+	wantResp := &cpb.ConfigClientResponse{
+		Client: &cpb.Client{
+			ClientId:      newClientID,
+			Ui:            cli.Ui,
+			RedirectUris:  cli.RedirectUris,
+			Scope:         defaultScope,
+			GrantTypes:    defaultGrantTypes,
+			ResponseTypes: defaultResponseTypes,
+		},
+		ClientSecret: "secret",
+	}
+
+	if diff := cmp.Diff(wantResp, got, protocmp.Transform()); len(diff) > 0 {
+		t.Errorf("response (-want, +got): %s", diff)
+	}
+}
+
+func TestConfigClients_Create_Success_Storage(t *testing.T) {
+	s, _, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "new_client"
+	newClientID := "00000000-0000-0000-0000-100000000000"
+
+	cli := &cpb.Client{
+		RedirectUris: []string{"http://client.example.com"},
+		Ui: map[string]string{
+			"label":       "l",
+			"description": "d",
+		},
+	}
+
+	pname := "admin"
+
+	h.CreateClientResp = &hydraapi.Client{
+		ClientID:      newClientID,
+		Name:          clientName,
+		Secret:        "secret",
+		RedirectURIs:  cli.RedirectUris,
+		Scope:         defaultScope,
+		GrantTypes:    defaultGrantTypes,
+		ResponseTypes: defaultResponseTypes,
+	}
+
+	resp := sendConfigClientsCreate(t, pname, clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status=%d, wants %d", resp.StatusCode, http.StatusOK)
+	}
+
+	conf, err := s.loadConfig(nil, "test")
+	if err != nil {
+		t.Fatalf("s.loadConfig() failed %v", err)
+	}
+	created, ok := conf.Clients[clientName]
+	if !ok {
+		t.Errorf("conf.Clients[%s] should exists in storage", clientName)
+	}
+
+	sec, err := s.loadSecrets(nil)
+	if err != nil {
+		t.Fatalf("s.loadSecrets() failed %v", err)
+	}
+	if sec.ClientSecrets[created.ClientId] != h.CreateClientResp.Secret {
+		t.Errorf("client secret in storage = %s, wants %s", sec.ClientSecrets[created.ClientId], h.CreateClientResp.Secret)
+	}
+}
+
+func TestConfigClients_Create_Error(t *testing.T) {
+	s, _, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "new_client"
+	newClientID := "00000000-0000-0000-0000-100000000000"
+
+	cli := &cpb.Client{
+		RedirectUris: []string{"http://client.example.com"},
+		Ui: map[string]string{
+			"label":       "l",
+			"description": "d",
+		},
+	}
+
+	tests := []struct {
+		name       string
+		persona    string
+		clientName string
+		client     *cpb.Client
+		status     int
+	}{
+		{
+			name:       "client exists",
+			persona:    "admin",
+			clientName: "test_client",
+			client:     cli,
+			status:     http.StatusConflict,
+		},
+		{
+			name:       "not admin",
+			persona:    "non-admin",
+			clientName: clientName,
+			client:     cli,
+			status:     http.StatusForbidden,
+		},
+		{
+			name:       "no redirect",
+			persona:    "admin",
+			clientName: clientName,
+			client:     &cpb.Client{Ui: cli.Ui},
+			status:     http.StatusBadRequest,
+		},
+		{
+			name:       "no ui",
+			persona:    "admin",
+			clientName: clientName,
+			client:     &cpb.Client{RedirectUris: cli.RedirectUris},
+			status:     http.StatusBadRequest,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h.Clear()
+			h.CreateClientResp = &hydraapi.Client{
+				ClientID: newClientID,
+				Name:     clientName,
+				Secret:   "secret",
+			}
+
+			resp := sendConfigClientsCreate(t, tc.persona, tc.clientName, test.TestClientID, test.TestClientSecret, tc.client, s, iss)
+
+			if resp.StatusCode != tc.status {
+				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
+			}
+
+			if h.CreateClientReq != nil {
+				t.Errorf("should not call create client to hydra")
+			}
+
+			conf, err := s.loadConfig(nil, "test")
+			if err != nil {
+				t.Fatalf("s.loadConfig() failed %v", err)
+			}
+			if _, ok := conf.Clients[clientName]; ok {
+				t.Errorf("conf.Clients[%s] should not exists in storage", clientName)
+			}
+		})
+	}
+}
+
+func TestConfigClients_Create_Hydra_Error(t *testing.T) {
+	s, _, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "new_client"
+	newClientID := "00000000-0000-0000-0000-100000000000"
+
+	cli := &cpb.Client{
+		RedirectUris: []string{"http://client.example.com"},
+		Ui: map[string]string{
+			"label":       "l",
+			"description": "d",
+		},
+	}
+
+	h.CreateClientResp = &hydraapi.Client{
+		ClientID:      newClientID,
+		Name:          clientName,
+		Secret:        "secret",
+		RedirectURIs:  cli.RedirectUris,
+		Scope:         defaultScope,
+		GrantTypes:    defaultGrantTypes,
+		ResponseTypes: defaultResponseTypes,
+	}
+	h.CreateClientErr = &hydraapi.GenericError{Code: http.StatusServiceUnavailable}
+
+	resp := sendConfigClientsCreate(t, "admin", clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+
+	// TODO should use better http status.
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	conf, err := s.loadConfig(nil, "test")
+	if err != nil {
+		t.Fatalf("s.loadConfig() failed %v", err)
+	}
+	if _, ok := conf.Clients[clientName]; ok {
+		t.Errorf("conf.Clients[%s] should not exists in storage", clientName)
+	}
+}
+
+func sendConfigClientsUpdate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+	t.Helper()
+
+	var p *cpb.TestPersona
+	if iss.Config() != nil {
+		p = iss.Config().TestPersonas[pname]
+	}
+
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
+	if err != nil {
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+	}
+
+	m := jsonpb.Marshaler{}
+	var buf bytes.Buffer
+	if err := m.Marshal(&buf, &cpb.ConfigClientRequest{Item: cli}); err != nil {
+		t.Fatal(err)
+	}
+
+	path := strings.ReplaceAll(configClientPath, "{realm}", "test")
+	path = strings.ReplaceAll(path, "{name}", clientName)
+	q := url.Values{
+		"client_id":     []string{clientID},
+		"client_secret": []string{clientSecret},
+	}
+	h := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
+	return testhttp.SendTestRequest(t, s.Handler, http.MethodPatch, path, q, &buf, h)
+}
+
+func TestConfigClients_Update_Success(t *testing.T) {
+	s, cfg, sec, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+
+	before := cfg.Clients[clientName]
+
+	beforeSec := sec.ClientSecrets[before.ClientId]
+
+	// Update the client RedirectUris.
+	cli := &cpb.Client{
+		RedirectUris: []string{"http://client.example.com"},
+	}
+
+	pname := "admin"
+
+	h.UpdateClientResp = &hydraapi.Client{
+		ClientID:      test.TestClientID,
+		Name:          clientName,
+		Secret:        "secret",
+		RedirectURIs:  cli.RedirectUris,
+		Scope:         defaultScope,
+		GrantTypes:    defaultGrantTypes,
+		ResponseTypes: defaultResponseTypes,
+	}
+
+	resp := sendConfigClientsUpdate(t, pname, clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status=%d, wants %d", resp.StatusCode, http.StatusOK)
+	}
+
+	got := &cpb.ConfigClientResponse{}
+	if err := jsonpb.Unmarshal(resp.Body, got); err != nil && err != io.EOF {
+		t.Fatalf("jsonpb.Unmarshal() failed: %v", err)
+	}
+
+	if got.ClientSecret != h.UpdateClientResp.Secret {
+		t.Errorf("got.ClientSecret = %s, wants %s", got.ClientSecret, h.UpdateClientResp.Secret)
+	}
+
+	if got.ClientSecret == beforeSec {
+		t.Errorf("client secret should updated")
+	}
+
+	if len(h.UpdateClientReq.ClientID) == 0 {
+		t.Errorf("should pass client id in hydra request")
+	}
+
+	if len(h.UpdateClientReq.Secret) == 0 {
+		t.Errorf("should pass secret in hydra request")
+	}
+}
+
+func TestConfigClients_Update_Success_Storage(t *testing.T) {
+	s, _, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+
+	// Update the client RedirectUris.
+	cli := &cpb.Client{
+		RedirectUris: []string{"http://client.example.com"},
+	}
+
+	pname := "admin"
+
+	h.UpdateClientResp = &hydraapi.Client{
+		ClientID:      test.TestClientID,
+		Name:          clientName,
+		Secret:        "secret",
+		RedirectURIs:  cli.RedirectUris,
+		Scope:         defaultScope,
+		GrantTypes:    defaultGrantTypes,
+		ResponseTypes: defaultResponseTypes,
+	}
+
+	resp := sendConfigClientsUpdate(t, pname, clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status=%d, wants %d", resp.StatusCode, http.StatusOK)
+	}
+
+	conf, err := s.loadConfig(nil, "test")
+	if err != nil {
+		t.Fatalf("s.loadConfig() failed %v", err)
+	}
+	updated, ok := conf.Clients[clientName]
+	if !ok {
+		t.Errorf("conf.Clients[%s] should exists in storage", clientName)
+	}
+
+	sec, err := s.loadSecrets(nil)
+	if err != nil {
+		t.Fatalf("s.loadSecrets() failed %v", err)
+	}
+	if sec.ClientSecrets[updated.ClientId] != h.UpdateClientResp.Secret {
+		t.Errorf("client secret in storage = %s, wants %s", sec.ClientSecrets[updated.ClientId], h.UpdateClientResp.Secret)
+	}
+}
+
+func TestConfigClients_Update_Error(t *testing.T) {
+	s, cfg, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+	// Update the client RedirectUris.
+	cli := &cpb.Client{
+		RedirectUris: []string{"http://client.example.com"},
+	}
+
+	tests := []struct {
+		name       string
+		persona    string
+		clientName string
+		status     int
+	}{
+		{
+			name:       "client not exists",
+			persona:    "admin",
+			clientName: "invalid",
+			status:     http.StatusNotFound,
+		},
+		{
+			name:       "not admin",
+			persona:    "non-admin",
+			clientName: clientName,
+			status:     http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h.Clear()
+			h.UpdateClientResp = &hydraapi.Client{
+				ClientID:      test.TestClientID,
+				Name:          clientName,
+				Secret:        "secret",
+				RedirectURIs:  cli.RedirectUris,
+				Scope:         defaultScope,
+				GrantTypes:    defaultGrantTypes,
+				ResponseTypes: defaultResponseTypes,
+			}
+
+			resp := sendConfigClientsUpdate(t, tc.persona, tc.clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+
+			if resp.StatusCode != tc.status {
+				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
+			}
+
+			if h.UpdateClientReq != nil {
+				t.Errorf("should not call Update client to hydra")
+			}
+
+			conf, err := s.loadConfig(nil, "test")
+			if err != nil {
+				t.Fatalf("s.loadConfig() failed %v", err)
+			}
+			if diff := cmp.Diff(cfg, conf, protocmp.Transform()); len(diff) != 0 {
+				t.Errorf("config should not update, (-want, +got): %s", diff)
+			}
+		})
+	}
+}
+
+func TestConfigClients_Update_Hydra_Error(t *testing.T) {
+	s, cfg, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+	// Update the client RedirectUris.
+	cli := &cpb.Client{
+		RedirectUris: []string{"http://client.example.com"},
+	}
+
+	h.UpdateClientResp = &hydraapi.Client{
+		ClientID:      test.TestClientID,
+		Name:          clientName,
+		Secret:        "secret",
+		RedirectURIs:  cli.RedirectUris,
+		Scope:         defaultScope,
+		GrantTypes:    defaultGrantTypes,
+		ResponseTypes: defaultResponseTypes,
+	}
+	h.UpdateClientErr = &hydraapi.GenericError{Code: http.StatusServiceUnavailable}
+
+	resp := sendConfigClientsUpdate(t, "admin", clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+
+	// TODO should use better http status.
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	conf, err := s.loadConfig(nil, "test")
+	if err != nil {
+		t.Fatalf("s.loadConfig() failed %v", err)
+	}
+	if diff := cmp.Diff(cfg, conf, protocmp.Transform()); len(diff) != 0 {
+		t.Errorf("config should not update, (-want, +got): %s", diff)
+	}
+}
+
+func sendConfigClientsDelete(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+	t.Helper()
+
+	var p *cpb.TestPersona
+	if iss.Config() != nil {
+		p = iss.Config().TestPersonas[pname]
+	}
+
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
+	if err != nil {
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+	}
+
+	path := strings.ReplaceAll(configClientPath, "{realm}", "test")
+	path = strings.ReplaceAll(path, "{name}", clientName)
+	q := url.Values{
+		"client_id":     []string{clientID},
+		"client_secret": []string{clientSecret},
+	}
+	h := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
+	return testhttp.SendTestRequest(t, s.Handler, http.MethodDelete, path, q, nil, h)
+}
+
+func TestConfigClients_Delete_Success(t *testing.T) {
+	s, _, _, _, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+
+	pname := "admin"
+
+	resp := sendConfigClientsDelete(t, pname, clientName, test.TestClientID, test.TestClientSecret, s, iss)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, http.StatusOK)
+	}
+
+	conf, err := s.loadConfig(nil, "test")
+	if err != nil {
+		t.Fatalf("s.loadConfig() failed %v", err)
+	}
+	if _, ok := conf.Clients[clientName]; ok {
+		t.Errorf("Clients[%s] should not exists in storage", clientName)
+	}
+
+	sec, err := s.loadSecrets(nil)
+	if err != nil {
+		t.Fatalf("s.loadSecrets() failed %v", err)
+	}
+	if _, ok := sec.ClientSecrets[test.TestClientID]; ok {
+		t.Errorf("client secret should not exist in storage")
+	}
+}
+
+func TestConfigClients_Delete_Error(t *testing.T) {
+	s, cfg, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+
+	tests := []struct {
+		name       string
+		persona    string
+		clientName string
+		status     int
+	}{
+		{
+			name:       "client not exists",
+			persona:    "admin",
+			clientName: "invalid",
+			status:     http.StatusNotFound,
+		},
+		{
+			name:       "not admin",
+			persona:    "non-admin",
+			clientName: clientName,
+			status:     http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h.Clear()
+
+			resp := sendConfigClientsDelete(t, tc.persona, tc.clientName, test.TestClientID, test.TestClientSecret, s, iss)
+
+			if resp.StatusCode != tc.status {
+				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
+			}
+
+			conf, err := s.loadConfig(nil, "test")
+			if err != nil {
+				t.Fatalf("s.loadConfig() failed %v", err)
+			}
+			if diff := cmp.Diff(cfg, conf, protocmp.Transform()); len(diff) != 0 {
+				t.Errorf("config should not update, (-want, +got): %s", diff)
+			}
+		})
+	}
+}
+
+func TestConfigClients_Delete_Hydra_Error(t *testing.T) {
+	s, cfg, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+
+	h.DeleteClientErr = &hydraapi.GenericError{Code: http.StatusServiceUnavailable}
+
+	resp := sendConfigClientsDelete(t, "admin", clientName, test.TestClientID, test.TestClientSecret, s, iss)
+
+	// TODO should use better http status.
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	conf, err := s.loadConfig(nil, "test")
+	if err != nil {
+		t.Fatalf("s.loadConfig() failed %v", err)
+	}
+	if diff := cmp.Diff(cfg, conf, protocmp.Transform()); len(diff) != 0 {
+		t.Errorf("config should not update, (-want, +got): %s", diff)
+	}
+}
+
+func TestConfigReset_Hydra(t *testing.T) {
+	s, _, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	cid := "c1"
+
+	h.ListClientsResp = []*hydraapi.Client{
+		{ClientID: cid},
+	}
+
+	h.CreateClientResp = &hydraapi.Client{
+		ClientID: cid,
+	}
+
+	pname := "admin"
+	var p *cpb.TestPersona
+	if iss.Config() != nil {
+		p = iss.Config().TestPersonas[pname]
+	}
+
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, test.TestClientID, noScope, p)
+	if err != nil {
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+	}
+
+	q := url.Values{
+		"client_id":     []string{test.TestClientID},
+		"client_secret": []string{test.TestClientSecret},
+	}
+	path := strings.ReplaceAll(configResetPath, common.RealmVariable, "test")
+	header := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
+	resp := testhttp.SendTestRequest(t, s.Handler, http.MethodGet, path, q, nil, header)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, http.StatusOK)
+	}
+
+	if h.DeleteClientID != cid {
+		t.Errorf("h.DeleteClientID = %s, wants %s", h.DeleteClientID, cid)
+	}
+
+	if h.CreateClientReq.Name != "test_client" && h.CreateClientReq.Name != "test_client2" {
+		t.Errorf("h.CreateClientReq.Name = %s, wants test_client or test_client2", h.CreateClientReq.Name)
 	}
 }

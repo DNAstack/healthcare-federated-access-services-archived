@@ -18,13 +18,13 @@ import (
 	"context"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms/fakeencryption"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/credtest"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakeoidcissuer"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys"
+	"github.com/google/go-cmp/cmp" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms/fakeencryption" /* copybara-comment: fakeencryption */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/credtest" /* copybara-comment: credtest */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakeoidcissuer" /* copybara-comment: fakeoidcissuer */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test" /* copybara-comment: test */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys" /* copybara-comment: testkeys */
 )
 
 var paths = map[string]credtest.Requirement{
@@ -45,9 +45,9 @@ var paths = map[string]credtest.Requirement{
 	adminTokenMetadataPath:       {ClientID: true, ClientSecret: true},
 	revocationPath:               {ClientID: true, ClientSecret: true},
 	loginPagePath:                {ClientID: true, ClientSecret: false},
-	loginPath:                    {ClientID: true, ClientSecret: false},
+	loginPath:                    {ClientID: false, ClientSecret: false},
 	acceptLoginPath:              {ClientID: false, ClientSecret: false},
-	finishLoginPath:              {ClientID: true, ClientSecret: false},
+	finishLoginPath:              {ClientID: false, ClientSecret: false},
 	acceptInformationReleasePath: {ClientID: false, ClientSecret: false},
 	testPath:                     {ClientID: false, ClientSecret: false},
 	tokenFlowTestPath:            {ClientID: false, ClientSecret: false},
@@ -66,6 +66,8 @@ var paths = map[string]credtest.Requirement{
 	hydraTestPage:                {ClientID: false, ClientSecret: false},
 	"/tokens":                    {ClientID: true, ClientSecret: true},
 	"/tokens/":                   {ClientID: true, ClientSecret: true},
+	"/consents":                  {ClientID: true, ClientSecret: true},
+	"/consents/":                 {ClientID: true, ClientSecret: true},
 	staticFilePath:               {ClientID: false, ClientSecret: false},
 }
 

@@ -22,12 +22,12 @@ import (
 	"net/http"
 	"os"
 
-	glog "github.com/golang/glog"
-	"cloud.google.com/go/kms/apiv1"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/storage"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ic"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms/gcpcrypt"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	glog "github.com/golang/glog" /* copybara-comment */
+	"cloud.google.com/go/kms/apiv1" /* copybara-comment: kms */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/storage" /* copybara-comment: gcp_storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ic" /* copybara-comment: ic */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms/gcpcrypt" /* copybara-comment: gcpcrypt */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 )
 
 const (
@@ -88,7 +88,7 @@ func main() {
 	}
 
 	s := ic.NewService(ctx, domain, acctDomain, hydraAdminURL, store, gcpkms, useHydra)
-	port := os.Getenv("PORT")
+	port := os.Getenv("IC_PORT")
 	if len(port) == 0 {
 		port = "8080"
 	}
