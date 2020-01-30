@@ -37,29 +37,18 @@ var paths = map[string]credtest.Requirement{
 	viewPath:                        {ClientID: true, ClientSecret: true},
 	rolesPath:                       {ClientID: true, ClientSecret: true},
 	rolePath:                        {ClientID: true, ClientSecret: true},
-	viewTokenPath:                   {ClientID: true, ClientSecret: true},
-	roleTokenPath:                   {ClientID: true, ClientSecret: true},
 	testPath:                        {ClientID: true, ClientSecret: true},
-	clientSecretPath:                {ClientID: true, ClientSecret: false},
 	adaptersPath:                    {ClientID: true, ClientSecret: true},
 	translatorsPath:                 {ClientID: true, ClientSecret: true},
 	damRoleCategoriesPath:           {ClientID: true, ClientSecret: true},
 	testPersonasPath:                {ClientID: true, ClientSecret: true},
-	realmPath:                       {ClientID: true, ClientSecret: true},
 	processesPath:                   {ClientID: true, ClientSecret: true},
 	processPath:                     {ClientID: true, ClientSecret: true},
-	tokensPath:                      {ClientID: true, ClientSecret: true},
-	tokenPath:                       {ClientID: true, ClientSecret: true},
-	resourceAuthPath:                {ClientID: true, ClientSecret: false},
-	resourceTokenPath:               {ClientID: true, ClientSecret: true},
 	loggedInPath:                    {ClientID: false, ClientSecret: false},
 	resourceTokensPath:              {ClientID: true, ClientSecret: true},
-	oidcConfiguarePath:              {ClientID: false, ClientSecret: false},
-	oidcJwksPath:                    {ClientID: false, ClientSecret: false},
 	configHistoryPath:               {ClientID: true, ClientSecret: true},
 	configHistoryRevisionPath:       {ClientID: true, ClientSecret: true},
 	configResetPath:                 {ClientID: true, ClientSecret: true},
-	configClientSecretPath:          {ClientID: true, ClientSecret: true},
 	configTestPersonasPath:          {ClientID: true, ClientSecret: true},
 	configPath:                      {ClientID: true, ClientSecret: true},
 	configOptionsPath:               {ClientID: true, ClientSecret: true},
@@ -74,19 +63,18 @@ var paths = map[string]credtest.Requirement{
 	configClientPath:                {ClientID: true, ClientSecret: true},
 	hydraLoginPath:                  {ClientID: false, ClientSecret: false},
 	hydraConsentPath:                {ClientID: false, ClientSecret: false},
-	hydraTestPage:                   {ClientID: false, ClientSecret: false},
 }
 
 func setup(t *testing.T) *Service {
 	t.Helper()
 	store := storage.NewMemoryStorage("dam", "testdata/config")
 	wh := clouds.NewMockTokenCreator(false)
-	server, err := fakeoidcissuer.New(test.TestIssuerURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config")
+	server, err := fakeoidcissuer.New(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config", false)
 	if err != nil {
 		t.Fatalf("fakeoidcissuer.New() failed: %v", err)
 	}
 	ctx := server.ContextWithClient(context.Background())
-	s := NewService(ctx, "example.com", "no-broker", hydraAdminURL, store, wh, notUseHydra)
+	s := NewService(ctx, "example.com", "no-broker", hydraAdminURL, hydraPublicURL, store, wh, useHydra)
 	return s
 }
 

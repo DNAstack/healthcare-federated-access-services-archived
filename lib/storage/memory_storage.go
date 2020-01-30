@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"regexp"
 
+	glog "github.com/golang/glog" /* copybara-comment */
 	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
 	"github.com/golang/protobuf/proto" /* copybara-comment */
 )
@@ -32,12 +33,13 @@ const (
 
 // MemoryStorage is designed as a single threading storage. Will throw exception if multiple TX request.
 type MemoryStorage struct {
-	service string
-	path    string
-	cache   *StorageCache
-	fs      *FileStorage
-	deleted map[string]bool
-	lock    chan bool
+	service   string
+	path      string
+	pathParts []string
+	cache     *StorageCache
+	fs        *FileStorage
+	deleted   map[string]bool
+	lock      chan bool
 }
 
 func NewMemoryStorage(service, path string) *MemoryStorage {
@@ -325,19 +327,6 @@ func (m *MemoryStorage) Tx(update bool) (Tx, error) {
 	}, nil
 }
 
-func (m *MemoryStorage) fname(datatype, realm, user, id string, rev int64) string {
-	r := LatestRevName
-	if rev > 0 {
-		r = fmt.Sprintf("%06d", rev)
-	}
-	// TODO: use path.Join(...)
-	return fmt.Sprintf("%s/%s/%s_%s%s_%s_%s.json", m.path, m.service, datatype, realm, UserFragment(user), id, r)
-}
-
-func (m *MemoryStorage) historyName(datatype, realm, user, id string) string {
-	return fmt.Sprintf("%s/%s/%s_%s%s_%s_%s.json", m.path, m.service, datatype, realm, UserFragment(user), id, HistoryRevName)
-}
-
 type MemTx struct {
 	update bool
 	ms     *MemoryStorage
@@ -358,4 +347,22 @@ func (tx *MemTx) Rollback() {
 
 func (tx *MemTx) IsUpdate() bool {
 	return tx.update
+}
+
+func (m *MemoryStorage) fname(datatype, realm, user, id string, rev int64) string {
+	r := LatestRevName
+	if rev > 0 {
+		r = fmt.Sprintf("%06d", rev)
+	}
+	name := fmt.Sprintf("%s_%s%s_%s_%s.json", datatype, realm, UserFragment(user), id, r)
+	p := filepath.Join(m.path, m.service, name)
+	glog.Infof("p=%q", p)
+	return p
+}
+
+func (m *MemoryStorage) historyName(datatype, realm, user, id string) string {
+	name := fmt.Sprintf("%s_%s%s_%s_%s.json", datatype, realm, UserFragment(user), id, HistoryRevName)
+	p := filepath.Join(m.path, m.service, name)
+	glog.Infof("p=%q", p)
+	return p
 }

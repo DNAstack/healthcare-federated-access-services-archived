@@ -35,7 +35,7 @@ import (
 	"google.golang.org/protobuf/testing/protocmp" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
@@ -53,9 +53,8 @@ import (
 const (
 	damURL           = "https://dam.example.com"
 	hydraAdminURL    = "https://admin.hydra.example.com"
-	hydraURL         = "https://example.com/oidc"
+	hydraPublicURL   = "https://hydra.example.com/"
 	testBroker       = "testBroker"
-	notUseHydra      = false
 	useHydra         = true
 	loginChallenge   = "lc-1234"
 	loginStateID     = "ls-1234"
@@ -82,12 +81,12 @@ var transformJSON = cmpopts.AcyclicTransformer("ParseJSON", func(in string) (out
 func TestHandlers(t *testing.T) {
 	store := storage.NewMemoryStorage("dam", "testdata/config")
 	wh := clouds.NewMockTokenCreator(false)
-	server, err := fakeoidcissuer.New(test.TestIssuerURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config")
+	server, err := fakeoidcissuer.New(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config", false)
 	if err != nil {
-		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", test.TestIssuerURL, err)
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
 	}
 	ctx := server.ContextWithClient(context.Background())
-	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, store, wh, notUseHydra)
+	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, hydraPublicURL, store, wh, useHydra)
 	tests := []test.HandlerTest{
 		{
 			Method: "GET",
@@ -120,37 +119,6 @@ func TestHandlers(t *testing.T) {
 			Method: "GET",
 			Path:   "/dam/v1alpha/master/testPersonas",
 			Output: `^.*dr_joe.*standardClaims.*"iss":"Issuer of the Passport".*$`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/master",
-			Output: `{}`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test",
-			Output: `^.*exists`,
-			// For now, all realms are marked as already in existence.
-			Status: http.StatusConflict,
-		},
-		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test",
-			Output: ``,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test",
-			Output: ``,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test",
-			Output: ``,
 			Status: http.StatusOK,
 		},
 		{
@@ -565,7 +533,19 @@ func TestHandlers(t *testing.T) {
 		{
 			Method: "PATCH",
 			Path:   "/dam/v1alpha/test/config/serviceTemplates/new-service",
-			Input:  `{"item":{"interfaces":{"gcp:gs":"gs://${bucket}"},"ui":{"label":"foo","description":"bar"}}}`,
+			Input: `{"item":{"interfaces":{"gcp:gs":"gs://${bucket}"},"ui":{"label":"foo","description":"bar"}, "roles": {
+        "viewer": {
+          "targetRoles": ["roles/storage.objectViewer"],
+          "targetScopes": [
+            "https://www.googleapis.com/auth/cloud-platform"
+          ],
+          "damRoleCategories": ["metadata", "list", "read"],
+          "ui": {
+            "label": "File Viewer",
+            "description": "List and read files"
+          }
+        }
+			}}}`,
 			Status: http.StatusOK,
 		},
 		{
@@ -758,133 +738,18 @@ func TestHandlers(t *testing.T) {
 			Output: `^.*"removeAccess":\["ga4gh-apis/`,
 			Status: http.StatusBadRequest,
 		},
-		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/resources/ga4gh-apis/views/gcs_read/roles/viewer/token",
-			Output: `^{.*"token":.*}`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/resources/ga4gh-apis/views/gcs_read/roles/viewer/token",
-			Output: `^{.*"token":.*}`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/resources/ga4gh-apis/views/gcs_read/roles/viewer/token",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/resources/ga4gh-apis/views/gcs_read/roles/viewer/token",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/resources/ga4gh-apis/views/gcs_read/roles/viewer/token",
-			Output: "^.*not allowed",
-			Status: http.StatusBadRequest,
-		},
-		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/tokens",
-			Output: `^\{"tokens":\[\{"name":.*\]}`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/tokens",
-			Output: `^.*exists`,
-			Status: http.StatusConflict,
-		},
-		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/tokens",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/tokens",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/tokens",
-			Output: "",
-			Status: http.StatusOK,
-		},
-		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/tokens",
-			Output: `{}`,
-			Status: http.StatusOK,
-		},
-		{
-			Name:   "Add another service key for use with tests that follow",
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/resources/ga4gh-apis/views/gcs_read/roles/viewer/token",
-			Output: `^{.*"token":.*}`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/tokens/none",
-			Output: `^.*not found`,
-			Status: http.StatusNotFound,
-		},
-		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/tokens/3",
-			Output: `^\{"token":\{"name":.*}`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/tokens/4",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/tokens/3",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/tokens/3",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/tokens/3",
-			Output: "",
-			Status: http.StatusOK,
-		},
-		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/tokens/3",
-			Output: `^.*not found`,
-			Status: http.StatusNotFound,
-		},
 	}
-	test.HandlerTests(t, s.Handler, tests, test.TestIssuerURL, server.Config())
+	test.HandlerTests(t, s.Handler, tests, hydraPublicURL, server.Config())
 }
 
 func TestMinConfig(t *testing.T) {
 	store := storage.NewMemoryStorage("dam-min", "testdata/config")
-	server, err := fakeoidcissuer.New(test.TestIssuerURL, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config")
+	server, err := fakeoidcissuer.New(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config", false)
 	if err != nil {
-		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", test.TestIssuerURL, err)
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
 	}
 	ctx := server.ContextWithClient(context.Background())
-	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, store, nil, notUseHydra)
+	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, hydraPublicURL, store, nil, useHydra)
 	tests := []test.HandlerTest{
 		{
 			Name:    "restricted access of 'dr_joe_elixir' (which only exists in min config subdirectory)",
@@ -903,7 +768,7 @@ func TestMinConfig(t *testing.T) {
 			Status:  http.StatusNotFound,
 		},
 	}
-	test.HandlerTests(t, s.Handler, tests, test.TestIssuerURL, server.Config())
+	test.HandlerTests(t, s.Handler, tests, hydraPublicURL, server.Config())
 }
 
 type contextMatcher struct{}
@@ -927,12 +792,12 @@ func (contextMatcher) String() string {
 
 func TestCheckAuthorization(t *testing.T) {
 	store := storage.NewMemoryStorage("dam", "testdata/config")
-	server, err := fakeoidcissuer.New(test.TestIssuerURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config")
+	server, err := fakeoidcissuer.New(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config", false)
 	if err != nil {
-		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", test.TestIssuerURL, err)
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
 	}
 	ctx := server.ContextWithClient(context.Background())
-	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, store, nil, notUseHydra)
+	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, hydraPublicURL, store, nil, useHydra)
 
 	realm := "master"
 	cfg, err := s.loadConfig(nil, realm)
@@ -942,29 +807,24 @@ func TestCheckAuthorization(t *testing.T) {
 
 	pname := "dr_joe_elixir"
 	p := cfg.TestPersonas[pname]
-	acTok, _, err := persona.NewAccessToken(pname, test.TestIssuerURL, test.TestClientID, persona.DefaultScope, p)
+	acTok, _, err := persona.NewAccessToken(pname, hydraPublicURL, test.TestClientID, persona.DefaultScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, test.TestIssuerURL, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
 	}
-
-	// Ensure pass context with TTL in validator
-	var input io.Reader
-	r := httptest.NewRequest("GET", "/dam/v1alpha/master/resources/ga4gh-apis/views/gcs_read/roles/viewer/token?client_id="+test.TestClientID+"&client_secret="+test.TestClientSecret, input)
-	r.Header.Set("Authorization", "Bearer "+string(acTok))
 
 	resName := "ga4gh-apis"
 	viewName := "gcs_read"
 	role := "viewer"
 	ttl := time.Hour
 
-	id, _, err := s.getPassportIdentity(cfg, nil, r)
+	id, err := s.upstreamTokenToPassportIdentity(cfg, nil, string(acTok), test.TestClientID)
 	if err != nil {
 		t.Fatalf("unable to obtain passport identity: %v", err)
 	}
 
-	status, err := s.checkAuthorization(id, ttl, resName, viewName, role, cfg, getClientID(r))
+	status, err := s.checkAuthorization(id, ttl, resName, viewName, role, cfg, test.TestClientID)
 	if status != http.StatusOK || err != nil {
-		t.Errorf("checkAuthorization(id, %v, %q, %q, %q, cfg, %q) failed, expected %q, got %q: %v", ttl, resName, viewName, role, getClientID(r), http.StatusOK, status, err)
+		t.Errorf("checkAuthorization(id, %v, %q, %q, %q, cfg, %q) failed, expected %q, got %q: %v", ttl, resName, viewName, role, test.TestClientID, http.StatusOK, status, err)
 	}
 
 	// TODO: we need more tests for other condition in checkAuthorization()
@@ -972,13 +832,13 @@ func TestCheckAuthorization(t *testing.T) {
 
 func setupHydraTest() (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Server, *fakeoidcissuer.Server, error) {
 	store := storage.NewMemoryStorage("dam", "testdata/config")
-	server, err := fakeoidcissuer.New(hydraURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config")
+	server, err := fakeoidcissuer.New(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config", false)
 	if err != nil {
-		return nil, nil, nil, nil, nil, fmt.Errorf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraURL, err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
 	}
 	ctx := server.ContextWithClient(context.Background())
 	wh := clouds.NewMockTokenCreator(false)
-	s := NewService(ctx, "https://test.org", testBroker, hydraAdminURL, store, wh, useHydra)
+	s := NewService(ctx, "https://test.org", testBroker, hydraAdminURL, hydraPublicURL, store, wh, useHydra)
 
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
@@ -997,10 +857,11 @@ func setupHydraTest() (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Serve
 	return s, cfg, sec, h, server, nil
 }
 
-func sendLogin(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, authParams string) *http.Response {
+func sendLogin(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, authParams string, scope []string) *http.Response {
 	h.GetLoginRequestResp = &hydraapi.LoginRequest{
-		Challenge:  loginChallenge,
-		RequestURL: hydraURL + "/oauth2/auth?" + authParams,
+		Challenge:      loginChallenge,
+		RequestURL:     hydraPublicURL + "/oauth2/auth?" + authParams,
+		RequestedScope: scope,
 	}
 
 	w := httptest.NewRecorder()
@@ -1066,7 +927,7 @@ func TestLogin_Hydra_Success(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := sendLogin(s, cfg, h, tc.authParams)
+			resp := sendLogin(s, cfg, h, tc.authParams, nil)
 			if resp.StatusCode != http.StatusTemporaryRedirect {
 				t.Errorf("resp.StatusCode wants %d, got %d", http.StatusTemporaryRedirect, resp.StatusCode)
 			}
@@ -1113,6 +974,9 @@ func TestLogin_Hydra_Success(t *testing.T) {
 			}
 			if len(state.Resources) != tc.wantResourceCount {
 				t.Errorf("len(state.Resources) wants %d got %d", tc.wantResourceCount, len(state.Resources))
+			}
+			if state.Type != pb.ResourceTokenRequestState_DATASET {
+				t.Errorf("state.Type wants %v got %v", pb.ResourceTokenRequestState_DATASET, state.Type)
 			}
 		})
 	}
@@ -1195,7 +1059,7 @@ func TestLogin_Hydra_Error(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := sendLogin(s, cfg, h, tc.authParams)
+			resp := sendLogin(s, cfg, h, tc.authParams, nil)
 			if resp.StatusCode != tc.respCode {
 				t.Errorf("resp.StatusCode wants %d, got %d", tc.respCode, resp.StatusCode)
 			}
@@ -1203,7 +1067,61 @@ func TestLogin_Hydra_Error(t *testing.T) {
 	}
 }
 
-func sendLoggedIn(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, code, state string) (*http.Response, error) {
+func TestLogin_Endpoint_Hydra_Success(t *testing.T) {
+	s, cfg, _, h, _, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	resp := sendLogin(s, cfg, h, "", []string{"openid", "identities", "offline"})
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("resp.StatusCode wants %d, got %d", http.StatusTemporaryRedirect, resp.StatusCode)
+	}
+
+	idpc := cfg.TrustedPassportIssuers[s.defaultBroker]
+
+	l := resp.Header.Get("Location")
+	loc, err := url.Parse(l)
+	if err != nil {
+		t.Fatalf("url.Parse(%s) failed", l)
+	}
+
+	a, err := url.Parse(idpc.AuthUrl)
+	if err != nil {
+		t.Fatalf("url.Parse(%s) failed", idpc.AuthUrl)
+	}
+	if loc.Scheme != a.Scheme {
+		t.Errorf("Scheme wants %s got %s", a.Scheme, loc.Scheme)
+	}
+	if loc.Host != a.Host {
+		t.Errorf("Host wants %s got %s", a.Host, loc.Host)
+	}
+	if loc.Path != a.Path {
+		t.Errorf("Path wants %s got %s", a.Path, loc.Path)
+	}
+
+	q := loc.Query()
+	if q.Get("client_id") != idpc.ClientId {
+		t.Errorf("client_id wants %s got %s", idpc.ClientId, q.Get("client_id"))
+	}
+
+	stateID := q.Get("state")
+	state := &pb.ResourceTokenRequestState{}
+	err = s.store.Read(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, state)
+	if err != nil {
+		t.Fatalf("read ResourceTokenRequestStateDataType failed: %v", err)
+	}
+
+	if state.Challenge != loginChallenge {
+		t.Errorf("state.Challenge wants %s got %s", loginChallenge, state.Challenge)
+	}
+
+	if state.Type != pb.ResourceTokenRequestState_ENDPOINT {
+		t.Errorf("state.Type wants %v got %v", pb.ResourceTokenRequestState_ENDPOINT, state.Type)
+	}
+}
+
+func sendLoggedIn(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, code, state string, tokenType pb.ResourceTokenRequestState_TokenType) (*http.Response, error) {
 	// Ensure login state exists before request.
 	login := &pb.ResourceTokenRequestState{
 		Challenge: loginChallenge,
@@ -1217,6 +1135,8 @@ func sendLoggedIn(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, code, stat
 		},
 		Ttl:    int64(time.Hour),
 		Broker: testBroker,
+		Realm:  storage.DefaultRealm,
+		Type:   tokenType,
 	}
 
 	err := s.store.Write(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, loginStateID, storage.LatestRev, login, nil)
@@ -1226,7 +1146,7 @@ func sendLoggedIn(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, code, stat
 
 	// Clear fakehydra server and set reject response.
 	h.Clear()
-	h.AcceptLoginResp = &hydraapi.RequestHandlerResponse{RedirectTo: hydraURL}
+	h.AcceptLoginResp = &hydraapi.RequestHandlerResponse{RedirectTo: hydraPublicURL}
 
 	// Send Request.
 	query := fmt.Sprintf("?code=%s&state=%s", code, state)
@@ -1246,9 +1166,9 @@ func TestLoggedIn_Hydra_Success(t *testing.T) {
 
 	pname := "dr_joe_elixir"
 
-	resp, err := sendLoggedIn(s, cfg, h, pname, loginStateID)
+	resp, err := sendLoggedIn(s, cfg, h, pname, loginStateID, pb.ResourceTokenRequestState_DATASET)
 	if err != nil {
-		t.Fatalf("sendFinishLogin(s, cfg, h, %s, %s) failed: %v", pname, loginStateID, err)
+		t.Fatalf("sendLoggedIn(s, cfg, h, %s, %s, DATASET) failed: %v", pname, loginStateID, err)
 	}
 
 	if resp.StatusCode != http.StatusTemporaryRedirect {
@@ -1256,8 +1176,8 @@ func TestLoggedIn_Hydra_Success(t *testing.T) {
 	}
 
 	l := resp.Header.Get("Location")
-	if l != hydraURL {
-		t.Errorf("Location wants %s got %s", hydraURL, l)
+	if l != hydraPublicURL {
+		t.Errorf("Location wants %s got %s", hydraPublicURL, l)
 	}
 
 	if *h.AcceptLoginReq.Subject != pname {
@@ -1272,19 +1192,12 @@ func TestLoggedIn_Hydra_Success(t *testing.T) {
 	if !ok {
 		t.Errorf("AcceptLoginReq.Context[%s] in wrong type", stateIDInHydra)
 	}
-
-	code := &pb.AuthCode{}
-	err = s.store.Read(storage.AuthCodeDatatype, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, code)
-	if err != nil {
-		t.Fatalf("read AuthTokenState failed: %v", err)
-	}
-
-	if len(code.State) == 0 {
-		t.Errorf("len(code.State) want >0 got 0")
+	if _, ok := h.AcceptLoginReq.Context["identities"]; ok {
+		t.Errorf("AcceptLoginReq.Context[identities] should not exists")
 	}
 
 	state := &pb.ResourceTokenRequestState{}
-	err = s.store.Read(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, code.State, storage.LatestRev, state)
+	err = s.store.Read(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, state)
 	if err != nil {
 		t.Fatalf("read ResourceTokenRequestStateDataType failed: %v", err)
 	}
@@ -1330,15 +1243,50 @@ func TestLoggedIn_Hydra_Errors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := sendLoggedIn(s, cfg, h, tc.code, tc.stateID)
+			resp, err := sendLoggedIn(s, cfg, h, tc.code, tc.stateID, pb.ResourceTokenRequestState_DATASET)
 			if err != nil {
-				t.Fatalf("sendFinishLogin(s, cfg, h, %s, %s) failed: %v", tc.code, tc.stateID, err)
+				t.Fatalf("sendLoggedIn(s, cfg, h, %s, %s, DATASET) failed: %v", tc.code, tc.stateID, err)
 			}
 
 			if resp.StatusCode != tc.respStatus {
 				t.Errorf("resp.StatusCode wants %d got %d", tc.respStatus, resp.StatusCode)
 			}
 		})
+	}
+}
+
+func TestLoggedIn_Endpoint_Hydra_Success(t *testing.T) {
+	s, cfg, _, h, _, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	pname := "dr_joe_elixir"
+
+	resp, err := sendLoggedIn(s, cfg, h, pname, loginStateID, pb.ResourceTokenRequestState_ENDPOINT)
+	if err != nil {
+		t.Fatalf("sendLoggedIn(s, cfg, h, %s, %s, ENDPOINT) failed: %v", pname, loginStateID, err)
+	}
+
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("resp.StatusCode wants %d got %d", http.StatusTemporaryRedirect, resp.StatusCode)
+	}
+
+	l := resp.Header.Get("Location")
+	if l != hydraPublicURL {
+		t.Errorf("Location wants %s got %s", hydraPublicURL, l)
+	}
+
+	if *h.AcceptLoginReq.Subject != pname {
+		t.Errorf("h.AcceptLoginReq.Subject wants %s got %s", pname, *h.AcceptLoginReq.Subject)
+	}
+
+	wantReqContext := map[string]interface{}{
+		"identities": []interface{}{"dr_joe_elixir", "dr_joe@faculty.example.edu"},
+	}
+
+	if diff := cmp.Diff(wantReqContext, h.AcceptLoginReq.Context); len(diff) > 0 {
+		t.Errorf("AcceptLoginReq.Context (-want, +got): %s", diff)
 	}
 }
 
@@ -1354,7 +1302,7 @@ func TestHydraConsent(t *testing.T) {
 		Client:  &hydraapi.Client{ClientID: clientID},
 		Context: map[string]interface{}{hydra.StateIDKey: consentStateID},
 	}
-	h.AcceptConsentResp = &hydraapi.RequestHandlerResponse{RedirectTo: hydraURL}
+	h.AcceptConsentResp = &hydraapi.RequestHandlerResponse{RedirectTo: hydraPublicURL}
 
 	// Send Request.
 	query := fmt.Sprintf("?consent_challenge=%s", consentChallenge)
@@ -1370,8 +1318,8 @@ func TestHydraConsent(t *testing.T) {
 	}
 
 	l := resp.Header.Get("Location")
-	if l != hydraURL {
-		t.Errorf("Location wants %s got %s", hydraURL, l)
+	if l != hydraPublicURL {
+		t.Errorf("Location wants %s got %s", hydraPublicURL, l)
 	}
 
 	if diff := cmp.Diff(h.AcceptConsentReq.GrantedAudience, []string{clientID}); len(diff) != 0 {
@@ -1380,6 +1328,51 @@ func TestHydraConsent(t *testing.T) {
 
 	if h.AcceptConsentReq.Session.AccessToken["cart"] != consentStateID {
 		t.Errorf("AccessToken.cart = %v wants %v", h.AcceptConsentReq.Session.AccessToken["cart"], consentStateID)
+	}
+}
+
+func TestHydraConsent_Endpoint(t *testing.T) {
+	s, _, _, h, _, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientID := "cid"
+
+	h.GetConsentRequestResp = &hydraapi.ConsentRequest{
+		Client: &hydraapi.Client{ClientID: clientID},
+		Context: map[string]interface{}{
+			"identities": []interface{}{"a@example.com", "b@example.com"},
+		},
+	}
+	h.AcceptConsentResp = &hydraapi.RequestHandlerResponse{RedirectTo: hydraPublicURL}
+
+	// Send Request.
+	query := fmt.Sprintf("?consent_challenge=%s", consentChallenge)
+	u := damURL + hydraConsentPath + query
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, u, nil)
+	s.Handler.ServeHTTP(w, r)
+
+	resp := w.Result()
+
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("resp.StatusCode wants %d got %d", http.StatusTemporaryRedirect, resp.StatusCode)
+	}
+
+	l := resp.Header.Get("Location")
+	if l != hydraPublicURL {
+		t.Errorf("Location wants %s got %s", hydraPublicURL, l)
+	}
+
+	if diff := cmp.Diff(h.AcceptConsentReq.GrantedAudience, []string{clientID}); len(diff) != 0 {
+		t.Errorf("GrantedAudience (-want +got): %s", diff)
+	}
+
+	wantIdentities := []interface{}{"a@example.com", "b@example.com"}
+
+	if diff := cmp.Diff(wantIdentities, h.AcceptConsentReq.Session.AccessToken["identities"]); len(diff) > 0 {
+		t.Errorf("AccessToken.identities (-want, +got): %s", diff)
 	}
 }
 
@@ -1398,7 +1391,7 @@ func sendResourceTokens(t *testing.T, s *Service) *http.Response {
 		},
 		Ttl:          int64(time.Hour),
 		Broker:       testBroker,
-		Issuer:       test.TestIssuerURL,
+		Issuer:       hydraPublicURL,
 		Subject:      "subject",
 		EpochSeconds: time.Now().Unix(),
 	}
@@ -1487,9 +1480,9 @@ func sendClientsGet(t *testing.T, pname, clientName, clientID, clientSecret stri
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraPublicURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
 	}
 
 	path := strings.ReplaceAll(clientPath, "{realm}", "test")
@@ -1570,9 +1563,9 @@ func sendConfigClientsGet(t *testing.T, pname, clientName, clientID, clientSecre
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraPublicURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
 	}
 
 	path := strings.ReplaceAll(configClientPath, "{realm}", "test")
@@ -1658,9 +1651,9 @@ func sendConfigClientsCreate(t *testing.T, pname, clientName, clientID, clientSe
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraPublicURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
 	}
 
 	m := jsonpb.Marshaler{}
@@ -1946,9 +1939,9 @@ func sendConfigClientsUpdate(t *testing.T, pname, clientName, clientID, clientSe
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraPublicURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
 	}
 
 	m := jsonpb.Marshaler{}
@@ -2184,9 +2177,9 @@ func sendConfigClientsDelete(t *testing.T, pname, clientName, clientID, clientSe
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraPublicURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
 	}
 
 	path := strings.ReplaceAll(configClientPath, "{realm}", "test")
@@ -2329,16 +2322,16 @@ func TestConfigReset_Hydra(t *testing.T) {
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, hydraURL, test.TestClientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraPublicURL, test.TestClientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
 	}
 
 	q := url.Values{
 		"client_id":     []string{test.TestClientID},
 		"client_secret": []string{test.TestClientSecret},
 	}
-	path := strings.ReplaceAll(configResetPath, common.RealmVariable, "test")
+	path := strings.ReplaceAll(configResetPath, "{realm}", "test")
 	header := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
 	resp := testhttp.SendTestRequest(t, s.Handler, http.MethodGet, path, q, nil, header)
 
@@ -2352,5 +2345,48 @@ func TestConfigReset_Hydra(t *testing.T) {
 
 	if h.CreateClientReq.Name != "test_client" && h.CreateClientReq.Name != "test_client2" {
 		t.Errorf("h.CreateClientReq.Name = %s, wants test_client or test_client2", h.CreateClientReq.Name)
+	}
+}
+
+func Test_HydraAccessTokenForEndpoint(t *testing.T) {
+	store := storage.NewMemoryStorage("dam", "testdata/config")
+	wh := clouds.NewMockTokenCreator(false)
+	server, err := fakeoidcissuer.New(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config", false)
+	if err != nil {
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
+	}
+	ctx := server.ContextWithClient(context.Background())
+	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, hydraPublicURL, store, wh, useHydra)
+
+	cfg, err := s.loadConfig(nil, "master")
+	if err != nil {
+		t.Fatalf("loadConfig failed: %v", err)
+	}
+
+	now := time.Now().Unix()
+	identity := &ga4gh.Identity{
+		Issuer:    hydraPublicURL,
+		Subject:   "admin",
+		IssuedAt:  now,
+		Expiry:    now + 10000,
+		Audiences: ga4gh.NewAudience(test.TestClientID),
+		Extra: map[string]interface{}{
+			"identities": []interface{}{"admin@faculty.example.edu"},
+		},
+	}
+
+	tok, err := server.Sign(nil, identity)
+	if err != nil {
+		t.Fatalf("Sign() failed: %v", err)
+	}
+
+	id, err := s.damSignedBearerTokenToPassportIdentity(cfg, tok, test.TestClientID)
+	if err != nil {
+		t.Fatalf("damSignedBearerTokenToPassportIdentity() failed: %v", err)
+	}
+
+	_, err = s.permissions.CheckAdmin(id)
+	if err != nil {
+		t.Errorf("CheckAdmin(%s) got error: %v", id.Subject, err)
 	}
 }

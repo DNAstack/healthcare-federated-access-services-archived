@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strings"
 
 	glog "github.com/golang/glog" /* copybara-comment */
@@ -30,6 +29,7 @@ import (
 	"gopkg.in/square/go-jose.v2" /* copybara-comment */
 	"github.com/dgrijalva/jwt-go" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/srcutil" /* copybara-comment: srcutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys" /* copybara-comment: testkeys */
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
@@ -38,20 +38,10 @@ import (
 )
 
 const (
-	oidcPrefix         = "/oidc"
-	oidcWellKnownPath  = "/.well-known"
-	oidcConfiguarePath = oidcWellKnownPath + "/openid-configuration"
-	oidcJwksPath       = oidcWellKnownPath + "/jwks"
-	oidcAuthorizePath  = "/authorize"
-	oidcTokenPath      = "/token"
-	oidcUserInfoPath   = "/userinfo"
-
 	loginPageFile     = "pages/login.html"
 	loginPageInfoFile = "pages/login-info-persona.html"
 	serviceTitle      = "Persona Playground"
 	loginInfoTitle    = "Persona Playground"
-	assetPath         = "/static"
-	staticFilePath    = assetPath + "/"
 	staticDirectory   = "assets/serve/"
 )
 
@@ -69,7 +59,7 @@ type Server struct {
 }
 
 // NewBroker returns a Persona Broker Server
-func NewBroker(issuerURL string, key *testkeys.Key, service, path string) (*Server, error) {
+func NewBroker(issuerURL string, key *testkeys.Key, service, path string, useOIDCPrefix bool) (*Server, error) {
 	var cfg *dampb.DamConfig
 	if len(service) > 0 && len(path) > 0 {
 		cfg = &dampb.DamConfig{}
@@ -96,27 +86,10 @@ func NewBroker(issuerURL string, key *testkeys.Key, service, path string) (*Serv
 	}
 
 	r := mux.NewRouter()
-	r.HandleFunc(oidcPrefix+oidcConfiguarePath, s.oidcWellKnownConfig)
-	r.HandleFunc(oidcPrefix+oidcJwksPath, s.oidcKeys)
-	r.HandleFunc(oidcPrefix+oidcAuthorizePath, s.oidcAuthorize)
-	r.HandleFunc(oidcPrefix+oidcTokenPath, s.oidcToken)
-	r.HandleFunc(oidcPrefix+oidcUserInfoPath, s.oidcUserInfo)
-
-	sfs := http.StripPrefix(staticFilePath, http.FileServer(http.Dir(filepath.Join(storage.ProjectRoot, staticDirectory))))
-	r.PathPrefix(staticFilePath).Handler(sfs)
-
 	s.Handler = r
+	registerHandlers(r, s, useOIDCPrefix)
 
 	return s, nil
-}
-
-// Serve takes traffic.
-func (s *Server) Serve(port string) {
-	if len(port) == 0 {
-		port = "8089"
-	}
-	glog.Infof("Persona Broker using port %v", port)
-	glog.Fatal(http.ListenAndServe(":"+port, s.Handler))
 }
 
 // Sign the jwt with the private key in Server.
@@ -168,15 +141,13 @@ func (s *Server) oidcKeys(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) oidcUserInfo(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	token := common.GetParam(r, "access_token")
-	if len(token) == 0 {
-		parts := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
-		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			common.HandleError(http.StatusUnauthorized, fmt.Errorf("missing or invalid Authorization header"), w)
-			return
-		}
-		token = parts[1]
+	parts := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
+	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+		common.HandleError(http.StatusUnauthorized, fmt.Errorf("missing or invalid Authorization header"), w)
+		return
 	}
+	token := parts[1]
+
 	src, err := common.ConvertTokenToIdentityUnsafe(token)
 	if err != nil {
 		common.HandleError(http.StatusUnauthorized, fmt.Errorf("invalid Authorization token"), w)
@@ -285,7 +256,7 @@ func (s *Server) sendLoginPage(redirect, state, nonce, clientID, scope string, w
 		return
 	}
 	page := strings.Replace(s.loginPage, "${PROVIDER_LIST}", json, -1)
-	page = strings.Replace(page, "${ASSET_DIR}", assetPath, -1)
+	page = strings.Replace(page, "${ASSET_DIR}", "/static", -1)
 	page = strings.Replace(page, "${SERVICE_TITLE}", serviceTitle, -1)
 	page = strings.Replace(page, "${LOGIN_INFO_TITLE}", loginInfoTitle, -1)
 	common.SendHTML(page, w)
@@ -336,4 +307,24 @@ func (s *Server) oidcToken(w http.ResponseWriter, r *http.Request) {
 		Uid:         common.GenerateGUID(),
 	}
 	common.SendResponse(resp, w)
+}
+
+// TODO: move registeration of endpoints to main package.
+func registerHandlers(r *mux.Router, s *Server, useOIDCPrefix bool) {
+	if useOIDCPrefix {
+		r.HandleFunc("/oidc"+oidcConfiguarePath, s.oidcWellKnownConfig)
+		r.HandleFunc("/oidc"+oidcJwksPath, s.oidcKeys)
+		r.HandleFunc("/oidc"+oidcAuthorizePath, s.oidcAuthorize)
+		r.HandleFunc("/oidc"+oidcTokenPath, s.oidcToken)
+		r.HandleFunc("/oidc"+oidcUserInfoPath, s.oidcUserInfo)
+	} else {
+		r.HandleFunc(oidcConfiguarePath, s.oidcWellKnownConfig)
+		r.HandleFunc(oidcJwksPath, s.oidcKeys)
+		r.HandleFunc(oidcAuthorizePath, s.oidcAuthorize)
+		r.HandleFunc(oidcTokenPath, s.oidcToken)
+		r.HandleFunc(oidcUserInfoPath, s.oidcUserInfo)
+	}
+
+	sfs := http.StripPrefix(staticFilePath, http.FileServer(http.Dir(srcutil.Path(staticDirectory))))
+	r.PathPrefix(staticFilePath).Handler(sfs)
 }

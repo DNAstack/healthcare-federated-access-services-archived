@@ -13,6 +13,7 @@
       "s3bucket": {
          "variables": {
             "bucket": {
+               "type": "const",
                "regexp": "^[a-z]([-a-z0-9]*[a-z0-9])$",
                "ui": {
                   "label": "AWS Bucket name",
@@ -28,6 +29,7 @@
       "redshift": {
          "variables": {
             "cluster": {
+               "type": "const",
                "regexp": "^arn:[^:]+:redshift:[a-z]([-a-z0-9]*[a-z0-9]):[0-9]+:cluster:[a-z]([-a-z0-9]*[a-z0-9])$",
                "ui": {
                   "label": "AWS Cluster ARN",
@@ -35,6 +37,7 @@
                }
             },
             "group": {
+               "type": "const",
                "regexp": "^arn:[^:]+:redshift:[a-z]([-a-z0-9]*[a-z0-9]):[0-9]+:dbgroup:[a-z]([-a-z0-9]*[a-z0-9])/[a-z]([-a-z0-9]*[a-z0-9])$",
                "optional": true,
                "ui": {

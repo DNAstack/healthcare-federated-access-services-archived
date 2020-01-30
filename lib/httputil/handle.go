@@ -76,3 +76,19 @@ func WriteCorsHeaders(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Origin, Accept, Authorization")
 	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 }
+
+// WriteHTMLResp writes a "text/html" type string to the ResponseWriter.
+func WriteHTMLResp(w http.ResponseWriter, b []byte) {
+	WriteCorsHeaders(w)
+	w.Header().Set("Content-Type", "text/html")
+	w.Write(b)
+}
+
+// WriteJSONResp writes "application.json" type string to the ResponseWriter.
+func WriteJSONResp(w http.ResponseWriter, b []byte) {
+	WriteCorsHeaders(w)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Write(b)
+}

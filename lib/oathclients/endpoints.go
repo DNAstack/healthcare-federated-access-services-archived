@@ -337,6 +337,7 @@ func toHydraClient(c *pb.Client, secret string) *hydraapi.Client {
 		GrantTypes:    c.GrantTypes,
 		ResponseTypes: c.ResponseTypes,
 		RedirectURIs:  c.RedirectUris,
+		Audience: []string { c.ClientId },
 	}
 }
 

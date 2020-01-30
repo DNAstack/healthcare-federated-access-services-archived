@@ -31,11 +31,9 @@ import (
 	"github.com/google/go-cmp/cmp" /* copybara-comment */
 	"github.com/google/go-cmp/cmp/cmpopts" /* copybara-comment */
 	"github.com/gorilla/mux" /* copybara-comment */
-	"github.com/coreos/go-oidc" /* copybara-comment */
 	"github.com/go-openapi/strfmt" /* copybara-comment */
 	"google.golang.org/protobuf/testing/protocmp" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms/fakeencryption" /* copybara-comment: fakeencryption */
@@ -56,11 +54,9 @@ import (
 const (
 	domain           = "example.com"
 	hydraAdminURL    = "https://admin.hydra.example.com"
-	hydraURL         = "https://hydra.example.com"
-	oidcIssuer       = "https://" + domain + "/oidc"
+	hydraURL         = "https://hydra.example.com/"
 	testClientID     = "00000000-0000-0000-0000-000000000000"
 	testClientSecret = "00000000-0000-0000-0000-000000000001"
-	notUseHydra      = false
 	useHydra         = true
 	loginChallenge   = "lc-1234"
 	consentChallenge = "cc-1234"
@@ -85,164 +81,126 @@ func init() {
 	}
 }
 
-func TestOidcEndpoints(t *testing.T) {
-	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	s := NewService(context.Background(), domain, domain, hydraAdminURL, store, fakeencryption.New(), notUseHydra)
-	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
-	if err != nil {
-		t.Fatalf("loading config: %v", err)
-	}
-
-	identity := &ga4gh.Identity{
-		Subject: "sub",
-	}
-	tok, err := s.createToken(identity, "openid", oidcIssuer, "azp", storage.DefaultRealm, noNonce, time.Now(), time.Hour*1, cfg, nil)
-	if err != nil {
-		t.Fatalf("creating token: %v", err)
-	}
-
-	// Inject the mock http client to oidc client.
-	client := httptestclient.New(s.Handler)
-	ctx := oidc.ClientContext(context.Background(), client)
-	provider, err := oidc.NewProvider(ctx, oidcIssuer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	verifier := provider.Verifier(&oidc.Config{
-		// TODO we should set correct "aud".
-		ClientID: oidcIssuer,
-	})
-
-	_, err = verifier.Verify(ctx, tok)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestHandlers(t *testing.T) {
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	server, err := fakeoidcissuer.New(oidcIssuer, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config")
+	server, err := fakeoidcissuer.New(hydraURL, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config", false)
 	if err != nil {
-		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", oidcIssuer, err)
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraURL, err)
 	}
 	ctx := server.ContextWithClient(context.Background())
 	crypt := fakeencryption.New()
-	s := NewService(ctx, domain, domain, hydraAdminURL, store, crypt, notUseHydra)
-	cfg, err := s.loadConfig(nil, "test")
-	if err != nil {
-		t.Fatalf("loading config: %v", err)
-	}
-	identity := &ga4gh.Identity{
-		Issuer:  s.getIssuerString(),
-		Subject: "someone-account",
-	}
-	refreshToken1 := createTestToken(t, s, identity, "openid refresh", cfg)
-	refreshToken2 := createTestToken(t, s, identity, "openid refresh", cfg)
+	s := NewService(ctx, domain, domain, hydraAdminURL, hydraURL, store, crypt, useHydra)
+	// identity := &ga4gh.Identity{
+	// 	Issuer:  s.getIssuerString(),
+	// 	Subject: "someone-account",
+	// }
+	// refreshToken1 := createTestToken(t, s, server, identity, "openid refresh", "refreshToken1")
+	// refreshToken2 := createTestToken(t, s, server, identity, "openid refresh", "refreshToken2")
 	tests := []test.HandlerTest{
-		{
-			Name:   "Get a self-owned token",
-			Method: "GET",
-			Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
-			Output: `{"tokenMetadata":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh_passport_v1 identities profiles openid","identityProvider":"elixir"}}`,
-			Status: http.StatusOK,
-		},
-		{
-			Name:    "Get someone else's token as an admin",
-			Method:  "GET",
-			Path:    "/identity/v1alpha/test/token/someone-account/1a2-3b4",
-			Persona: "admin",
-			Output:  `{"tokenMetadata":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh_passport_v1 openid","identityProvider":"google"}}`,
-			Status:  http.StatusOK,
-		},
-		{
-			Name:    "Get someone else's token as an non-admin",
-			Method:  "GET",
-			Path:    "/identity/v1alpha/test/token/dr_joe_elixir/1a2-3b4",
-			Persona: "non-admin",
-			Output:  `^.*token not found.*`,
-			Status:  http.StatusNotFound,
-		},
-		{
-			Name:   "Post a self-owned token",
-			Method: "POST",
-			Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
-			Output: `^.*exists`,
-			Status: http.StatusConflict,
-		},
-		{
-			Name:   "Put a self-owned token",
-			Method: "PUT",
-			Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Name:   "Patch a self-owned token",
-			Method: "PATCH",
-			Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Name:   "Delete a self-owned token",
-			Method: "DELETE",
-			Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
-			Output: "",
-			Status: http.StatusOK,
-		},
-		{
-			Name:   "Get a deleted token",
-			Method: "GET",
-			Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
-			Output: `^.*token not found.*`,
-			Status: http.StatusNotFound,
-		},
-		{
-			Name:   "Request an unsupported method at the /revoke endpoint",
-			Method: "GET",
-			Path:   "/identity/v1alpha/test/revoke",
-			Input:  `token=6ImtpZCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJpY19lOWIxMDA2MDd`,
-			IsForm: true,
-			Output: `^.*method not supported.*`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Name:   "Delete a malformed token",
-			Method: "POST",
-			Path:   "/identity/v1alpha/test/revoke",
-			Input:  `token=6ImtpZCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJpY19lOWIxMDA2MDd`,
-			IsForm: true,
-			Output: `^.*inspecting token.*`,
-			Status: http.StatusUnauthorized,
-		},
-		{
-			Name:    "Delete someone else's token as an admin",
-			Method:  "POST",
-			Path:    "/identity/v1alpha/test/revoke",
-			Persona: "admin",
-			Input:   "token=" + refreshToken1,
-			IsForm:  true,
-			Output:  "",
-			Status:  http.StatusOK,
-		},
-		{
-			Name:    "Delete someone else's token as a non-admin",
-			Method:  "POST",
-			Path:    "/identity/v1alpha/test/revoke",
-			Input:   "token=" + refreshToken2,
-			IsForm:  true,
-			Persona: "non-admin",
-			Output:  "",
-			Status:  http.StatusOK,
-		},
-		{
-			Name:    "Get linked accounts (foo)",
-			Method:  "GET",
-			Path:    "/identity/v1alpha/test/accounts/non-admin/subjects/foo",
-			Persona: "admin",
-			Output:  "^.*not found",
-			Status:  http.StatusNotFound,
-		},
+		// {
+		// 	Name:   "Get a self-owned token",
+		// 	Method: "GET",
+		// 	Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
+		// 	Output: `{"tokenMetadata":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh_passport_v1 identities profiles openid","identityProvider":"elixir"}}`,
+		// 	Status: http.StatusOK,
+		// },
+		// {
+		// 	Name:    "Get someone else's token as an admin",
+		// 	Method:  "GET",
+		// 	Path:    "/identity/v1alpha/test/token/someone-account/1a2-3b4",
+		// 	Persona: "admin",
+		// 	Output:  `{"tokenMetadata":{"tokenType":"refresh","issuedAt":"1560970669","scope":"ga4gh_passport_v1 openid","identityProvider":"google"}}`,
+		// 	Status:  http.StatusOK,
+		// },
+		// {
+		// 	Name:    "Get someone else's token as an non-admin",
+		// 	Method:  "GET",
+		// 	Path:    "/identity/v1alpha/test/token/dr_joe_elixir/1a2-3b4",
+		// 	Persona: "non-admin",
+		// 	Output:  `^.*token not found.*`,
+		// 	Status:  http.StatusNotFound,
+		// },
+		// {
+		// 	Name:   "Post a self-owned token",
+		// 	Method: "POST",
+		// 	Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
+		// 	Output: `^.*exists`,
+		// 	Status: http.StatusConflict,
+		// },
+		// {
+		// 	Name:   "Put a self-owned token",
+		// 	Method: "PUT",
+		// 	Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
+		// 	Output: `^.*not allowed`,
+		// 	Status: http.StatusBadRequest,
+		// },
+		// {
+		// 	Name:   "Patch a self-owned token",
+		// 	Method: "PATCH",
+		// 	Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
+		// 	Output: `^.*not allowed`,
+		// 	Status: http.StatusBadRequest,
+		// },
+		// {
+		// 	Name:   "Delete a self-owned token",
+		// 	Method: "DELETE",
+		// 	Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
+		// 	Output: "",
+		// 	Status: http.StatusOK,
+		// },
+		// {
+		// 	Name:   "Get a deleted token",
+		// 	Method: "GET",
+		// 	Path:   "/identity/v1alpha/test/token/dr_joe_elixir/123-456",
+		// 	Output: `^.*token not found.*`,
+		// 	Status: http.StatusNotFound,
+		// },
+		// {
+		// 	Name:   "Request an unsupported method at the /revoke endpoint",
+		// 	Method: "GET",
+		// 	Path:   "/identity/v1alpha/test/revoke",
+		// 	Input:  `token=6ImtpZCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJpY19lOWIxMDA2MDd`,
+		// 	IsForm: true,
+		// 	Output: `^.*method not supported.*`,
+		// 	Status: http.StatusBadRequest,
+		// },
+		// {
+		// 	Name:   "Delete a malformed token",
+		// 	Method: "POST",
+		// 	Path:   "/identity/v1alpha/test/revoke",
+		// 	Input:  `token=6ImtpZCIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJpY19lOWIxMDA2MDd`,
+		// 	IsForm: true,
+		// 	Output: `^.*inspecting token.*`,
+		// 	Status: http.StatusUnauthorized,
+		// },
+		// {
+		// 	Name:    "Delete someone else's token as an admin",
+		// 	Method:  "POST",
+		// 	Path:    "/identity/v1alpha/test/revoke",
+		// 	Persona: "admin",
+		// 	Input:   "token=" + refreshToken1,
+		// 	IsForm:  true,
+		// 	Output:  "",
+		// 	Status:  http.StatusOK,
+		// },
+		// {
+		// 	Name:    "Delete someone else's token as a non-admin",
+		// 	Method:  "POST",
+		// 	Path:    "/identity/v1alpha/test/revoke",
+		// 	Input:   "token=" + refreshToken2,
+		// 	IsForm:  true,
+		// 	Persona: "non-admin",
+		// 	Output:  "",
+		// 	Status:  http.StatusOK,
+		// },
+		// {
+		// 	Name:    "Get linked accounts (foo)",
+		// 	Method:  "GET",
+		// 	Path:    "/identity/v1alpha/test/accounts/non-admin/subjects/foo",
+		// 	Persona: "admin",
+		// 	Output:  "^.*not found",
+		// 	Status:  http.StatusNotFound,
+		// },
 		{
 			Name:    "Get linked accounts (foo@bar.com)",
 			Method:  "GET",
@@ -264,7 +222,7 @@ func TestHandlers(t *testing.T) {
 			Method:  "GET",
 			Path:    "/identity/scim/v2/test/Users",
 			Persona: "admin",
-			Output:  `{"Resources":[{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"admin","externalId":"admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:50Z","lastModified":"2019-06-22T18:07:30Z","location":"https://example.com/identity/scim/v2/test/Users/admin","version":"1"},"userName":"admin","name":{"formatted":"Administrator"},"active":true,"emails":[{}]},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"Dr. Joe (ELIXIR)"},"active":true},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"non-admin","externalId":"non-admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"2019-06-22T18:08:19Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"1"},"userName":"non-admin","name":{"formatted":"Non Administrator"},"active":true,"emails":[{"value":"non-admin@example.org"}]},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"someone-account","externalId":"someone-account","meta":{"resourceType":"User","created":"2019-06-22T13:29:36Z","lastModified":"2019-06-22T18:07:11Z","location":"https://example.com/identity/scim/v2/test/Users/someone-account","version":"1"},"userName":"someone-account","name":{"formatted":"Someone Account"},"active":true}],"startIndex":1,"itemsPerPage":4,"totalResults":4,"schemas":["urn:ietf:params:scim:api:messages:2.0:ListResponse"]}`,
+			Output:  `{"Resources":[{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"admin","externalId":"admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:50Z","lastModified":"2019-06-22T18:07:30Z","location":"https://example.com/identity/scim/v2/test/Users/admin","version":"1"},"userName":"admin","name":{"formatted":"Administrator"},"displayName":"Administrator","active":true},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"Dr. Joe (ELIXIR)"},"displayName":"Dr. Joe (ELIXIR)","active":true},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"non-admin","externalId":"non-admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"2019-06-22T18:08:19Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"1"},"userName":"non-admin","name":{"formatted":"Non Administrator"},"displayName":"Non Administrator","active":true,"emails":[{"value":"non-admin@example.org","$ref":"email/persona/non-admin"},{"value":"non-admin-1@example.org","$ref":"email/persona/non-admin-1"}]},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"someone-account","externalId":"someone-account","meta":{"resourceType":"User","created":"2019-06-22T13:29:36Z","lastModified":"2019-06-22T18:07:11Z","location":"https://example.com/identity/scim/v2/test/Users/someone-account","version":"1"},"userName":"someone-account","name":{"formatted":"Someone at Somewhere","familyName":"Somewhere","givenName":"Someone","middleName":"at"},"displayName":"Someone Account","profileUrl":"https://example.org/users/someone","preferredLanguage":"en-US","locale":"en-US","timezone":"America/New_York","active":true}],"startIndex":1,"itemsPerPage":4,"totalResults":4,"schemas":["urn:ietf:params:scim:api:messages:2.0:ListResponse"]}`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -277,12 +235,66 @@ func TestHandlers(t *testing.T) {
 			Status:  http.StatusOK,
 		},
 		{
+			Name:    "Get SCIM users - filter active",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=active%20eq%20"false"`,
+			Output:  `^\{("Resources":\[\],)?"startIndex":1,"schemas":\["urn:ietf:params:scim:api:messages:2.0:ListResponse"\]}`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter displayName",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=displayName%20co%20"administrator"`,
+			Output:  `^.*"userName":"admin".*"userName":"non-admin".*"totalResults":2,.*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter emails",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=emails%20co%20"non-admin@example.org"`,
+			Output:  `^.*"userName":"non-admin".*"totalResults":1,.*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter externalId",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=externalId%20co%20"admin"`,
+			Output:  `^.*"userName":"admin".*"userName":"non-admin".*"totalResults":2,.*`,
+			Status:  http.StatusOK,
+		},
+		{
 			Name:    "Get SCIM users - filter id",
 			Method:  "GET",
 			Path:    "/identity/scim/v2/test/Users",
 			Persona: "admin",
 			Params:  `filter=id%20co%20"admin"`,
-			Output:  `{"Resources":[{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"admin","externalId":"admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:50Z","lastModified":"2019-06-22T18:07:30Z","location":"https://example.com/identity/scim/v2/test/Users/admin","version":"1"},"userName":"admin","name":{"formatted":"Administrator"},"active":true,"emails":[{}]},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"non-admin","externalId":"non-admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"2019-06-22T18:08:19Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"1"},"userName":"non-admin","name":{"formatted":"Non Administrator"},"active":true,"emails":[{"value":"non-admin@example.org"}]}],"startIndex":1,"itemsPerPage":2,"totalResults":2,"schemas":["urn:ietf:params:scim:api:messages:2.0:ListResponse"]}`,
+			Output:  `^.*"userName":"admin".*"userName":"non-admin".*"totalResults":2,.*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter locale",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=locale%20co%20"en"`,
+			Output:  `^.*"userName":"someone-account".*"totalResults":1,.*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter preferredLanguage",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=preferredLanguage%20co%20"en"`,
+			Output:  `^.*"userName":"someone-account".*"totalResults":1,.*`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -290,8 +302,53 @@ func TestHandlers(t *testing.T) {
 			Method:  "GET",
 			Path:    "/identity/scim/v2/test/Users",
 			Persona: "admin",
-			Params:  `filter=name.formatted%20co%20"administrator"`,
-			Output:  `{"Resources":[{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"admin","externalId":"admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:50Z","lastModified":"2019-06-22T18:07:30Z","location":"https://example.com/identity/scim/v2/test/Users/admin","version":"1"},"userName":"admin","name":{"formatted":"Administrator"},"active":true,"emails":[{}]},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"non-admin","externalId":"non-admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"2019-06-22T18:08:19Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"1"},"userName":"non-admin","name":{"formatted":"Non Administrator"},"active":true,"emails":[{"value":"non-admin@example.org"}]}],"startIndex":1,"itemsPerPage":2,"totalResults":2,"schemas":["urn:ietf:params:scim:api:messages:2.0:ListResponse"]}`,
+			Params:  `filter=name.formatted%20co%20"admin"`,
+			Output:  `^.*"userName":"admin".*"userName":"non-admin".*"totalResults":2,.*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter name.givenName",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=name.givenName%20co%20"someone"`,
+			Output:  `^.*"userName":"someone-account".*"totalResults":1,.*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter name.familyName",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=name.familyName%20sw%20"somewhere"`,
+			Output:  `^.*"userName":"someone-account".*"totalResults":1,.*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter name.middleName",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=name.middleName%20ew%20"at"`,
+			Output:  `^.*"userName":"someone-account".*"totalResults":1,.*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter userName",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=userName%20co%20"joe"`,
+			Output:  `^.*"userName":"dr_joe_elixir".*"totalResults":1,.*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter timezone",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=timezone%20co%20"america"`,
+			Output:  `^.*"userName":"someone-account".*"totalResults":1,.*`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -299,8 +356,8 @@ func TestHandlers(t *testing.T) {
 			Method:  "GET",
 			Path:    "/identity/scim/v2/test/Users",
 			Persona: "admin",
-			Params:  `filter=name.formatted%20co%20"administrator"%20or%20userName%20co%20"joe"`,
-			Output:  `{"Resources":[{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"admin","externalId":"admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:50Z","lastModified":"2019-06-22T18:07:30Z","location":"https://example.com/identity/scim/v2/test/Users/admin","version":"1"},"userName":"admin","name":{"formatted":"Administrator"},"active":true,"emails":[{}]},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"Dr. Joe (ELIXIR)"},"active":true},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"non-admin","externalId":"non-admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"2019-06-22T18:08:19Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"1"},"userName":"non-admin","name":{"formatted":"Non Administrator"},"active":true,"emails":[{"value":"non-admin@example.org"}]}],"startIndex":1,"itemsPerPage":3,"totalResults":3,"schemas":["urn:ietf:params:scim:api:messages:2.0:ListResponse"]}`,
+			Params:  `filter=displayName%20co%20"administrator"%20or%20userName%20co%20"joe"`,
+			Output:  `^.*"userName":"admin".*"userName":"dr_joe_elixir".*"userName":"non-admin".*"totalResults":3,.*`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -318,7 +375,7 @@ func TestHandlers(t *testing.T) {
 			Path:    "/identity/scim/v2/test/Me",
 			Persona: "non-admin",
 			Scope:   persona.AccountScope,
-			Output:  `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"non-admin","externalId":"non-admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"2019-06-22T18:08:19Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"1"},"userName":"non-admin","name":{"formatted":"Non Administrator"},"active":true,"emails":[{"value":"non-admin@example.org"}]}`,
+			Output:  `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"non-admin","externalId":"non-admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"2019-06-22T18:08:19Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"1"},"userName":"non-admin","name":{"formatted":"Non Administrator"},"displayName":"Non Administrator","active":true,"emails":[{"value":"non-admin@example.org","$ref":"email/persona/non-admin"},{"value":"non-admin-1@example.org","$ref":"email/persona/non-admin-1"}]}`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -359,13 +416,33 @@ func TestHandlers(t *testing.T) {
 			Status:  http.StatusOK,
 		},
 		{
+			Name:    "Patch SCIM me (set primary email)",
+			Method:  "PATCH",
+			Path:    "/identity/scim/v2/test/Me",
+			Persona: "non-admin",
+			Scope:   persona.AccountScope,
+			Input:   `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"replace","path":"emails[$ref eq \"email/persona/non-admin\"].primary","value":"true"}]}`,
+			Output:  `^.*"primary":true,"value":"non-admin@example.org".*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Patch SCIM me (remove primary email)",
+			Method:  "PATCH",
+			Path:    "/identity/scim/v2/test/Me",
+			Persona: "non-admin",
+			Scope:   persona.AccountScope,
+			Input:   `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"remove","path":"emails[primary eq \"true\"].primary"}]}`,
+			Output:  `^.*"emails":\[\{"value":"non-admin@example.org","\$ref":"email/persona/non-admin"\},\{"value":"non-admin-1@example.org","\$ref":"email/persona/non-admin-1"\}\].*`,
+			Status:  http.StatusOK,
+		},
+		{
 			Name:    "Patch SCIM me (multiple ops)",
 			Method:  "PATCH",
 			Path:    "/identity/scim/v2/test/Me",
 			Persona: "non-admin",
 			Scope:   persona.AccountScope,
 			Input:   `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"replace","path":"name.formatted","value":"Non-Administrator"},{"op":"replace","path":"active","value":"false"}]}`,
-			Output:  `^\{"schemas":\["urn:ietf:params:scim:schemas:core:2.0:User"\],"id":"non-admin","externalId":"non-admin","meta":\{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"....-..-..T..:..:..Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"2"\},"userName":"non-admin","name":\{"formatted":"Non-Administrator"\},"emails":\[\{"value":"non-admin@example.org"\}\],"photos":\[\{"primary":true,"value":"https://my.example.org/photos/me.jpeg"\}\]\}`,
+			Output:  `^\{"schemas":\["urn:ietf:params:scim:schemas:core:2.0:User"\],"id":"non-admin","externalId":"non-admin","meta":\{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"....-..-..T..:..:..Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"4"\},"userName":"non-admin","name":\{"formatted":"Non-Administrator"\},"displayName":"Non Administrator","emails":\[\{"value":"non-admin@example.org","\$ref":"email/persona/non-admin"\},\{"value":"non-admin-1@example.org","\$ref":"email/persona/non-admin-1"\}\],"photos":\[\{"primary":true,"value":"https://my.example.org/photos/me.jpeg"\}\]\}`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -373,9 +450,38 @@ func TestHandlers(t *testing.T) {
 			Method:  "PATCH",
 			Path:    "/identity/scim/v2/test/Users/non-admin",
 			Persona: "admin",
-			Input:   `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"replace","path":"active","value":"true"}]}`,
-			Output:  `^\{"schemas":\["urn:ietf:params:scim:schemas:core:2.0:User"\],"id":"non-admin","externalId":"non-admin","meta":\{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"20..-..-..T..:..:..Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"3"},"userName":"non-admin","name":\{"formatted":"Non-Administrator"\},"active":true,"emails":\[\{"value":"non-admin@example.org"\}\],"photos":\[\{"primary":true,"value":"https://my.example.org/photos/me.jpeg"\}\]\}`,
+			Input:   `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"replace","path":"active","value":"true"},{"op":"replace","path":"displayName","value":"Updated Non Admin"},{"op":"replace","path":"profileUrl","value":"https://example.org/users/non-admin"},{"op":"replace","path":"locale","value":"fr-CA"},{"op":"replace","path":"timezone","value":"America/Montreal"}]}`,
+			Output:  `^\{"schemas":\["urn:ietf:params:scim:schemas:core:2.0:User"\],"id":"non-admin","externalId":"non-admin","meta":\{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"20..-..-..T..:..:..Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"5"},"userName":"non-admin","name":\{"formatted":"Non-Administrator"\},"displayName":"Updated Non Admin","profileUrl":"https://example.org/users/non-admin","preferredLanguage":"fr-CA","locale":"fr-CA","timezone":"America/Montreal","active":true,"emails":\[\{"value":"non-admin@example.org","\$ref":"email/persona/non-admin"\},\{"value":"non-admin-1@example.org","\$ref":"email/persona/non-admin-1"\}\],"photos":\[\{"primary":true,"value":"https://my.example.org/photos/me.jpeg"\}\]\}`,
 			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Unlink connected account (default scope)",
+			Method:  "PATCH",
+			Path:    "/identity/scim/v2/test/Users/non-admin",
+			Persona: "non-admin",
+			Input:   `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"remove","path":"emails[$ref eq \"email/persona/non-admin-1\"]","value":"foo"}]}`,
+			Output:  `^.*unauthorized.*`,
+			Status:  http.StatusUnauthorized,
+		},
+		{
+			Name:    "Unlink connected account",
+			Method:  "PATCH",
+			Path:    "/identity/scim/v2/test/Users/non-admin",
+			Persona: "non-admin",
+			Scope:   persona.AccountScope,
+			Input:   `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"remove","path":"emails[$ref eq \"email/persona/non-admin-1\"]"}]}`,
+			Output:  `^.*"emails":\[\{"value":"non-admin@example.org","\$ref":"email/persona/non-admin"\}\].*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Unlink connected account (invalid remove last)",
+			Method:  "PATCH",
+			Path:    "/identity/scim/v2/test/Users/non-admin",
+			Persona: "non-admin",
+			Scope:   persona.AccountScope,
+			Input:   `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"remove","path":"emails[value eq \"non-admin@example.org\"]"}]}`,
+			Output:  `^.*cannot unlink the only email address.*`,
+			Status:  http.StatusBadRequest,
 		},
 		{
 			Name:    "Delete SCIM me (default scope)",
@@ -407,7 +513,7 @@ func TestHandlers(t *testing.T) {
 			Method:  "GET",
 			Path:    "/identity/scim/v2/test/Users/dr_joe_elixir",
 			Persona: "admin",
-			Output:  `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"Dr. Joe (ELIXIR)"},"active":true}`,
+			Output:  `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"Dr. Joe (ELIXIR)"},"displayName":"Dr. Joe (ELIXIR)","active":true}`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -416,7 +522,7 @@ func TestHandlers(t *testing.T) {
 			Path:    "/identity/scim/v2/test/Users/dr_joe_elixir",
 			Persona: "dr_joe_elixir",
 			Scope:   persona.AccountScope,
-			Output:  `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"Dr. Joe (ELIXIR)"},"active":true}`,
+			Output:  `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"Dr. Joe (ELIXIR)"},"displayName":"Dr. Joe (ELIXIR)","active":true}`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -434,7 +540,7 @@ func TestHandlers(t *testing.T) {
 			Persona: "dr_joe_elixir",
 			Scope:   persona.AccountScope,
 			Input:   `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"replace","path":"name.formatted","value":"The good doc"},{"op":"replace","path":"name.givenName","value":"Joesph"},{"op":"replace","path":"name.familyName","value":"Doctor"}]}`,
-			Output:  `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"The good doc","familyName":"Doctor","givenName":"Joesph"},"active":true}`,
+			Output:  `{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"The good doc","familyName":"Doctor","givenName":"Joesph"},"displayName":"Dr. Joe (ELIXIR)","active":true}`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -489,26 +595,40 @@ func TestHandlers(t *testing.T) {
 			Status:  http.StatusOK,
 		},
 	}
-	test.HandlerTests(t, s.Handler, tests, oidcIssuer, server.Config())
+	test.HandlerTests(t, s.Handler, tests, hydraURL, server.Config())
 }
 
-func createTestToken(t *testing.T, s *Service, id *ga4gh.Identity, scope string, cfg *pb.IcConfig) string {
-	token, err := s.createToken(id, scope, "", "", "test", noNonce, time.Now(), time.Hour, cfg, nil)
+func createTestToken(t *testing.T, s *Service, iss *fakeoidcissuer.Server, id *ga4gh.Identity, scope, jti string) string {
+	id.Scope = scope
+	id.Realm = "test"
+	id.IssuedAt = time.Now().Unix()
+	id.Expiry = time.Now().Add(time.Hour).Unix()
+	id.Audiences = ga4gh.NewAudience(testClientID)
+	id.ID = jti
+	tok, err := iss.Sign(map[string]string{}, id)
 	if err != nil {
 		t.Fatalf("creating test token: %v", err)
 	}
-	return token
+
+	tokenMetadata := &pb.TokenMetadata{
+		TokenType:        "refresh",
+		IssuedAt:         id.IssuedAt,
+		Scope:            id.Scope,
+		IdentityProvider: id.IdentityProvider,
+	}
+	s.store.Write(storage.TokensDatatype, "test", id.Subject, id.ID, storage.LatestRev, tokenMetadata, nil)
+	return tok
 }
 
 func TestAdminHandlers(t *testing.T) {
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	server, err := fakeoidcissuer.New(oidcIssuer, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config")
+	server, err := fakeoidcissuer.New(hydraURL, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config", false)
 	if err != nil {
-		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", oidcIssuer, err)
+		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraURL, err)
 	}
 	ctx := server.ContextWithClient(context.Background())
 
-	s := NewService(ctx, domain, domain, hydraAdminURL, store, fakeencryption.New(), notUseHydra)
+	s := NewService(ctx, domain, domain, hydraAdminURL, hydraURL, store, fakeencryption.New(), useHydra)
 	tests := []test.HandlerTest{
 		{
 			Name:    "List all tokens of all users as a non-admin",
@@ -551,96 +671,7 @@ func TestAdminHandlers(t *testing.T) {
 			Status:  http.StatusOK,
 		},
 	}
-	test.HandlerTests(t, s.Handler, tests, oidcIssuer, server.Config())
-}
-
-func TestNonce(t *testing.T) {
-	nonce := "nonce-for-test"
-	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	s := NewService(context.Background(), domain, domain, hydraAdminURL, store, fakeencryption.New(), notUseHydra)
-	cfg, err := s.loadConfig(nil, "test")
-	if err != nil {
-		t.Fatalf("loading config: %v", err)
-	}
-
-	// Auth Code should not include "nonce".
-	auth, err := s.createAuthToken("someone-account", "openid", "persona", "test", nonce, time.Now(), cfg, nil)
-	if err != nil {
-		t.Fatalf("creating auth token: %v", err)
-	}
-	id, err := common.ConvertTokenToIdentityUnsafe(auth)
-	if err != nil {
-		t.Fatalf("ConvertTokenToIdentityUnsafe(%q) error: %v", auth, err)
-	}
-	if len(id.Nonce) > 0 {
-		t.Error("Auth Code should not include 'nonce'")
-	}
-
-	path := strings.ReplaceAll(tokenPath, "{realm}", "test")
-
-	// ID token request by auth code should include "nonce".
-	w := httptest.NewRecorder()
-	params := fmt.Sprintf("grant_type=authorization_code&client_id=%s&client_secret=%s&redirect_uri=http://example.com&code=%s", testClientID, testClientSecret, auth)
-	r := httptest.NewRequest("POST", path+"?"+params, nil)
-	s.Handler.ServeHTTP(w, r)
-	resp := w.Result()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("get tokens by auth code want ok, got %q", resp.Status)
-	}
-
-	unmarshaler := jsonpb.Unmarshaler{}
-	tokens := cpb.OidcTokenResponse{}
-	err = unmarshaler.Unmarshal(resp.Body, &tokens)
-	if err != nil {
-		t.Fatalf("unmarshal failed")
-	}
-	id, err = common.ConvertTokenToIdentityUnsafe(tokens.IdToken)
-	if err != nil {
-		t.Errorf("ConvertTokenToIdentityUnsafe(%q) error: %v", tokens.IdToken, err)
-	}
-	if id.Nonce != nonce {
-		t.Errorf("get tokens by auth code, id_token.nonce incorrect: want %q, got %q", id.Nonce, nonce)
-	}
-	access, err := common.ConvertTokenToIdentityUnsafe(tokens.AccessToken)
-	if err != nil {
-		t.Errorf("ConvertTokenToIdentityUnsafe(%q) error: %v", tokens.AccessToken, err)
-	}
-	if len(access.Nonce) > 0 {
-		t.Error("access token should not include nonce")
-	}
-	refresh, err := common.ConvertTokenToIdentityUnsafe(tokens.RefreshToken)
-	if err != nil {
-		t.Errorf("ConvertTokenToIdentityUnsafe(%q) error: %v", tokens.RefreshToken, err)
-	}
-	if len(refresh.Nonce) > 0 {
-		t.Error("refresh token should not include nonce")
-	}
-
-	// ID token request by refresh token should not include "nonce".
-	w = httptest.NewRecorder()
-	params = fmt.Sprintf("grant_type=refresh_token&client_id=%s&client_secret=%s&redirect_uri=http://example.com&refresh_token=%s", testClientID, testClientSecret, tokens.RefreshToken)
-	r = httptest.NewRequest("POST", path+"?"+params, nil)
-	s.Handler.ServeHTTP(w, r)
-	resp = w.Result()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("get tokens by refresh token want ok, got %q", resp.Status)
-	}
-	err = unmarshaler.Unmarshal(resp.Body, &tokens)
-	if err != nil {
-		t.Error("unmarshal failed")
-	}
-	id, err = common.ConvertTokenToIdentityUnsafe(tokens.IdToken)
-	if len(id.Nonce) > 0 {
-		t.Error("get tokens by refresh token, id token not include nonce")
-	}
-	access, err = common.ConvertTokenToIdentityUnsafe(tokens.AccessToken)
-	if len(access.Nonce) > 0 {
-		t.Error("access token should not include nonce")
-	}
-	refresh, err = common.ConvertTokenToIdentityUnsafe(tokens.RefreshToken)
-	if len(refresh.Nonce) > 0 {
-		t.Error("refresh token should not include nonce")
-	}
+	test.HandlerTests(t, s.Handler, tests, hydraURL, server.Config())
 }
 
 func TestAddLinkedIdentities(t *testing.T) {
@@ -657,22 +688,22 @@ func TestAddLinkedIdentities(t *testing.T) {
 		VisaJWTs: []string{},
 	}
 
-	link := &pb.ConnectedAccount{
+	link := &cpb.ConnectedAccount{
 		Provider: idp,
-		Properties: &pb.AccountProperties{
+		Properties: &cpb.AccountProperties{
 			Subject: subjectInIdp,
 			Email:   emailInIdp,
 		},
 	}
 
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	s := NewService(context.Background(), domain, domain, hydraAdminURL, store, fakeencryption.New(), notUseHydra)
+	s := NewService(context.Background(), domain, domain, hydraAdminURL, hydraURL, store, fakeencryption.New(), useHydra)
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
 		t.Fatalf("loading config: %v", err)
 	}
-	cfg.IdentityProviders = map[string]*pb.IdentityProvider{
-		idp: &pb.IdentityProvider{Issuer: idpIss},
+	cfg.IdentityProviders = map[string]*cpb.IdentityProvider{
+		idp: &cpb.IdentityProvider{Issuer: idpIss},
 	}
 
 	err = s.addLinkedIdentities(id, link, testkeys.Default.Private, cfg)
@@ -719,13 +750,13 @@ func TestAddLinkedIdentities(t *testing.T) {
 
 func setupHydraTest() (*Service, *pb.IcConfig, *pb.IcSecrets, *fakehydra.Server, *fakeoidcissuer.Server, error) {
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	server, err := fakeoidcissuer.New(oidcIssuer, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config")
+	server, err := fakeoidcissuer.New(hydraURL, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config", false)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 	ctx := server.ContextWithClient(context.Background())
 	crypt := fakeencryption.New()
-	s := NewService(ctx, domain, domain, hydraAdminURL, store, crypt, useHydra)
+	s := NewService(ctx, domain, domain, hydraAdminURL, hydraURL, store, crypt, useHydra)
 
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
@@ -1113,8 +1144,8 @@ func sendAcceptInformationRelease(s *Service, cfg *pb.IcConfig, h *fakehydra.Ser
 	}
 
 	// Ensure identity exists before request.
-	acct := &pb.Account{
-		Properties: &pb.AccountProperties{Subject: LoginSubject},
+	acct := &cpb.Account{
+		Properties: &cpb.AccountProperties{Subject: LoginSubject},
 		State:      "ACTIVE",
 	}
 	err = s.store.Write(storage.AccountDatatype, storage.DefaultRealm, storage.DefaultUser, LoginSubject, storage.LatestRev, acct, nil)
@@ -1275,9 +1306,9 @@ func sendClientsGet(t *testing.T, pname, clientName, clientID, clientSecret stri
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, oidcIssuer, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, oidcIssuer, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
 	}
 
 	path := strings.ReplaceAll(clientPath, "{realm}", "test")
@@ -1361,9 +1392,9 @@ func sendConfigClientsGet(t *testing.T, pname, clientName, clientID, clientSecre
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, oidcIssuer, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, oidcIssuer, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
 	}
 
 	path := strings.ReplaceAll(configClientsPath, "{realm}", "test")
@@ -1452,9 +1483,9 @@ func sendConfigClientsCreate(t *testing.T, pname, clientName, clientID, clientSe
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, oidcIssuer, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, oidcIssuer, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
 	}
 
 	m := jsonpb.Marshaler{}
@@ -1740,9 +1771,9 @@ func sendConfigClientsUpdate(t *testing.T, pname, clientName, clientID, clientSe
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, oidcIssuer, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, oidcIssuer, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
 	}
 
 	m := jsonpb.Marshaler{}
@@ -1978,9 +2009,9 @@ func sendConfigClientsDelete(t *testing.T, pname, clientName, clientID, clientSe
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, oidcIssuer, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, oidcIssuer, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
 	}
 
 	path := strings.ReplaceAll(configClientsPath, "{realm}", "test")
@@ -2123,16 +2154,16 @@ func TestConfigReset_Hydra(t *testing.T) {
 		p = iss.Config().TestPersonas[pname]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, oidcIssuer, testClientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(pname, hydraURL, testClientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, oidcIssuer, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraURL, err)
 	}
 
 	q := url.Values{
 		"client_id":     []string{testClientID},
 		"client_secret": []string{testClientSecret},
 	}
-	path := strings.ReplaceAll(configResetPath, common.RealmVariable, "test")
+	path := strings.ReplaceAll(configResetPath, "{realm}", "test")
 	header := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
 	resp := testhttp.SendTestRequest(t, s.Handler, http.MethodGet, path, q, nil, header)
 

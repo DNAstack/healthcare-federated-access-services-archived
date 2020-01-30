@@ -18,31 +18,29 @@
 package main
 
 import (
-	"os"
+	"flag"
+	"net/http"
 
 	glog "github.com/golang/glog" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/osenv" /* copybara-comment: osenv */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys" /* copybara-comment: testkeys */
 )
 
+var (
+	cfgPath  = osenv.VarWithDefault("CONFIG_PATH", "deploy/config")
+	service  = osenv.VarWithDefault("DAM_SERVICE_NAME", "dam")
+	oidcAddr = osenv.MustVar("OIDC_URL")
+	port     = osenv.VarWithDefault("PERSONAS_PORT", "8090")
+)
+
 func main() {
-	key := &testkeys.PersonaBrokerKey
-	service := os.Getenv("DAM_SERVICE_NAME")
-	if len(service) == 0 {
-		service = "dam"
-	}
-	path := os.Getenv("CONFIG_PATH")
-	if len(path) == 0 {
-		path = "deploy/config"
-	}
-	oidcURL := os.Getenv("OIDC_URL")
-	if len(oidcURL) == 0 {
-		glog.Fatalf("OIDC_URL must be provided")
-	}
-	port := os.Getenv("PORT")
-	broker, err := persona.NewBroker(oidcURL, key, service, path)
+	flag.Parse()
+	broker, err := persona.NewBroker(oidcAddr, &testkeys.PersonaBrokerKey, service, cfgPath, true)
 	if err != nil {
-		glog.Fatalf("starting broker: %v", err)
+		glog.Exitf("persona.NewBroker() failed: %v", err)
 	}
-	broker.Serve(port)
+
+	glog.Infof("Persona Broker using port %v", port)
+	glog.Exit(http.ListenAndServe(":"+port, broker.Handler))
 }
