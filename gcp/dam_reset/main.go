@@ -17,7 +17,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"os"
 
 	glog "github.com/golang/glog" /* copybara-comment */
@@ -26,15 +25,11 @@ import (
 )
 
 func main() {
-	args := make([]string, len(os.Args))
-	copy(args, os.Args)
-	flag.Parse()
-
-	if len(args) < 3 {
+	if len(os.Args) < 3 {
 		glog.Fatalf("Usage: dam_reset <project> <service>")
 	}
-	project := args[1]
-	service := args[2]
+	project := os.Args[1]
+	service := os.Args[2]
 	path := "deploy/config"
 
 	store := gcp_storage.NewDatastoreStorage(context.Background(), project, service, path)

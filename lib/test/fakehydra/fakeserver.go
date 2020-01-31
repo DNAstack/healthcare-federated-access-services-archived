@@ -64,11 +64,6 @@ type Data struct {
 	IntrospectionReqToken string
 	IntrospectionResp     *hydraapi.Introspection
 	IntrospectionErr      *hydraapi.GenericError
-	ListConsentsReq       string
-	ListConsentsResp      []*hydraapi.PreviousConsentSession
-	ListConsentsErr       *hydraapi.GenericError
-	RevokeConsentsReq     *http.Request
-	RevokeConsentsErr     *hydraapi.GenericError
 }
 
 // Server is fake hydra server.
@@ -98,10 +93,6 @@ func New(r *mux.Router) *Server {
 	r.HandleFunc("/clients/{id}", s.getClient).Methods(http.MethodGet)
 	r.HandleFunc("/clients/{id}", s.updateClient).Methods(http.MethodPut)
 	r.HandleFunc("/clients/{id}", s.deleteClient).Methods(http.MethodDelete)
-
-	// consents endpoints
-	r.HandleFunc("/oauth2/auth/sessions/consent", s.listConsents).Methods(http.MethodGet)
-	r.HandleFunc("/oauth2/auth/sessions/consent", s.revokeConsents).Methods(http.MethodDelete)
 
 	return s
 }
@@ -205,20 +196,6 @@ func (s *Server) deleteClient(w http.ResponseWriter, r *http.Request) {
 	s.DeleteClientID = vars["id"]
 	if s.DeleteClientErr != nil {
 		s.write(w, int(s.DeleteClientErr.Code), s.DeleteClientErr, nil)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) listConsents(w http.ResponseWriter, r *http.Request) {
-	s.Data.ListConsentsReq = r.URL.Query().Get("subject")
-	s.write(w, http.StatusOK, s.ListConsentsErr, s.ListConsentsResp)
-}
-
-func (s *Server) revokeConsents(w http.ResponseWriter, r *http.Request) {
-	s.Data.RevokeConsentsReq = r
-	if s.Data.RevokeConsentsErr != nil {
-		s.write(w, int(s.RevokeConsentsErr.Code), s.RevokeConsentsErr, nil)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

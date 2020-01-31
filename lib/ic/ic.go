@@ -776,13 +776,10 @@ func (s *Service) sendInformationReleasePage(id *ga4gh.Identity, stateID, client
 	scopes := strings.Split(scope, " ")
 
 	for _, s := range scopes {
-		switch {
-		case s == "openid":
-			if len(id.Subject) != 0 {
-				info = append(info, "openid: "+id.Subject)
-			}
-
-		case s == "profile":
+		if s == "openid" && len(id.Subject) != 0 {
+			info = append(info, "openid: "+id.Subject)
+		}
+		if s == "profile" {
 			var profile []string
 			if len(id.Name) != 0 {
 				profile = append(profile, id.Name)
@@ -791,20 +788,12 @@ func (s *Service) sendInformationReleasePage(id *ga4gh.Identity, stateID, client
 				profile = append(profile, id.Email)
 			}
 			info = append(info, "profile: "+strings.Join(profile, ","))
-
-		case (s == passportScope || s == ga4ghScope):
-			if len(id.VisaJWTs) != 0 {
-				info = append(info, "passport visas")
-			}
-
-		case s == "account_admin":
-			info = append(info, "manage (modify) this account")
-
-		case s == "link":
-			info = append(info, "link this account to other accounts")
-
-		default:
-			info = append(info, s)
+		}
+		if (s == passportScope || s == ga4ghScope) && len(id.VisaJWTs) != 0 {
+			info = append(info, "passport visas")
+		}
+		if s == "account_admin" {
+			info = append(info, "admin claims")
 		}
 	}
 
@@ -950,11 +939,6 @@ func (s *Service) getTokenIdentity(tok, scope, clientID string, tx storage.Tx) (
 		return nil, http.StatusServiceUnavailable, fmt.Errorf("token unauthorized: %v", err)
 	}
 
-	if len(id.Scope) == 0 && len(id.Scp) > 0 {
-		// Hydra populates "scp" instead of "scope", so populate "scope" accordingly.
-		id.Scope = common.JoinNonEmpty(id.Scp, " ")
-	}
-
 	// TODO: add more checks here as appropriate.
 	iss := s.getIssuerString()
 	if err = id.Valid(); err != nil {
@@ -988,19 +972,6 @@ func (s *Service) getTokenAccountIdentity(ctx context.Context, token *ga4gh.Iden
 	id.IdentityProvider = token.IdentityProvider
 	id.Nonce = token.Nonce
 	return id, http.StatusOK, nil
-}
-
-func (s *Service) requestTokenToIdentity(tok, scope string, r *http.Request, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	realm := getRealm(r)
-	cfg, err := s.loadConfig(tx, realm)
-	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
-	}
-	secrets, err := s.loadSecrets(tx)
-	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
-	}
-	return s.tokenToIdentity(tok, r, scope, realm, cfg, secrets, tx)
 }
 
 func (s *Service) tokenToIdentity(tok string, r *http.Request, scope, realm string, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
@@ -2093,8 +2064,6 @@ func registerHandlers(r *mux.Router, s *Service) {
 	r.HandleFunc(hydraConsentPath, s.HydraConsent).Methods(http.MethodGet)
 
 	r.HandleFunc(infoPath, s.Status)
-
-	r.HandleFunc(realmPath, common.MakeHandler(s, s.realmFactory()))
 
 	r.HandleFunc(configPath, common.MakeHandler(s, s.configFactory()))
 	r.HandleFunc(configIdentityProvidersPath, common.MakeHandler(s, s.configIdpFactory()))

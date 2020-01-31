@@ -15,10 +15,10 @@
 # limitations under the License.
 
 export DAMDEMO_PORT="8080"
-export DAM_URL="https://dam-dot-${PROJECT}.appspot.com"
-export HYDRA_PUBLIC_URL="https://dam-dot-${PROJECT}.appspot.com"
+export DAM_URL="https://dam-dot-${PROJECT}.appspot.com/"
+export HYDRA_PUBLIC_URL="https://dam-dot-${PROJECT}.appspot.com/"
 
 echo DAMDEMO Started
 cd /hcls-fa
-./damdemo -alsologtostderr
+./damdemo
 echo DAMDEMO Finished

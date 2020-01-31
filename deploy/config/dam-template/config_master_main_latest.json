@@ -16,14 +16,6 @@
       },
       "authUrl": "https://ic-dot-${YOUR_PROJECT_ID}.appspot.com/oauth2/auth",
       "tokenUrl": "https://ic-dot-${YOUR_PROJECT_ID}.appspot.com/oauth2/token"
-    },
-    "nih": {
-      "issuer": "https://login.nih.gov/oidc",
-      "translateUsing": "dbgap_translator",
-      "ui": {
-        "label": "nih passport issuer",
-        "description": "nih passport issuer"
-      }
     }
   },
   "trustedSources": {
@@ -35,6 +27,10 @@
         "https://institute2.nih.gov",
         "https://institute3.nih.gov",
         "https://institute4.nih.gov"
+      ],
+      "claims": [
+        "^[^\\.]+$",
+        "^nih.*$"
       ],
       "ui": {
         "label": "nih institutes",
@@ -231,7 +227,7 @@
       },
       "passport": {
         "standardClaims": {
-          "iss": "https://ic-${YOUR_PROJECT_ID}.appspot.com/oidc",
+          "iss": "https://ic-prod-dot-hcls-data-connect-demo.appspot.com/oidc",
           "email": "admin@nci.nih.gov",
           "picture": "https://pbs.twimg.com/profile_images/3443048571/ef5062acfce64a7aef1d75b4934fbee6_400x400.png"
         }
@@ -267,6 +263,14 @@
         ]
       },
       "access": [
+        "andrew-test/all/viewer",
+        "andrew-test/bq_read_01/viewer",
+        "andrew-test/bq_read_02/viewer",
+        "andrew-test/gcs_read_01/viewer",
+        "andrew-test/gcs_read_02/viewer",
+        "ga4gh-apis/beacon/discovery",
+        "thousand-genomes/discovery-access/discovery",
+        "wes-resource/wes-view/execute"
       ]
     },
     "john": {
@@ -343,7 +347,10 @@
         ]
       },
       "access": [
-        "test-dataset/gcs_read/viewer"
+        "dataset_example/bq_read/viewer",
+        "dataset_example/gcs_read/viewer",
+        "ga4gh-apis/gcs_read/viewer",
+        "thousand-genomes/gcs-file-access/viewer"
       ]
     },
     "nci_researcher": {
@@ -384,7 +391,18 @@
         ]
       },
       "access": [
-        "test-dataset/gcs_read/viewer"
+        "andrew-test/all/viewer",
+        "andrew-test/bq_read_01/viewer",
+        "andrew-test/bq_read_02/viewer",
+        "andrew-test/gcs_read_01/viewer",
+        "andrew-test/gcs_read_02/viewer",
+        "dataset_example/bq_read/viewer",
+        "dataset_example/gcs_read/viewer",
+        "ga4gh-apis/beacon/discovery",
+        "ga4gh-apis/gcs_read/viewer",
+        "thousand-genomes/discovery-access/discovery",
+        "thousand-genomes/gcs-file-access/viewer",
+        "wes-resource/wes-view/execute"
       ]
     },
     "undergrad_candice": {
@@ -424,7 +442,7 @@
     "test_user_with_access": {
       "passport": {
         "standardClaims": {
-          "iss": "https://ic-${YOUR_PROJECT_ID}.appspot.com/oidc",
+          "iss": "https://ic-staging-dot-hcls-data-connect-demo.appspot.com/oidc",
           "email": "test-user-with-access@dnastack.com",
           "picture": "https://pbs.twimg.com/profile_images/3443048571/ef5062acfce64a7aef1d75b4934fbee6_400x400.png"
         },
@@ -466,7 +484,7 @@
       },
       "redirectUris": [
         "http://localhost:8092/test",
-        "https://damdemo-dot-${YOUR_PROJECT_ID}.appspot.com/test"
+        "https://dam-dot-${YOUR_PROJECT_ID}.appspot.com/dam/hydra-test"
       ],
       "scope": "openid offline ga4gh_passport_v1 profile email identities",
       "grantTypes": ["authorization_code"],
