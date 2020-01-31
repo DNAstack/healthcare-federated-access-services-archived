@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Copyright 2019 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-export ICDEMO_PORT="8080"
-export IC_URL="https://ic-dot-${PROJECT}.appspot.com"
-export HYDRA_PUBLIC_URL="https://ic-dot-${PROJECT}.appspot.com"
+# gcloud builds submit --config cloudbuild.yaml .
 
-echo ICDEMO Started
-cd /hcls-fa
-./icdemo -alsologtostderr
-echo ICDEMO Finished
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [ 'build', '-f', "deploy/build/ic/Dockerfile", '-t', 'gcr.io/$PROJECT_ID/hcls-fa-ic', '.' ]
+images:
+  - 'gcr.io/$PROJECT_ID/hcls-fa-ic'

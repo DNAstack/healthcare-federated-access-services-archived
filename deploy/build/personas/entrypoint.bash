@@ -14,11 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-export ICDEMO_PORT="8080"
-export IC_URL="https://ic-dot-${PROJECT}.appspot.com"
-export HYDRA_PUBLIC_URL="https://ic-dot-${PROJECT}.appspot.com"
+export PERSONAS_PORT="8080"
+export OIDC_URL="https://personas-dot-${PROJECT}.appspot.com/oidc"
 
-echo ICDEMO Started
+echo PERSONAS Started
 cd /hcls-fa
-./icdemo -alsologtostderr
-echo ICDEMO Finished
+./personas -alsologtostderr
+echo PERSONAS Finished

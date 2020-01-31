@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Copyright 2019 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,11 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-export ICDEMO_PORT="8080"
-export IC_URL="https://ic-dot-${PROJECT}.appspot.com"
-export HYDRA_PUBLIC_URL="https://ic-dot-${PROJECT}.appspot.com"
+runtime: custom
+env: flex
+service: "dam"
 
-echo ICDEMO Started
-cd /hcls-fa
-./icdemo -alsologtostderr
-echo ICDEMO Finished
+env_variables:
+  # Serivice type: ic or dam
+  TYPE: "dam"
+  # Project id
+  PROJECT: "${YOUR_PROJECT_ID}"
+
+  # IMPORT = "AUTO_RESET" will wipe the data store and reset it when config errors are detected
+  # on startup. DO NOT USE IN PRODUCTION.
+  IMPORT: "AUTO_RESET"
+
+beta_settings:
+  # Pass CloudSQL instance to GAE
+  cloud_sql_instances: ${YOUR_PROJECT_ID}:us-central1:hydra=tcp:1234

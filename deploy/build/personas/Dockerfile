@@ -1,5 +1,3 @@
-#!/bin/bash
-
 # Copyright 2019 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-export ICDEMO_PORT="8080"
-export IC_URL="https://ic-dot-${PROJECT}.appspot.com"
-export HYDRA_PUBLIC_URL="https://ic-dot-${PROJECT}.appspot.com"
+FROM golang:1.13.5-buster AS build
 
-echo ICDEMO Started
-cd /hcls-fa
-./icdemo -alsologtostderr
-echo ICDEMO Finished
+WORKDIR /
+
+COPY . /hcls-fa
+RUN cd /hcls-fa && \
+    go build ./gcp/personas
+
+COPY ./deploy/build/personas/entrypoint.bash /entrypoint.sh
+
+EXPOSE 8080
+
+ENTRYPOINT ["/entrypoint.sh"]
