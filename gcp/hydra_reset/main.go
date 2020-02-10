@@ -16,12 +16,9 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"os"
-	"time"
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/storage" /* copybara-comment: gcp_storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
@@ -89,22 +86,10 @@ func main() {
 		glog.Fatalf("Environment variable %q must be set: see app.yaml for more information", "SERVICE_NAME")
 	}
 
-	project := os.Getenv("PROJECT")
-	if project == "" {
-		glog.Fatalf("Environment variable %q must be set: see app.yaml for more information", "PROJECT")
-	}
-
 	clients, secrets := loadClients(serviceType, serviceName, path)
 
-	store := gcp_storage.NewDatastoreStorage(context.Background(), project, serviceName, path)
-
-	tx := store.LockTx(serviceType+"_hydra", 0*time.Second, nil)
-	if tx == nil {
-		glog.Fatalf("failed to reset hydra clients: cannot acquire storage lock")
-	}
-	defer tx.Finish()
 	if err := oathclients.ResetClients(http.DefaultClient, hydraAdminURL, clients, secrets); err != nil {
-		glog.Fatalf("failed to reset hydra clients: %v", err)
+		glog.Fatalf("hydra ResetClients failed: %v", err)
 	}
 
 	glog.Info("hydra clients reset finish.")
