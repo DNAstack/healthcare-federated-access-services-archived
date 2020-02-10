@@ -23,6 +23,7 @@ import (
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter" /* copybara-comment: adapter */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
@@ -48,8 +49,8 @@ func NewTokensHandler(s *Service, w http.ResponseWriter, r *http.Request) *token
 		input: &pb.TokensRequest{},
 	}
 }
-func (h *tokensHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *tokensHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.tx = tx
 	h.cfg = cfg
 	h.id = id
@@ -64,7 +65,7 @@ func (h *tokensHandler) LookupItem(name string, vars map[string]string) bool {
 	return true
 }
 func (h *tokensHandler) NormalizeInput(name string, vars map[string]string) error {
-	return common.GetRequest(h.input, h.r)
+	return httputil.GetRequest(h.input, h.r)
 }
 func (h *tokensHandler) Get(name string) error {
 	item := h.item
@@ -72,7 +73,7 @@ func (h *tokensHandler) Get(name string) error {
 		item = nil
 	}
 	if h.item != nil {
-		common.SendResponse(&pb.TokensResponse{
+		httputil.SendResponse(&pb.TokensResponse{
 			Tokens: item,
 		}, h.w)
 	}
@@ -122,8 +123,8 @@ func NewTokenHandler(s *Service, w http.ResponseWriter, r *http.Request) *tokenH
 		input: &pb.TokenRequest{},
 	}
 }
-func (h *tokenHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *tokenHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.tx = tx
 	h.cfg = cfg
 	h.id = id
@@ -138,10 +139,10 @@ func (h *tokenHandler) LookupItem(name string, vars map[string]string) bool {
 	return true
 }
 func (h *tokenHandler) NormalizeInput(name string, vars map[string]string) error {
-	return common.GetRequest(h.input, h.r)
+	return httputil.GetRequest(h.input, h.r)
 }
 func (h *tokenHandler) Get(name string) error {
-	common.SendResponse(&pb.TokenResponse{
+	httputil.SendResponse(&pb.TokenResponse{
 		Token: h.item,
 	}, h.w)
 	return nil

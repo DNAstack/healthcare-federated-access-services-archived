@@ -15,10 +15,10 @@
 # limitations under the License.
 
 export ICDEMO_PORT="8080"
-export IC_URL="https://ic-dot-${PROJECT}.appspot.com/"
-export HYDRA_PUBLIC_URL="https://ic-dot-${PROJECT}.appspot.com/"
+export IC_URL="https://${IC_TYPE?}-dot-${PROJECT?}.appspot.com"
+export HYDRA_PUBLIC_URL="https://${IC_TYPE?}-dot-${PROJECT?}.appspot.com"
 
 echo ICDEMO Started
 cd /hcls-fa
-./icdemo
+./icdemo -alsologtostderr
 echo ICDEMO Finished

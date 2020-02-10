@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	glog "github.com/golang/glog" /* copybara-comment */
 	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
@@ -131,7 +132,7 @@ func (f *FileStorage) ReadTx(datatype, realm, user, id string, rev int64, conten
 }
 
 // MultiReadTx reads a set of objects matching the input parameters and filters
-func (f *FileStorage) MultiReadTx(datatype, realm, user string, filters []Filter, offset, pageSize int, content map[string]map[string]proto.Message, typ proto.Message, tx Tx) (int, error) {
+func (f *FileStorage) MultiReadTx(datatype, realm, user string, filters [][]Filter, offset, pageSize int, content map[string]map[string]proto.Message, typ proto.Message, tx Tx) (int, error) {
 	return 0, fmt.Errorf("file storage does not support MultiReadTx")
 }
 
@@ -201,6 +202,14 @@ func (f *FileStorage) Tx(update bool) (Tx, error) {
 	return &FileTx{
 		writer: update,
 	}, nil
+}
+
+// LockTx returns a storage-wide lock by the given name. Only one such lock should
+// be requested at a time. If Tx is provided, it must be an update Tx.
+func (f *FileStorage) LockTx(lockName string, minFrequency time.Duration, tx Tx) Tx {
+	// Filestore does not support writing transactions, and returning nil indicates that
+	// the lock is not acquired.
+	return nil
 }
 
 type FileTx struct {

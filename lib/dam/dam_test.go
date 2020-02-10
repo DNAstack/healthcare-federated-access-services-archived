@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,6 @@ import (
 	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
 	"github.com/google/go-cmp/cmp" /* copybara-comment */
 	"github.com/google/go-cmp/cmp/cmpopts" /* copybara-comment */
-	"github.com/gorilla/mux" /* copybara-comment */
 	"github.com/go-openapi/strfmt" /* copybara-comment */
 	"google.golang.org/protobuf/testing/protocmp" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
@@ -45,6 +45,7 @@ import (
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test" /* copybara-comment: test */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/testhttp" /* copybara-comment: testhttp */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys" /* copybara-comment: testkeys */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator" /* copybara-comment: validator */
 
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
@@ -85,9 +86,55 @@ func TestHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
 	}
-	ctx := server.ContextWithClient(context.Background())
-	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, hydraPublicURL, store, wh, useHydra)
+	s := NewService(&Options{
+		HTTPClient:     server.Client(),
+		Domain:         "test.org",
+		ServiceName:    "dam",
+		DefaultBroker:  "no-broker",
+		Store:          store,
+		Warehouse:      wh,
+		UseHydra:       useHydra,
+		HydraAdminURL:  hydraAdminURL,
+		HydraPublicURL: hydraPublicURL,
+	})
 	tests := []test.HandlerTest{
+		// Realm tests.
+		{
+			Method:  "GET",
+			Path:    "/dam/v1alpha/master",
+			Persona: "admin",
+			Output:  `{}`,
+			Status:  http.StatusOK,
+		},
+		{
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test",
+			Persona: "admin",
+			Output:  `^.*exists`,
+			// For now, all realms are marked as already in existence.
+			Status: http.StatusConflict,
+		},
+		{
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
+		},
+		{
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
+		},
+		{
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
+		},
 		{
 			Method: "GET",
 			Path:   "/dam",
@@ -182,111 +229,128 @@ func TestHandlers(t *testing.T) {
 			Status: http.StatusBadRequest,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/master/config",
-			Output: `^.*dr_joe.*$`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/master/config",
+			Persona: "admin",
+			Output:  `^.*dr_joe.*$`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/master/config",
-			Input:  `{}`,
-			Output: `^.*exists`,
-			Status: http.StatusConflict,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/master/config",
+			Persona: "admin",
+			Input:   `{}`,
+			Output:  `^.*exists`,
+			Status:  http.StatusConflict,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/master/config",
-			Input:  `{"item":{"version":"v100"}}`,
-			Output: `^.*version`,
-			Status: http.StatusBadRequest,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/master/config",
+			Persona: "admin",
+			Input:   `{"item":{"version":"v100"}}`,
+			Output:  `^.*version`,
+			Status:  http.StatusBadRequest,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config",
-			Input:  `{"item": $(GET /dam/v1alpha/master/config)}`,
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config",
+			Persona: "admin",
+			Input:   `{"item": $(GET /dam/v1alpha/master/config)}`,
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/config/options",
-			Output: `^.*readOnlyMasterRealm.*"descriptors".*readOnlyMasterRealm`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/test/config/options",
+			Persona: "admin",
+			Output:  `^.*readOnlyMasterRealm.*"descriptors".*readOnlyMasterRealm`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/options",
-			Input:  `{}`,
-			Output: `^.*exists`,
-			Status: http.StatusConflict,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/config/options",
+			Persona: "admin",
+			Input:   `{}`,
+			Output:  `^.*exists`,
+			Status:  http.StatusConflict,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/options",
-			Input:  `{"item": $(GET /dam/v1alpha/test/config/options)}`,
-			Status: http.StatusOK,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config/options",
+			Persona: "admin",
+			Input:   `{"item": $(GET /dam/v1alpha/test/config/options)}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/options",
-			Input:  `{"item": {"gcpServiceAccountProject": "patch-options-project"}}`,
-			Status: http.StatusOK,
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/options",
+			Persona: "admin",
+			Input:   `{"item": {"gcpServiceAccountProject": "patch-options-project"}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/config/options",
-			Output: `^.*DELETE not allowed`,
-			Status: http.StatusBadRequest,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/config/options",
+			Persona: "admin",
+			Output:  `^.*DELETE not allowed`,
+			Status:  http.StatusBadRequest,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/config/resources/ga4gh-apis",
-			Output: `^.*"views"`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/test/config/resources/ga4gh-apis",
+			Persona: "admin",
+			Output:  `^.*"views"`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/resources/new-resource",
-			Input:  `{"item":{"maxTokenTtl": "3h","ui":{"label":"label","description":"desc"}}}`,
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/config/resources/new-resource",
+			Persona: "admin",
+			Input:   `{"item":{"maxTokenTtl": "3h","ui":{"label":"label","description":"desc"}}}`,
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Name:   "PUT /dam/v1alpha/test/config/resources/new-resource (unordered access list)",
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/resources/new-resource",
-			Input:  `{"item": $(GET /dam/v1alpha/test/config/resources/ga4gh-apis), "modification": {"testPersonas":{"dr_joe_elixir":{"access":["ga4gh-apis/gcs_read/viewer","ga4gh-apis/beacon/discovery","new-resource/beacon/discovery","new-resource/gcs_read/viewer"]}}}}`,
-			Status: http.StatusOK,
+			Name:    "PUT /dam/v1alpha/test/config/resources/new-resource (unordered access list)",
+			Persona: "admin",
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config/resources/new-resource",
+			Input:   `{"item": $(GET /dam/v1alpha/test/config/resources/ga4gh-apis), "modification": {"testPersonas":{"dr_joe_elixir":{"access":["ga4gh-apis/gcs_read/viewer","ga4gh-apis/beacon/discovery","new-resource/beacon/discovery","new-resource/gcs_read/viewer"]}}}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/resources/new-resource",
-			Input:  `{"item": {"ui":{"label":"foo","description":"bar"}}, "modification": {"testPersonas":{"dr_joe_elixir":{"access":["ga4gh-apis/beacon/discovery","ga4gh-apis/gcs_read/viewer"]}}}}`,
-			Status: http.StatusOK,
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/resources/new-resource",
+			Persona: "admin",
+			Input:   `{"item": {"ui":{"label":"foo","description":"bar"}}, "modification": {"testPersonas":{"dr_joe_elixir":{"access":["ga4gh-apis/beacon/discovery","ga4gh-apis/gcs_read/viewer"]}}}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/config/resources/new-resource",
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/config/resources/new-resource",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read",
-			Output: `^.*"serviceTemplate"`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read",
+			Persona: "admin",
+			Output:  `^.*"serviceTemplate"`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
-			Input:  `{"item":$(GET /dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read), "modification": {"testPersonas":{"dr_joe_elixir":{"access":["ga4gh-apis/beacon/discovery","ga4gh-apis/gcs_read/viewer","ga4gh-apis/gcs_read2/viewer"]}}}}`,
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
+			Persona: "admin",
+			Input:   `{"item":$(GET /dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read), "modification": {"testPersonas":{"dr_joe_elixir":{"access":["ga4gh-apis/beacon/discovery","ga4gh-apis/gcs_read/viewer","ga4gh-apis/gcs_read2/viewer"]}}}}`,
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
+			Persona: "admin",
 			Input: `{
 									"item": {
 										"serviceTemplate":"gcs",
@@ -319,8 +383,9 @@ func TestHandlers(t *testing.T) {
 			Status: http.StatusBadRequest,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
+			Persona: "admin",
 			Input: `{
 									"item": {
 										"serviceTemplate":"gcs",
@@ -352,8 +417,9 @@ func TestHandlers(t *testing.T) {
 			Status: http.StatusOK,
 		},
 		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
+			Persona: "admin",
 			Input: `{
 									"item": {
 										"items": [
@@ -382,157 +448,182 @@ func TestHandlers(t *testing.T) {
 			Status: http.StatusOK,
 		},
 		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/config/resources/ga4gh-apis/views/gcs_read2",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/config/trustedPassportIssuers/elixir",
-			Output: `^.*"issuer"`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/test/config/trustedPassportIssuers/elixir",
+			Persona: "admin",
+			Output:  `^.*"issuer"`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/trustedPassportIssuers/new-issuer",
-			Input:  `{"item":{"issuer":"https://test.org","ui":{"label":"foo","description":"bar"}}}`,
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/config/trustedPassportIssuers/new-issuer",
+			Persona: "admin",
+			Input:   `{"item":{"issuer":"https://test.org","ui":{"label":"foo","description":"bar"}}}`,
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/trustedPassportIssuers/new-issuer",
-			Input:  `{"item":{"issuer":"https://test.org","ui":{"label":"foo","description":"bar"}}}`,
-			Status: http.StatusOK,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config/trustedPassportIssuers/new-issuer",
+			Persona: "admin",
+			Input:   `{"item":{"issuer":"https://test.org","ui":{"label":"foo","description":"bar"}}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/trustedPassportIssuers/new-issuer",
-			Input:  `{"item":{"issuer":"https://test2.org","ui":{"label":"foo","description":"bar"}}}`,
-			Status: http.StatusOK,
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/trustedPassportIssuers/new-issuer",
+			Persona: "admin",
+			Input:   `{"item":{"issuer":"https://test2.org","ui":{"label":"foo","description":"bar"}}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/config/trustedPassportIssuers/new-issuer",
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/config/trustedPassportIssuers/new-issuer",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/config/trustedSources/elixir_institutes",
-			Output: `^.*"sources"`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/test/config/trustedSources/elixir_institutes",
+			Persona: "admin",
+			Output:  `^.*"sources"`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/trustedSources/new-source",
-			Input:  `{"item":{"sources":["https://test.org"],"ui":{"label":"foo","description":"bar"}}}`,
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/config/trustedSources/new-source",
+			Persona: "admin",
+			Input:   `{"item":{"sources":["https://test.org"],"ui":{"label":"foo","description":"bar"}}}`,
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/trustedSources/new-source",
-			Input:  `{"item":{"sources":["https://test2.org"],"ui":{"label":"foo","description":"bar"}}}`,
-			Status: http.StatusOK,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config/trustedSources/new-source",
+			Persona: "admin",
+			Input:   `{"item":{"sources":["https://test2.org"],"ui":{"label":"foo","description":"bar"}}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/trustedSources/new-source",
-			Input:  `{"item":{"sources":["https://test3.org"],"ui":{"label":"foo","description":"bar"}}}`,
-			Status: http.StatusOK,
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/trustedSources/new-source",
+			Persona: "admin",
+			Input:   `{"item":{"sources":["https://test3.org"],"ui":{"label":"foo","description":"bar"}}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/config/trustedSources/new-source",
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/config/trustedSources/new-source",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/config/policies/bona_fide",
-			Output: `^.*"anyOf"`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/test/config/policies/bona_fide",
+			Persona: "admin",
+			Output:  `^.*"anyOf"`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/policies/new-policy",
-			Input:  `{"item":{"anyOf":[{"allOf":[{"type":"BonaFide","value":"const:https://test.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/config/policies/new-policy",
+			Persona: "admin",
+			Input:   `{"item":{"anyOf":[{"allOf":[{"type":"BonaFide","value":"const:https://test.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/policies/new-policy",
-			Input:  `{"item":{"anyOf":[{"allOf":[{"type":"BonaFide","value":"const:https://test2.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
-			Status: http.StatusOK,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config/policies/new-policy",
+			Persona: "admin",
+			Input:   `{"item":{"anyOf":[{"allOf":[{"type":"BonaFide","value":"const:https://test2.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/policies/new-policy",
-			Input:  `{"item":{"anyOf":[{"allOf":[{"type":"BonaFide","value":"const:https://test3.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
-			Status: http.StatusOK,
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/policies/new-policy",
+			Persona: "admin",
+			Input:   `{"item":{"anyOf":[{"allOf":[{"type":"BonaFide","value":"const:https://test3.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/config/policies/new-policy",
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/config/policies/new-policy",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/config/claimDefinitions/BonaFide",
-			Output: `^.*"ui"`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/test/config/claimDefinitions/BonaFide",
+			Persona: "admin",
+			Output:  `^.*"ui"`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/claimDefinitions/new.claim",
-			Input:  `{"item":{"ui":{"label":"new.Claim","description":"bar"}}}`,
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/config/claimDefinitions/new.claim",
+			Persona: "admin",
+			Input:   `{"item":{"ui":{"label":"new.Claim","description":"bar"}}}`,
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/claimDefinitions/new.claim",
-			Input:  `{"item":{"ui":{"label":"new.Claim2","description":"bar"}}}`,
-			Status: http.StatusOK,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config/claimDefinitions/new.claim",
+			Persona: "admin",
+			Input:   `{"item":{"ui":{"label":"new.Claim2","description":"bar"}}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/claimDefinitions/new.claim",
-			Input:  `{"item":{"ui":{"label":"new.Claim3","description":"bar"}}}`,
-			Status: http.StatusOK,
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/claimDefinitions/new.claim",
+			Persona: "admin",
+			Input:   `{"item":{"ui":{"label":"new.Claim3","description":"bar"}}}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/config/claimDefinitions/new.claim",
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/config/claimDefinitions/new.claim",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/config/serviceTemplates/gcs",
-			Output: `^.*"targetAdapter"`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/test/config/serviceTemplates/gcs",
+			Persona: "admin",
+			Output:  `^.*"targetAdapter"`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/serviceTemplates/new-service",
-			Input:  `{"item":$(GET /dam/v1alpha/test/config/serviceTemplates/gcs)}`,
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/config/serviceTemplates/new-service",
+			Persona: "admin",
+			Input:   `{"item":$(GET /dam/v1alpha/test/config/serviceTemplates/gcs)}`,
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/serviceTemplates/new-service",
-			Input:  `{"item":$(GET /dam/v1alpha/test/config/serviceTemplates/gcs)}`,
-			Status: http.StatusOK,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config/serviceTemplates/new-service",
+			Persona: "admin",
+			Input:   `{"item":$(GET /dam/v1alpha/test/config/serviceTemplates/gcs)}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/serviceTemplates/new-service",
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/serviceTemplates/new-service",
+			Persona: "admin",
 			Input: `{"item":{"interfaces":{"gcp:gs":"gs://${bucket}"},"ui":{"label":"foo","description":"bar"}, "roles": {
         "viewer": {
           "targetRoles": ["roles/storage.objectViewer"],
@@ -549,46 +640,53 @@ func TestHandlers(t *testing.T) {
 			Status: http.StatusOK,
 		},
 		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/config/serviceTemplates/new-service",
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/config/serviceTemplates/new-service",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/test/config/testPersonas/dr_joe_elixir",
-			Output: `^.*"passport"`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/test/config/testPersonas/dr_joe_elixir",
+			Persona: "admin",
+			Output:  `^.*"passport"`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/testPersonas/new-persona",
-			Input:  `{"item":$(GET /dam/v1alpha/test/config/testPersonas/dr_joe_elixir)}`,
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/config/testPersonas/new-persona",
+			Persona: "admin",
+			Input:   `{"item":$(GET /dam/v1alpha/test/config/testPersonas/dr_joe_elixir)}`,
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/test/config/testPersonas/new-persona",
-			Input:  `{"item":$(GET /dam/v1alpha/test/config/testPersonas/dr_joe_elixir)}`,
-			Status: http.StatusOK,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/config/testPersonas/new-persona",
+			Persona: "admin",
+			Input:   `{"item":$(GET /dam/v1alpha/test/config/testPersonas/dr_joe_elixir)}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/testPersonas/new-persona",
-			Input:  `{"item":$(GET /dam/v1alpha/test/config/testPersonas/dr_joe_elixir)}`,
-			Status: http.StatusOK,
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/testPersonas/new-persona",
+			Persona: "admin",
+			Input:   `{"item":$(GET /dam/v1alpha/test/config/testPersonas/dr_joe_elixir)}`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/test/config/testPersonas/new-persona",
-			Output: ``,
-			Status: http.StatusOK,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/config/testPersonas/new-persona",
+			Persona: "admin",
+			Output:  ``,
+			Status:  http.StatusOK,
 		},
 		{
-			Name:   "Claim condition dependency check (student vs. faculty)",
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/testPersonas/dr_joe_era_commons",
+			Name:    "Claim condition dependency check (student vs. faculty)",
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/testPersonas/dr_joe_era_commons",
+			Persona: "admin",
 			Input: `{"item":
 				{
 					"ui": {
@@ -641,9 +739,10 @@ func TestHandlers(t *testing.T) {
 			Status: http.StatusBadRequest,
 		},
 		{
-			Name:   "Claim condition dependency expired",
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/test/config/testPersonas/dr_joe_era_commons",
+			Name:    "Claim condition dependency expired",
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/config/testPersonas/dr_joe_era_commons",
+			Persona: "admin",
 			Input: `{"item":
 				{
 					"ui": {
@@ -696,9 +795,10 @@ func TestHandlers(t *testing.T) {
 			Status: http.StatusBadRequest,
 		},
 		{
-			Name:   "BonaFide claim expiry check",
-			Method: "POST",
-			Path:   "/dam/v1alpha/test/config/testPersonas/expired-persona",
+			Name:    "BonaFide claim expiry check",
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/config/testPersonas/expired-persona",
+			Persona: "admin",
 			Input: `{"item":
 				{
 					"ui": {
@@ -748,8 +848,25 @@ func TestMinConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
 	}
-	ctx := server.ContextWithClient(context.Background())
-	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, hydraPublicURL, store, nil, useHydra)
+	opts := &Options{
+		HTTPClient:     server.Client(),
+		Domain:         "test.org",
+		ServiceName:    "dam",
+		DefaultBroker:  "no-broker",
+		Store:          store,
+		Warehouse:      nil,
+		UseHydra:       useHydra,
+		HydraAdminURL:  hydraAdminURL,
+		HydraPublicURL: hydraPublicURL,
+	}
+	s := NewService(opts)
+	verifyService(t, s.domainURL, opts.Domain, "domainURL")
+	verifyService(t, s.defaultBroker, opts.DefaultBroker, "defaultBroker")
+	verifyService(t, s.serviceName, opts.ServiceName, "serviceName")
+	verifyService(t, strconv.FormatBool(s.useHydra), strconv.FormatBool(opts.UseHydra), "useHydra")
+	verifyService(t, s.hydraAdminURL, opts.HydraAdminURL, "hydraAdminURL")
+	verifyService(t, s.hydraPublicURL, opts.HydraPublicURL, "hydraPublicURL")
+
 	tests := []test.HandlerTest{
 		{
 			Name:    "restricted access of 'dr_joe_elixir' (which only exists in min config subdirectory)",
@@ -771,6 +888,12 @@ func TestMinConfig(t *testing.T) {
 	test.HandlerTests(t, s.Handler, tests, hydraPublicURL, server.Config())
 }
 
+func verifyService(t *testing.T, got, want, field string) {
+	if got != want {
+		t.Errorf("service %q mismatch: got %q, want %q", field, got, want)
+	}
+}
+
 type contextMatcher struct{}
 
 func (contextMatcher) Matches(x interface{}) bool {
@@ -778,8 +901,7 @@ func (contextMatcher) Matches(x interface{}) bool {
 	if !ok {
 		return false
 	}
-	requestTTLInNanoFloat64 := "requested_ttl"
-	_, ok = c.Value(requestTTLInNanoFloat64).(float64)
+	_, ok = c.Value(validator.RequestTTLInNanoFloat64).(float64)
 	if !ok {
 		return false
 	}
@@ -797,7 +919,16 @@ func TestCheckAuthorization(t *testing.T) {
 		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
 	}
 	ctx := server.ContextWithClient(context.Background())
-	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, hydraPublicURL, store, nil, useHydra)
+	s := NewService(&Options{
+		Domain:         "test.org",
+		ServiceName:    "dam",
+		DefaultBroker:  "no-broker",
+		Store:          store,
+		Warehouse:      nil,
+		UseHydra:       useHydra,
+		HydraAdminURL:  hydraAdminURL,
+		HydraPublicURL: hydraPublicURL,
+	})
 
 	realm := "master"
 	cfg, err := s.loadConfig(nil, realm)
@@ -817,12 +948,12 @@ func TestCheckAuthorization(t *testing.T) {
 	role := "viewer"
 	ttl := time.Hour
 
-	id, err := s.upstreamTokenToPassportIdentity(cfg, nil, string(acTok), test.TestClientID)
+	id, err := s.upstreamTokenToPassportIdentity(ctx, cfg, nil, string(acTok), test.TestClientID)
 	if err != nil {
 		t.Fatalf("unable to obtain passport identity: %v", err)
 	}
 
-	status, err := s.checkAuthorization(id, ttl, resName, viewName, role, cfg, test.TestClientID)
+	status, err := s.checkAuthorization(ctx, id, ttl, resName, viewName, role, cfg, test.TestClientID)
 	if status != http.StatusOK || err != nil {
 		t.Errorf("checkAuthorization(id, %v, %q, %q, %q, cfg, %q) failed, expected %q, got %q: %v", ttl, resName, viewName, role, test.TestClientID, http.StatusOK, status, err)
 	}
@@ -830,15 +961,27 @@ func TestCheckAuthorization(t *testing.T) {
 	// TODO: we need more tests for other condition in checkAuthorization()
 }
 
-func setupHydraTest() (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Server, *fakeoidcissuer.Server, error) {
+func setupHydraTest() (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Server, *persona.Server, error) {
 	store := storage.NewMemoryStorage("dam", "testdata/config")
-	server, err := fakeoidcissuer.New(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config", false)
+	broker, err := persona.NewBroker(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config", false)
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
 	}
-	ctx := server.ContextWithClient(context.Background())
+
+	h := fakehydra.New(broker.Handler)
+
 	wh := clouds.NewMockTokenCreator(false)
-	s := NewService(ctx, "https://test.org", testBroker, hydraAdminURL, hydraPublicURL, store, wh, useHydra)
+	s := NewService(&Options{
+		HTTPClient:     httptestclient.New(broker.Handler),
+		Domain:         "https://test.org",
+		ServiceName:    "dam",
+		DefaultBroker:  testBroker,
+		Store:          store,
+		Warehouse:      wh,
+		UseHydra:       useHydra,
+		HydraAdminURL:  hydraAdminURL,
+		HydraPublicURL: hydraPublicURL,
+	})
 
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
@@ -850,11 +993,7 @@ func setupHydraTest() (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Serve
 		return nil, nil, nil, nil, nil, err
 	}
 
-	r := mux.NewRouter()
-	h := fakehydra.New(r)
-	s.httpClient = httptestclient.New(r)
-
-	return s, cfg, sec, h, server, nil
+	return s, cfg, sec, h, broker, nil
 }
 
 func sendLogin(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, authParams string, scope []string) *http.Response {
@@ -882,9 +1021,10 @@ func TestLogin_Hydra_Success(t *testing.T) {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
 
-	ga4ghGCS := url.QueryEscape("https://test.org/dam/master/resources/ga4gh-apis/views/gcs_read")
-	ga4ghGCSViewer := url.QueryEscape("https://test.org/dam/master/resources/ga4gh-apis/views/gcs_read/roles/viewer")
-	ga4ghBeaconDiscovery := url.QueryEscape("https://test.org/dam/master/resources/ga4gh-apis/views/beacon/roles/discovery")
+	ga4ghGCSViewer := url.QueryEscape("https://test.org/dam/master/resources/ga4gh-apis/views/gcs_read/roles/viewer/interfaces/http:gcp:gs")
+	ga4ghBeaconDiscovery := url.QueryEscape("https://test.org/dam/master/resources/ga4gh-apis/views/beacon/roles/discovery/interfaces/http:beacon")
+	// TODO: remove support for oldResourcePath
+	oldGCSViewer := url.QueryEscape("https://test.org/dam/master/resources/ga4gh-apis/views/gcs_read/roles/viewer")
 
 	tests := []struct {
 		name              string
@@ -895,12 +1035,6 @@ func TestLogin_Hydra_Success(t *testing.T) {
 		{
 			name:              "single resource with role",
 			authParams:        "max_age=10&resource=" + ga4ghGCSViewer,
-			wantTTL:           int64(10 * time.Second),
-			wantResourceCount: 1,
-		},
-		{
-			name:              "single resource without role",
-			authParams:        "max_age=10&resource=" + ga4ghGCS,
 			wantTTL:           int64(10 * time.Second),
 			wantResourceCount: 1,
 		},
@@ -921,6 +1055,12 @@ func TestLogin_Hydra_Success(t *testing.T) {
 			name:              "no ttl or maxAge",
 			authParams:        "resource=" + ga4ghGCSViewer,
 			wantTTL:           int64(defaultTTL),
+			wantResourceCount: 1,
+		},
+		{
+			name:              "old resource path",
+			authParams:        "max_age=10&resource=" + oldGCSViewer,
+			wantTTL:           int64(10 * time.Second),
 			wantResourceCount: 1,
 		},
 	}
@@ -988,7 +1128,7 @@ func TestLogin_Hydra_Error(t *testing.T) {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
 
-	ga4ghGCSViewer := url.QueryEscape("https://test.org/dam/master/resources/ga4gh-apis/views/gcs_read/roles/viewer")
+	ga4ghGCSViewer := url.QueryEscape("https://test.org/dam/master/resources/ga4gh-apis/views/gcs_read/roles/viewer/interfaces/http:gcp:gs")
 
 	tests := []struct {
 		name       string
@@ -1051,8 +1191,13 @@ func TestLogin_Hydra_Error(t *testing.T) {
 			respCode:   http.StatusBadRequest,
 		},
 		{
+			name:       "resource interface not exist",
+			authParams: "resource=" + strings.ReplaceAll(ga4ghGCSViewer, "gcp", "invalid"),
+			respCode:   http.StatusBadRequest,
+		},
+		{
 			name:       "second resource invalid",
-			authParams: "resource=" + ga4ghGCSViewer + "resource=invalid",
+			authParams: "resource=" + ga4ghGCSViewer + "&resource=invalid",
 			respCode:   http.StatusBadRequest,
 		},
 	}
@@ -1061,7 +1206,7 @@ func TestLogin_Hydra_Error(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := sendLogin(s, cfg, h, tc.authParams, nil)
 			if resp.StatusCode != tc.respCode {
-				t.Errorf("resp.StatusCode wants %d, got %d", tc.respCode, resp.StatusCode)
+				t.Errorf("test case %q: sendLogin(_, _, _, %q, nil) = %+v, resp.StatusCode want %d, got %d", tc.name, tc.authParams, resp, tc.respCode, resp.StatusCode)
 			}
 		})
 	}
@@ -1161,7 +1306,9 @@ func TestLogin_Endpoint_Hydra_Success(t *testing.T) {
 	}
 }
 
-func sendLoggedIn(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, code, state string, tokenType pb.ResourceTokenRequestState_TokenType) (*http.Response, error) {
+func sendLoggedIn(t *testing.T, s *Service, cfg *pb.DamConfig, h *fakehydra.Server, code, state string, tokenType pb.ResourceTokenRequestState_TokenType) *http.Response {
+	t.Helper()
+
 	// Ensure login state exists before request.
 	login := &pb.ResourceTokenRequestState{
 		Challenge: loginChallenge,
@@ -1181,7 +1328,7 @@ func sendLoggedIn(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, code, stat
 
 	err := s.store.Write(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, loginStateID, storage.LatestRev, login, nil)
 	if err != nil {
-		return nil, err
+		t.Fatalf("store.Write loginState failed: %v", err)
 	}
 
 	// Clear fakehydra server and set reject response.
@@ -1193,9 +1340,10 @@ func sendLoggedIn(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, code, stat
 	u := damURL + loggedInPath + query
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, u, nil)
+
 	s.Handler.ServeHTTP(w, r)
 
-	return w.Result(), nil
+	return w.Result()
 }
 
 func TestLoggedIn_Hydra_Success(t *testing.T) {
@@ -1206,10 +1354,7 @@ func TestLoggedIn_Hydra_Success(t *testing.T) {
 
 	pname := "dr_joe_elixir"
 
-	resp, err := sendLoggedIn(s, cfg, h, pname, loginStateID, pb.ResourceTokenRequestState_DATASET)
-	if err != nil {
-		t.Fatalf("sendLoggedIn(s, cfg, h, %s, %s, DATASET) failed: %v", pname, loginStateID, err)
-	}
+	resp := sendLoggedIn(t, s, cfg, h, pname, loginStateID, pb.ResourceTokenRequestState_DATASET)
 
 	if resp.StatusCode != http.StatusTemporaryRedirect {
 		t.Errorf("resp.StatusCode wants %d got %d", http.StatusTemporaryRedirect, resp.StatusCode)
@@ -1230,7 +1375,7 @@ func TestLoggedIn_Hydra_Success(t *testing.T) {
 	}
 	stateID, ok := st.(string)
 	if !ok {
-		t.Errorf("AcceptLoginReq.Context[%s] in wrong type", stateIDInHydra)
+		t.Errorf("AcceptLoginReq.Context[%s] is wrong type", stateIDInHydra)
 	}
 	if _, ok := h.AcceptLoginReq.Context["identities"]; ok {
 		t.Errorf("AcceptLoginReq.Context[identities] should not exists")
@@ -1283,10 +1428,7 @@ func TestLoggedIn_Hydra_Errors(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp, err := sendLoggedIn(s, cfg, h, tc.code, tc.stateID, pb.ResourceTokenRequestState_DATASET)
-			if err != nil {
-				t.Fatalf("sendLoggedIn(s, cfg, h, %s, %s, DATASET) failed: %v", tc.code, tc.stateID, err)
-			}
+			resp := sendLoggedIn(t, s, cfg, h, tc.code, tc.stateID, pb.ResourceTokenRequestState_DATASET)
 
 			if resp.StatusCode != tc.respStatus {
 				t.Errorf("resp.StatusCode wants %d got %d", tc.respStatus, resp.StatusCode)
@@ -1303,10 +1445,7 @@ func TestLoggedIn_Endpoint_Hydra_Success(t *testing.T) {
 
 	pname := "dr_joe_elixir"
 
-	resp, err := sendLoggedIn(s, cfg, h, pname, loginStateID, pb.ResourceTokenRequestState_ENDPOINT)
-	if err != nil {
-		t.Fatalf("sendLoggedIn(s, cfg, h, %s, %s, ENDPOINT) failed: %v", pname, loginStateID, err)
-	}
+	resp := sendLoggedIn(t, s, cfg, h, pname, loginStateID, pb.ResourceTokenRequestState_ENDPOINT)
 
 	if resp.StatusCode != http.StatusTemporaryRedirect {
 		t.Errorf("resp.StatusCode wants %d got %d", http.StatusTemporaryRedirect, resp.StatusCode)
@@ -1416,7 +1555,7 @@ func TestHydraConsent_Endpoint(t *testing.T) {
 	}
 }
 
-func sendResourceTokens(t *testing.T, s *Service) *http.Response {
+func sendResourceTokens(t *testing.T, s *Service, broker *persona.Server, cartID string) *http.Response {
 	t.Helper()
 
 	state := &pb.ResourceTokenRequestState{
@@ -1444,60 +1583,58 @@ func sendResourceTokens(t *testing.T, s *Service) *http.Response {
 		"client_id":     []string{test.TestClientID},
 		"client_secret": []string{test.TestClientSecret},
 	}
-	header := http.Header{"Authorization": []string{"Bearer this_is_a_token"}}
+
+	now := time.Now().Unix()
+	tok, err := broker.Sign(nil, &ga4gh.Identity{
+		Issuer:    hydraPublicURL,
+		Subject:   "subject",
+		IssuedAt:  now,
+		Expiry:    now + 10000,
+		Audiences: ga4gh.NewAudience(test.TestClientID),
+		Extra: map[string]interface{}{
+			"cart": cartID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("broker.Sign() failed: %v", err)
+	}
+
+	header := http.Header{"Authorization": []string{"Bearer " + tok}}
 	return testhttp.SendTestRequest(t, s.Handler, http.MethodPost, resourceTokensPath, q, nil, header)
 }
 
 func TestResourceTokens(t *testing.T) {
-	s, _, _, h, _, err := setupHydraTest()
+	s, _, _, h, broker, err := setupHydraTest()
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
 
+	// TODO: can use the "cart" in access token instead of read from Introspection.
 	h.IntrospectionResp = &hydraapi.Introspection{
 		Extra: map[string]interface{}{"cart": consentStateID},
 	}
 
-	resp := sendResourceTokens(t, s)
+	resp := sendResourceTokens(t, s, broker, consentStateID)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, wants %d", resp.StatusCode, http.StatusOK)
 	}
 }
 
-func TestResourceTokens_HydraError(t *testing.T) {
-	s, _, _, h, _, err := setupHydraTest()
-	if err != nil {
-		t.Fatalf("setupHydraTest() failed: %v", err)
-	}
-
-	n := "token expired"
-	h.IntrospectionErr = &hydraapi.GenericError{
-		Code: http.StatusUnauthorized,
-		Name: &n,
-	}
-
-	resp := sendResourceTokens(t, s)
-	// TODO: Should convert Hydra API error to grpc status.
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("status = %d, wants %d", resp.StatusCode, http.StatusInternalServerError)
-	}
-}
-
 func TestResourceTokens_CartNotExistsInToken(t *testing.T) {
-	s, _, _, h, _, err := setupHydraTest()
+	s, _, _, h, broker, err := setupHydraTest()
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
 
 	h.IntrospectionResp = &hydraapi.Introspection{}
-	resp := sendResourceTokens(t, s)
+	resp := sendResourceTokens(t, s, broker, "")
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, wants %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 }
 
 func TestResourceTokens_CartNotExistsInStorage(t *testing.T) {
-	s, _, _, h, _, err := setupHydraTest()
+	s, _, _, h, broker, err := setupHydraTest()
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1506,13 +1643,13 @@ func TestResourceTokens_CartNotExistsInStorage(t *testing.T) {
 		Extra: map[string]interface{}{"cart": "invalid"},
 	}
 
-	resp := sendResourceTokens(t, s)
+	resp := sendResourceTokens(t, s, broker, "invalid")
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, wants %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }
 
-func sendClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+func sendClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -1595,7 +1732,7 @@ func TestClients_Get_Error(t *testing.T) {
 	}
 }
 
-func sendConfigClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+func sendConfigClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -1664,7 +1801,7 @@ func TestConfigClients_Get_Error(t *testing.T) {
 			name:       "not admin",
 			persona:    "non-admin",
 			clientName: "test_client",
-			status:     http.StatusForbidden,
+			status:     http.StatusUnauthorized,
 		},
 	}
 
@@ -1683,7 +1820,7 @@ func diffOfHydraClientIgnoreClientIDAndSecret(c1 *hydraapi.Client, c2 *hydraapi.
 	return cmp.Diff(c1, c2, cmpopts.IgnoreFields(hydraapi.Client{}, "ClientID", "Secret"), cmpopts.IgnoreUnexported(strfmt.DateTime{}))
 }
 
-func sendConfigClientsCreate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+func sendConfigClientsCreate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -1879,7 +2016,7 @@ func TestConfigClients_Create_Error(t *testing.T) {
 			persona:    "non-admin",
 			clientName: clientName,
 			client:     cli,
-			status:     http.StatusForbidden,
+			status:     http.StatusUnauthorized,
 		},
 		{
 			name:       "no redirect",
@@ -1971,7 +2108,7 @@ func TestConfigClients_Create_Hydra_Error(t *testing.T) {
 	}
 }
 
-func sendConfigClientsUpdate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+func sendConfigClientsUpdate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -2132,7 +2269,7 @@ func TestConfigClients_Update_Error(t *testing.T) {
 			name:       "not admin",
 			persona:    "non-admin",
 			clientName: clientName,
-			status:     http.StatusForbidden,
+			status:     http.StatusUnauthorized,
 		},
 	}
 
@@ -2209,7 +2346,7 @@ func TestConfigClients_Update_Hydra_Error(t *testing.T) {
 	}
 }
 
-func sendConfigClientsDelete(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+func sendConfigClientsDelete(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -2289,7 +2426,7 @@ func TestConfigClients_Delete_Error(t *testing.T) {
 			name:       "not admin",
 			persona:    "non-admin",
 			clientName: clientName,
-			status:     http.StatusForbidden,
+			status:     http.StatusUnauthorized,
 		},
 	}
 
@@ -2347,13 +2484,20 @@ func TestConfigReset_Hydra(t *testing.T) {
 	}
 
 	cid := "c1"
+	existingID := "00000000-0000-0000-0000-000000000000"
+	newID := "00000000-0000-0000-0000-000000000002"
 
 	h.ListClientsResp = []*hydraapi.Client{
 		{ClientID: cid},
+		{ClientID: existingID, Name: "foo"},
 	}
 
 	h.CreateClientResp = &hydraapi.Client{
-		ClientID: cid,
+		ClientID: newID,
+	}
+
+	h.UpdateClientResp = &hydraapi.Client{
+		ClientID: existingID,
 	}
 
 	pname := "admin"
@@ -2383,8 +2527,12 @@ func TestConfigReset_Hydra(t *testing.T) {
 		t.Errorf("h.DeleteClientID = %s, wants %s", h.DeleteClientID, cid)
 	}
 
-	if h.CreateClientReq.Name != "test_client" && h.CreateClientReq.Name != "test_client2" {
-		t.Errorf("h.CreateClientReq.Name = %s, wants test_client or test_client2", h.CreateClientReq.Name)
+	if h.UpdateClientReq.Name != "test_client" {
+		t.Errorf("h.UpdateClientReq.Name = %s, wants test_client", h.UpdateClientReq.Name)
+	}
+
+	if h.CreateClientReq.Name != "test_client2" {
+		t.Errorf("h.CreateClientReq.Name = %s, wants test_client2", h.CreateClientReq.Name)
 	}
 }
 
@@ -2396,7 +2544,16 @@ func Test_HydraAccessTokenForEndpoint(t *testing.T) {
 		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
 	}
 	ctx := server.ContextWithClient(context.Background())
-	s := NewService(ctx, "test.org", "no-broker", hydraAdminURL, hydraPublicURL, store, wh, useHydra)
+	s := NewService(&Options{
+		Domain:         "test.org",
+		ServiceName:    "dam",
+		DefaultBroker:  "no-broker",
+		Store:          store,
+		Warehouse:      wh,
+		UseHydra:       useHydra,
+		HydraAdminURL:  hydraAdminURL,
+		HydraPublicURL: hydraPublicURL,
+	})
 
 	cfg, err := s.loadConfig(nil, "master")
 	if err != nil {
@@ -2420,7 +2577,7 @@ func Test_HydraAccessTokenForEndpoint(t *testing.T) {
 		t.Fatalf("Sign() failed: %v", err)
 	}
 
-	id, err := s.damSignedBearerTokenToPassportIdentity(cfg, tok, test.TestClientID)
+	id, err := s.damSignedBearerTokenToPassportIdentity(ctx, cfg, tok, test.TestClientID)
 	if err != nil {
 		t.Fatalf("damSignedBearerTokenToPassportIdentity() failed: %v", err)
 	}

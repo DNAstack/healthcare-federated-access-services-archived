@@ -20,6 +20,7 @@ import (
 
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
@@ -29,10 +30,11 @@ const (
 	// SawAdapterName is the name identifier exposed in config files.
 	SawAdapterName = "token:gcp:sa"
 	sawName        = "saw"
-	userProjectVar = "userProject"
 	sawPlatform    = "gcp"
 	// SawMaxUserIDLength is the service account desc max length.
 	SawMaxUserIDLength = 100
+	sawBucketVar       = "bucket"
+	sawPaysBucketVar   = "requester-pays-bucket"
 )
 
 // SawAdapter is a Service Account Warehouse (SAW) adapter.
@@ -76,7 +78,7 @@ func (a *SawAdapter) IsAggregator() bool {
 // CheckConfig validates that a new configuration is compatible with this adapter.
 func (a *SawAdapter) CheckConfig(templateName string, template *pb.ServiceTemplate, resName, viewName string, view *pb.View, cfg *pb.DamConfig, adapters *TargetAdapters) (string, error) {
 	if cfg.Options == nil || len(cfg.Options.GcpServiceAccountProject) == 0 {
-		return common.StatusPath("serviceTemplates", templateName, "targetAdapter"), fmt.Errorf("target adapter uses service accounts but options.gcpServiceAccountProject is not defined")
+		return httputil.StatusPath("serviceTemplates", templateName, "targetAdapter"), fmt.Errorf("target adapter uses service accounts but options.gcpServiceAccountProject is not defined")
 	}
 	return "", nil
 }
@@ -115,17 +117,8 @@ func resourceTokenCreationParams(role string, template *pb.ServiceTemplate, sRol
 		}
 	}
 	items := make([]map[string]string, len(view.Items))
-	userProject := ""
 	for index, item := range view.Items {
-		vars := scrubVars(item.Vars)
-		items[index] = vars
-		if v, hasProjectVar := vars[userProjectVar]; hasProjectVar {
-			if userProject == "" {
-				userProject = v
-			} else {
-				return nil, fmt.Errorf("multiple user projects specified")
-			}
-		}
+		items[index] = scrubVars(item.Vars)
 	}
 	billingProject := cfg.Options.GcpIamBillingProject
 	if len(billingProject) == 0 {

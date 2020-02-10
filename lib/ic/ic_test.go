@@ -16,13 +16,13 @@ package ic
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +30,6 @@ import (
 	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
 	"github.com/google/go-cmp/cmp" /* copybara-comment */
 	"github.com/google/go-cmp/cmp/cmpopts" /* copybara-comment */
-	"github.com/gorilla/mux" /* copybara-comment */
 	"github.com/go-openapi/strfmt" /* copybara-comment */
 	"google.golang.org/protobuf/testing/protocmp" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
@@ -87,9 +86,27 @@ func TestHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraURL, err)
 	}
-	ctx := server.ContextWithClient(context.Background())
 	crypt := fakeencryption.New()
-	s := NewService(ctx, domain, domain, hydraAdminURL, hydraURL, store, crypt, useHydra)
+
+	opts := &Options{
+		HTTPClient:     server.Client(),
+		Domain:         domain,
+		ServiceName:    "ic",
+		AccountDomain:  domain,
+		Store:          store,
+		Encryption:     crypt,
+		UseHydra:       useHydra,
+		HydraAdminURL:  hydraAdminURL,
+		HydraPublicURL: hydraURL,
+	}
+	s := NewService(opts)
+	verifyService(t, s.domain, opts.Domain, "domain")
+	verifyService(t, s.serviceName, opts.ServiceName, "serviceName")
+	verifyService(t, s.accountDomain, opts.AccountDomain, "accountDomain")
+	verifyService(t, strconv.FormatBool(s.useHydra), strconv.FormatBool(opts.UseHydra), "useHydra")
+	verifyService(t, s.hydraAdminURL, opts.HydraAdminURL, "hydraAdminURL")
+	verifyService(t, s.hydraPublicURL, opts.HydraPublicURL, "hydraPublicURL")
+
 	// identity := &ga4gh.Identity{
 	// 	Issuer:  s.getIssuerString(),
 	// 	Subject: "someone-account",
@@ -222,7 +239,7 @@ func TestHandlers(t *testing.T) {
 			Method:  "GET",
 			Path:    "/identity/scim/v2/test/Users",
 			Persona: "admin",
-			Output:  `{"Resources":[{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"admin","externalId":"admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:50Z","lastModified":"2019-06-22T18:07:30Z","location":"https://example.com/identity/scim/v2/test/Users/admin","version":"1"},"userName":"admin","name":{"formatted":"Administrator"},"displayName":"Administrator","active":true},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"Dr. Joe (ELIXIR)"},"displayName":"Dr. Joe (ELIXIR)","active":true},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"non-admin","externalId":"non-admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"2019-06-22T18:08:19Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"1"},"userName":"non-admin","name":{"formatted":"Non Administrator"},"displayName":"Non Administrator","active":true,"emails":[{"value":"non-admin@example.org","$ref":"email/persona/non-admin"},{"value":"non-admin-1@example.org","$ref":"email/persona/non-admin-1"}]},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"someone-account","externalId":"someone-account","meta":{"resourceType":"User","created":"2019-06-22T13:29:36Z","lastModified":"2019-06-22T18:07:11Z","location":"https://example.com/identity/scim/v2/test/Users/someone-account","version":"1"},"userName":"someone-account","name":{"formatted":"Someone at Somewhere","familyName":"Somewhere","givenName":"Someone","middleName":"at"},"displayName":"Someone Account","profileUrl":"https://example.org/users/someone","preferredLanguage":"en-US","locale":"en-US","timezone":"America/New_York","active":true}],"startIndex":1,"itemsPerPage":4,"totalResults":4,"schemas":["urn:ietf:params:scim:api:messages:2.0:ListResponse"]}`,
+			Output:  `{"Resources":[{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"admin","externalId":"admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:50Z","lastModified":"2019-06-22T18:07:30Z","location":"https://example.com/identity/scim/v2/test/Users/admin","version":"1"},"userName":"admin","name":{"formatted":"Administrator"},"displayName":"Administrator","active":true,"emails":[{"value":"admin@faculty.example.edu","$ref":"email//administrator"}]},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"dr_joe_elixir","externalId":"dr_joe_elixir","meta":{"resourceType":"User","created":"2019-06-22T13:29:40Z","lastModified":"2019-06-22T18:07:20Z","location":"https://example.com/identity/scim/v2/test/Users/dr_joe_elixir","version":"1"},"userName":"dr_joe_elixir","name":{"formatted":"Dr. Joe (ELIXIR)"},"displayName":"Dr. Joe (ELIXIR)","active":true},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"non-admin","externalId":"non-admin","meta":{"resourceType":"User","created":"2019-06-22T13:29:59Z","lastModified":"2019-06-22T18:08:19Z","location":"https://example.com/identity/scim/v2/test/Users/non-admin","version":"1"},"userName":"non-admin","name":{"formatted":"Non Administrator"},"displayName":"Non Administrator","active":true,"emails":[{"value":"non-admin@example.org","$ref":"email/persona/non-admin"},{"value":"non-admin-1@example.org","$ref":"email/persona/non-admin-1"}]},{"schemas":["urn:ietf:params:scim:schemas:core:2.0:User"],"id":"someone-account","externalId":"someone-account","meta":{"resourceType":"User","created":"2019-06-22T13:29:36Z","lastModified":"2019-06-22T18:07:11Z","location":"https://example.com/identity/scim/v2/test/Users/someone-account","version":"1"},"userName":"someone-account","name":{"formatted":"Someone at Somewhere","familyName":"Somewhere","givenName":"Someone","middleName":"at"},"displayName":"Someone Account","profileUrl":"https://example.org/users/someone","preferredLanguage":"en-US","locale":"en-US","timezone":"America/New_York","active":true}],"startIndex":1,"itemsPerPage":4,"totalResults":4,"schemas":["urn:ietf:params:scim:api:messages:2.0:ListResponse"]}`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -361,13 +378,31 @@ func TestHandlers(t *testing.T) {
 			Status:  http.StatusOK,
 		},
 		{
+			Name:    "Get SCIM users - filter CNF clause match",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=%28displayName%20co%20%22administrator%22%20or%20userName%20co%20%22joe%22%29%20and%20active%20eq%20%22true%22`,
+			Output:  `^.*"userName":"admin".*"userName":"dr_joe_elixir".*"userName":"non-admin".*"totalResults":3,.*`,
+			Status:  http.StatusOK,
+		},
+		{
+			Name:    "Get SCIM users - filter CNF clause no match",
+			Method:  "GET",
+			Path:    "/identity/scim/v2/test/Users",
+			Persona: "admin",
+			Params:  `filter=%28displayName%20co%20%22administrator%22%20or%20userName%20co%20%22joe%22%29%20and%20active%20ne%20%22true%22`,
+			Output:  `{"startIndex":1,"schemas":["urn:ietf:params:scim:api:messages:2.0:ListResponse"]}`,
+			Status:  http.StatusOK,
+		},
+		{
 			Name:    "Get SCIM users (non-admin)",
 			Method:  "GET",
 			Path:    "/identity/scim/v2/test/Users",
 			Persona: "non-admin",
 			Scope:   persona.AccountScope,
 			Output:  `^.*not an administrator.*`,
-			Status:  http.StatusForbidden,
+			Status:  http.StatusUnauthorized,
 		},
 		{
 			Name:    "Get SCIM me",
@@ -594,6 +629,52 @@ func TestHandlers(t *testing.T) {
 			Output:  `^.*dr_joe_elixir.*"active":true.*`,
 			Status:  http.StatusOK,
 		},
+		{
+			Name:    "Link SCIM account error (missing X-Link-Authorization)",
+			Method:  "PATCH",
+			Path:    "/identity/scim/v2/test/Me",
+			Persona: "dr_joe_elixir",
+			Scope:   persona.LinkScope,
+			Input:   `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"add","path":"emails","value":"X-Link-Authorization"}]}`,
+			Output:  `^.*X-Link-Authorization.*`,
+			Status:  http.StatusBadRequest,
+		},
+		{
+			Name:        "Link SCIM account error (missing primary link scope)",
+			Method:      "PATCH",
+			Path:        "/identity/scim/v2/test/Me",
+			Persona:     "dr_joe_elixir",
+			Scope:       persona.AccountScope,
+			LinkPersona: "admin",
+			LinkScope:   persona.LinkScope,
+			Input:       `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"add","path":"emails","value":"X-Link-Authorization"}]}`,
+			Output:      `^.*unauthorized for scope "link".*`,
+			Status:      http.StatusBadRequest,
+		},
+		{
+			Name:        "Link SCIM account error (missing secondary link scope)",
+			Method:      "PATCH",
+			Path:        "/identity/scim/v2/test/Me",
+			Persona:     "dr_joe_elixir",
+			Scope:       persona.LinkScope,
+			LinkPersona: "admin",
+			LinkScope:   persona.AccountScope,
+			Input:       `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"add","path":"emails","value":"X-Link-Authorization"}]}`,
+			Output:      `^.*unauthorized for scope "link".*`,
+			Status:      http.StatusBadRequest,
+		},
+		{
+			Name:        "Link SCIM account",
+			Method:      "PATCH",
+			Path:        "/identity/scim/v2/test/Me",
+			Persona:     "dr_joe_elixir",
+			Scope:       persona.LinkScope,
+			LinkPersona: "admin",
+			LinkScope:   persona.LinkScope,
+			Input:       `{"schemas":["urn:ietf:params:scim:api:messages:2.0:PatchOp"],"Operations":[{"op":"add","path":"emails","value":"X-Link-Authorization"}]}`,
+			Output:      `^.*dr_joe_elixir.*"active":true.*"admin@faculty.example.edu".*`,
+			Status:      http.StatusOK,
+		},
 	}
 	test.HandlerTests(t, s.Handler, tests, hydraURL, server.Config())
 }
@@ -626,9 +707,18 @@ func TestAdminHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraURL, err)
 	}
-	ctx := server.ContextWithClient(context.Background())
 
-	s := NewService(ctx, domain, domain, hydraAdminURL, hydraURL, store, fakeencryption.New(), useHydra)
+	s := NewService(&Options{
+		HTTPClient:     server.Client(),
+		Domain:         domain,
+		ServiceName:    "ic",
+		AccountDomain:  domain,
+		Store:          store,
+		Encryption:     fakeencryption.New(),
+		UseHydra:       useHydra,
+		HydraAdminURL:  hydraAdminURL,
+		HydraPublicURL: hydraURL,
+	})
 	tests := []test.HandlerTest{
 		{
 			Name:    "List all tokens of all users as a non-admin",
@@ -636,7 +726,7 @@ func TestAdminHandlers(t *testing.T) {
 			Path:    "/identity/v1alpha/test/admin/tokens",
 			Persona: "non-admin",
 			Output: `^.*user is not an administrator	*`,
-			Status: http.StatusForbidden,
+			Status: http.StatusUnauthorized,
 		},
 		{
 			Name:    "List all tokens of all users as an admin",
@@ -652,7 +742,7 @@ func TestAdminHandlers(t *testing.T) {
 			Path:    "/identity/v1alpha/test/admin/tokens",
 			Persona: "non-admin",
 			Output: `^.*user is not an administrator	*`,
-			Status: http.StatusForbidden,
+			Status: http.StatusUnauthorized,
 		},
 		{
 			Name:    "Delete all tokens of all users as an admin",
@@ -672,6 +762,12 @@ func TestAdminHandlers(t *testing.T) {
 		},
 	}
 	test.HandlerTests(t, s.Handler, tests, hydraURL, server.Config())
+}
+
+func verifyService(t *testing.T, got, want, field string) {
+	if got != want {
+		t.Errorf("service %q mismatch: got %q, want %q", field, got, want)
+	}
 }
 
 func TestAddLinkedIdentities(t *testing.T) {
@@ -697,7 +793,16 @@ func TestAddLinkedIdentities(t *testing.T) {
 	}
 
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	s := NewService(context.Background(), domain, domain, hydraAdminURL, hydraURL, store, fakeencryption.New(), useHydra)
+	s := NewService(&Options{
+		Domain:         domain,
+		ServiceName:    "ic",
+		AccountDomain:  domain,
+		Store:          store,
+		Encryption:     fakeencryption.New(),
+		UseHydra:       useHydra,
+		HydraAdminURL:  hydraAdminURL,
+		HydraPublicURL: hydraURL,
+	})
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
 		t.Fatalf("loading config: %v", err)
@@ -748,15 +853,26 @@ func TestAddLinkedIdentities(t *testing.T) {
 	}
 }
 
-func setupHydraTest() (*Service, *pb.IcConfig, *pb.IcSecrets, *fakehydra.Server, *fakeoidcissuer.Server, error) {
+func setupHydraTest() (*Service, *pb.IcConfig, *pb.IcSecrets, *fakehydra.Server, *persona.Server, error) {
 	store := storage.NewMemoryStorage("ic-min", "testdata/config")
-	server, err := fakeoidcissuer.New(hydraURL, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config", false)
+	server, err := persona.NewBroker(hydraURL, &testkeys.PersonaBrokerKey, "dam-min", "testdata/config", false)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	ctx := server.ContextWithClient(context.Background())
+	h := fakehydra.New(server.Handler)
+
 	crypt := fakeencryption.New()
-	s := NewService(ctx, domain, domain, hydraAdminURL, hydraURL, store, crypt, useHydra)
+	s := NewService(&Options{
+		HTTPClient:     httptestclient.New(server.Handler),
+		Domain:         domain,
+		ServiceName:    "ic",
+		AccountDomain:  domain,
+		Store:          store,
+		Encryption:     crypt,
+		UseHydra:       useHydra,
+		HydraAdminURL:  hydraAdminURL,
+		HydraPublicURL: hydraURL,
+	})
 
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
@@ -767,10 +883,6 @@ func setupHydraTest() (*Service, *pb.IcConfig, *pb.IcSecrets, *fakehydra.Server,
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-
-	r := mux.NewRouter()
-	h := fakehydra.New(r)
-	s.httpClient = httptestclient.New(r)
 
 	return s, cfg, sec, h, server, nil
 }
@@ -1122,7 +1234,7 @@ func TestFinishLogin_Hydra_Success(t *testing.T) {
 	}
 	stateID, ok := st.(string)
 	if !ok {
-		t.Errorf("AcceptLoginReq.Context[%s] in wrong type", hydra.StateIDKey)
+		t.Errorf("AcceptLoginReq.Context[%s] is wrong type", hydra.StateIDKey)
 	}
 
 	state := &cpb.AuthTokenState{}
@@ -1221,6 +1333,13 @@ func sendAcceptInformationRelease(s *Service, cfg *pb.IcConfig, h *fakehydra.Ser
 	acct := &cpb.Account{
 		Properties: &cpb.AccountProperties{Subject: LoginSubject},
 		State:      "ACTIVE",
+		ConnectedAccounts: []*cpb.ConnectedAccount{
+			{
+				Properties: &cpb.AccountProperties{
+					Subject: "foo@bar.com",
+				},
+			},
+		},
 	}
 	err = s.store.Write(storage.AccountDatatype, storage.DefaultRealm, storage.DefaultUser, LoginSubject, storage.LatestRev, acct, nil)
 	if err != nil {
@@ -1346,6 +1465,41 @@ func TestAcceptInformationRelease_Hydra_Reject(t *testing.T) {
 	}
 }
 
+func TestAcceptInformationRelease_Hydra_Endpoint(t *testing.T) {
+	s, cfg, _, h, _, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	const scope = "openid profile identities"
+
+	resp, err := sendAcceptInformationRelease(s, cfg, h, scope, authTokenStateID, agree)
+	if err != nil {
+		t.Fatalf("sendAcceptInformationRelease(s, cfg, h, %s, %s, %s) failed: %v", scope, authTokenStateID, agree, err)
+	}
+
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("resp.StatusCode wants %d got %d", http.StatusTemporaryRedirect, resp.StatusCode)
+	}
+
+	if l := resp.Header.Get("Location"); l != hydraURL {
+		t.Errorf("resp.Location wants %s got %s", hydraURL, l)
+	}
+
+	if h.RejectConsentReq != nil {
+		t.Errorf("RejectConsentReq wants nil got %v", h.RejectConsentReq)
+	}
+
+	if diff := cmp.Diff(h.AcceptConsentReq.GrantedScope, strings.Split(scope, " ")); len(diff) != 0 {
+		t.Errorf("AcceptConsentReq.GrantedScope wants %s got %v", scope, h.AcceptConsentReq.GrantedScope)
+	}
+
+	want := []interface{}{"foo@bar.com"}
+	if diff := cmp.Diff(want, h.AcceptConsentReq.Session.AccessToken["identities"]); len(diff) != 0 {
+		t.Errorf("AcceptConsentReq.GrantedScope (-wants, +got) %s", diff)
+	}
+}
+
 func TestAcceptInformationRelease_Hydra_InvalidState(t *testing.T) {
 	s, cfg, _, h, _, err := setupHydraTest()
 	if err != nil {
@@ -1372,7 +1526,7 @@ func TestAcceptInformationRelease_Hydra_InvalidState(t *testing.T) {
 	}
 }
 
-func sendClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+func sendClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -1458,7 +1612,7 @@ func TestClients_Get_Error(t *testing.T) {
 	}
 }
 
-func sendConfigClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+func sendConfigClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -1530,7 +1684,7 @@ func TestConfigClients_Get_Error(t *testing.T) {
 			persona:    "non-admin",
 			clientID:   testClientID,
 			clientName: "test_client",
-			status:     http.StatusForbidden,
+			status:     http.StatusUnauthorized,
 		},
 	}
 
@@ -1549,7 +1703,7 @@ func diffOfHydraClientIgnoreClientIDAndSecret(c1 *hydraapi.Client, c2 *hydraapi.
 	return cmp.Diff(c1, c2, cmpopts.IgnoreFields(hydraapi.Client{}, "ClientID", "Secret"), cmpopts.IgnoreUnexported(strfmt.DateTime{}))
 }
 
-func sendConfigClientsCreate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+func sendConfigClientsCreate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -1745,7 +1899,7 @@ func TestConfigClients_Create_Error(t *testing.T) {
 			persona:    "non-admin",
 			clientName: clientName,
 			client:     cli,
-			status:     http.StatusForbidden,
+			status:     http.StatusUnauthorized,
 		},
 		{
 			name:       "no redirect",
@@ -1837,7 +1991,7 @@ func TestConfigClients_Create_Hydra_Error(t *testing.T) {
 	}
 }
 
-func sendConfigClientsUpdate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+func sendConfigClientsUpdate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -1998,7 +2152,7 @@ func TestConfigClients_Update_Error(t *testing.T) {
 			name:       "not admin",
 			persona:    "non-admin",
 			clientName: clientName,
-			status:     http.StatusForbidden,
+			status:     http.StatusUnauthorized,
 		},
 	}
 
@@ -2075,7 +2229,7 @@ func TestConfigClients_Update_Hydra_Error(t *testing.T) {
 	}
 }
 
-func sendConfigClientsDelete(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *fakeoidcissuer.Server) *http.Response {
+func sendConfigClientsDelete(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -2155,7 +2309,7 @@ func TestConfigClients_Delete_Error(t *testing.T) {
 			name:       "not admin",
 			persona:    "non-admin",
 			clientName: clientName,
-			status:     http.StatusForbidden,
+			status:     http.StatusUnauthorized,
 		},
 	}
 
@@ -2213,13 +2367,20 @@ func TestConfigReset_Hydra(t *testing.T) {
 	}
 
 	cid := "c1"
+	existingID := "00000000-0000-0000-0000-000000000000"
+	newID := "00000000-0000-0000-0000-000000000002"
 
 	h.ListClientsResp = []*hydraapi.Client{
 		{ClientID: cid},
+		{ClientID: existingID, Name: "foo"},
 	}
 
 	h.CreateClientResp = &hydraapi.Client{
-		ClientID: cid,
+		ClientID: newID,
+	}
+
+	h.UpdateClientResp = &hydraapi.Client{
+		ClientID: existingID,
 	}
 
 	pname := "admin"
@@ -2249,7 +2410,11 @@ func TestConfigReset_Hydra(t *testing.T) {
 		t.Errorf("h.DeleteClientID = %s, wants %s", h.DeleteClientID, cid)
 	}
 
-	if h.CreateClientReq.Name != "test_client" && h.CreateClientReq.Name != "test_client2" {
-		t.Errorf("h.CreateClientReq.Name = %s, wants test_client or test_client2", h.CreateClientReq.Name)
+	if h.UpdateClientReq.Name != "test_client" {
+		t.Errorf("h.UpdateClientReq.Name = %s, wants test_client", h.UpdateClientReq.Name)
+	}
+
+	if h.CreateClientReq.Name != "test_client2" {
+		t.Errorf("h.CreateClientReq.Name = %s, wants test_client2", h.CreateClientReq.Name)
 	}
 }

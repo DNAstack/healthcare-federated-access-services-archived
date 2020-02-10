@@ -15,11 +15,38 @@
 package srcutil
 
 import (
+	"path/filepath"
 	"testing"
 )
 
 const testfileContent string = `This is a text file for testing.
 `
+
+func TestPath(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{
+			input: "",
+			want:  root,
+		},
+		{
+			input: "deploy/config",
+			want:  filepath.Join(root, "deploy/config"),
+		},
+		{
+			input: "/my/path/from/root",
+			want:  "/my/path/from/root",
+		},
+	}
+
+	for _, tc := range tests {
+		if got := Path(tc.input); got != tc.want {
+			t.Errorf("Path(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
 
 func TestRead(t *testing.T) {
 	path := "lib/srcutil/testfile.txt"
@@ -30,5 +57,17 @@ func TestRead(t *testing.T) {
 
 	if want := testfileContent; string(got) != want {
 		t.Fatalf("Read(%v) doesn't match the contents of the file.", path)
+	}
+}
+
+func TestLoadFile(t *testing.T) {
+	path := "lib/srcutil/testfile.txt"
+	got, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile(%v) failed: %v", path, err)
+	}
+
+	if want := testfileContent; got != want {
+		t.Fatalf("LoadFile(%v) doesn't match the contents of the file.", path)
 	}
 }

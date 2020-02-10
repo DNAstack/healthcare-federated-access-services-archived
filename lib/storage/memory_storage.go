@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"time"
 
 	glog "github.com/golang/glog" /* copybara-comment */
 	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
@@ -40,16 +41,18 @@ type MemoryStorage struct {
 	fs        *FileStorage
 	deleted   map[string]bool
 	lock      chan bool
+	lastLock  time.Time
 }
 
 func NewMemoryStorage(service, path string) *MemoryStorage {
 	return &MemoryStorage{
-		service: service,
-		path:    path,
-		cache:   NewStorageCache(),
-		fs:      NewFileStorage(service, path),
-		deleted: make(map[string]bool),
-		lock:    make(chan bool, 1),
+		service:  service,
+		path:     path,
+		cache:    NewStorageCache(),
+		fs:       NewFileStorage(service, path),
+		deleted:  make(map[string]bool),
+		lock:     make(chan bool, 1),
+		lastLock: time.Unix(0, 0),
 	}
 }
 
@@ -107,7 +110,7 @@ func (m *MemoryStorage) ReadTx(datatype, realm, user, id string, rev int64, cont
 }
 
 // MultiReadTx reads a set of objects matching the input parameters and filters
-func (m *MemoryStorage) MultiReadTx(datatype, realm, user string, filters []Filter, offset, pageSize int, content map[string]map[string]proto.Message, typ proto.Message, tx Tx) (int, error) {
+func (m *MemoryStorage) MultiReadTx(datatype, realm, user string, filters [][]Filter, offset, pageSize int, content map[string]map[string]proto.Message, typ proto.Message, tx Tx) (int, error) {
 	if tx == nil {
 		var err error
 		tx, err = m.fs.Tx(false)
@@ -325,6 +328,24 @@ func (m *MemoryStorage) Tx(update bool) (Tx, error) {
 		update: update,
 		ms:     m,
 	}, nil
+}
+
+// LockTx returns a storage-wide lock by the given name. Only one such lock should
+// be requested at a time. If Tx is provided, it must be an update Tx.
+func (m *MemoryStorage) LockTx(lockName string, minFrequency time.Duration, tx Tx) Tx {
+	now := time.Now()
+	if now.Sub(m.lastLock) < minFrequency {
+		return nil
+	}
+	if tx == nil {
+		var err error
+		tx, err = m.Tx(true)
+		if err != nil {
+			return nil
+		}
+	}
+	m.lastLock = now
+	return tx
 }
 
 type MemTx struct {

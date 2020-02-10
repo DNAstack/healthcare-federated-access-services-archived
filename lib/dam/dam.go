@@ -35,11 +35,15 @@ import (
 	"github.com/gorilla/mux" /* copybara-comment */
 	"google.golang.org/grpc/codes" /* copybara-comment */
 	"google.golang.org/grpc/status" /* copybara-comment */
+	"golang.org/x/oauth2" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter" /* copybara-comment: adapter */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/auth" /* copybara-comment: auth */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/permissions" /* copybara-comment: permissions */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
@@ -51,8 +55,6 @@ import (
 )
 
 const (
-	hydraDAMTestPageFile = "pages/hydra-dam-test.html"
-
 	maxNameLength = 32
 	minNameLength = 3
 	clientIdLen   = 36
@@ -61,8 +63,6 @@ const (
 	noScope             = ""
 	defaultPersonaScope = ""
 	damStaticService    = "dam-static"
-
-	requestTTLInNanoFloat64 = "requested_ttl"
 )
 
 var (
@@ -82,18 +82,17 @@ type Service struct {
 	roleCategories map[string]*pb.RoleCategory
 	domainURL      string
 	defaultBroker  string
+	serviceName    string
 	hydraAdminURL  string
 	hydraPublicURL string
 	store          storage.Store
 	warehouse      clouds.ResourceTokenCreator
-	permissions    *common.Permissions
+	permissions    *permissions.Permissions
 	Handler        *ServiceHandler
-	ctx            context.Context
 	httpClient     *http.Client
 	startTime      int64
 	translators    sync.Map
 	useHydra       bool
-	hydraTestPage  string
 }
 
 type ServiceHandler struct {
@@ -101,46 +100,59 @@ type ServiceHandler struct {
 	s       *Service
 }
 
+// Options contains parameters to New DAM Service.
+type Options struct {
+	// HTTPClient: http client for making http request.
+	HTTPClient *http.Client
+	// Domain: domain used to host DAM service
+	Domain string
+	// ServiceName: name of this service instance including environment (example: "dam-staging")
+	ServiceName string
+	// DefaultBroker: default identity broker
+	DefaultBroker string
+	// Store: data storage and configuration storage
+	Store storage.Store
+	// Warehouse: resource token creator service
+	Warehouse clouds.ResourceTokenCreator
+	// UseHydra: service use hydra integrated OIDC.
+	UseHydra bool
+	// HydraAdminURL: hydra admin endpoints url
+	HydraAdminURL string
+	// HydraPublicURL: hydra public endpoints url
+	HydraPublicURL string
+}
+
 // NewService create DAM service
-// - ctx: pass in http.Client can replace the one used in oidc request
-// - domain: domain used to host DAM service
-// - defaultBroker: default identity broker
-// - hydraAdminURL: hydra admin endpoints url
-// - hydraPublicURL: hydra public endpoints url
-// - store: data storage and configuration storage
-// - warehouse: resource token creator service
-func NewService(ctx context.Context, domain, defaultBroker, hydraAdminURL, hydraPublicURL string, store storage.Store, warehouse clouds.ResourceTokenCreator, useHydra bool) *Service {
-	fs := getFileStore(store, damStaticService)
+func NewService(params *Options) *Service {
+	fs := getFileStore(params.Store, damStaticService)
 	var roleCat pb.DamRoleCategoriesResponse
 	if err := fs.Read("role", storage.DefaultRealm, storage.DefaultUser, "en", storage.LatestRev, &roleCat); err != nil {
 		glog.Fatalf("cannot load role categories: %v", err)
 	}
-	perms, err := common.LoadPermissions(store)
+	perms, err := permissions.LoadPermissions(params.Store)
 	if err != nil {
 		glog.Fatalf("cannot load permissions: %v", err)
-	}
-
-	tp, err := common.LoadFile(hydraDAMTestPageFile)
-	if err != nil {
-		glog.Fatalf("common.LoadFile(%s) failed: %v", hydraDAMTestPageFile, err)
 	}
 
 	sh := &ServiceHandler{}
 	s := &Service{
 		roleCategories: roleCat.DamRoleCategories,
-		domainURL:      domain,
-		defaultBroker:  defaultBroker,
-		hydraAdminURL:  hydraAdminURL,
-		hydraPublicURL: hydraPublicURL,
-		store:          store,
-		warehouse:      warehouse,
+		domainURL:      params.Domain,
+		defaultBroker:  params.DefaultBroker,
+		serviceName:    params.ServiceName,
+		store:          params.Store,
+		warehouse:      params.Warehouse,
 		permissions:    perms,
 		Handler:        sh,
-		ctx:            ctx,
-		httpClient:     http.DefaultClient,
+		httpClient:     params.HTTPClient,
 		startTime:      time.Now().Unix(),
-		hydraTestPage:  tp,
-		useHydra:       useHydra,
+		useHydra:       params.UseHydra,
+		hydraAdminURL:  params.HydraAdminURL,
+		hydraPublicURL: params.HydraPublicURL,
+	}
+
+	if s.httpClient == nil {
+		s.httpClient = http.DefaultClient
 	}
 
 	secrets, err := s.loadSecrets(nil)
@@ -154,7 +166,7 @@ func NewService(ctx context.Context, domain, defaultBroker, hydraAdminURL, hydra
 			glog.Fatalf("cannot load client secrets: %v", err)
 		}
 	}
-	adapters, err := adapter.CreateAdapters(fs, warehouse, secrets)
+	adapters, err := adapter.CreateAdapters(fs, params.Warehouse, secrets)
 	if err != nil {
 		glog.Fatalf("cannot load adapters: %v", err)
 	}
@@ -169,12 +181,14 @@ func NewService(ctx context.Context, domain, defaultBroker, hydraAdminURL, hydra
 	if stat := s.CheckIntegrity(cfg); stat != nil {
 		glog.Fatalf("config integrity error: %+v", stat.Proto())
 	}
-	if tests := s.runTests(cfg, nil); hasTestError(tests) {
+
+	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, s.httpClient)
+	if tests := s.runTests(ctx, cfg, nil); hasTestError(tests) {
 		glog.Fatalf("run tests error: %v; results: %v; modification: <%v>", tests.Error, tests.TestResults, tests.Modification)
 	}
 
 	for name, cfgTpi := range cfg.TrustedPassportIssuers {
-		_, err = s.getIssuerTranslator(s.ctx, cfgTpi.Issuer, cfg, secrets, nil)
+		_, err = s.getIssuerTranslator(ctx, cfgTpi.Issuer, cfg, secrets, nil)
 		if err != nil {
 			glog.Infof("failed to create translator for issuer %q: %v", name, err)
 		}
@@ -216,7 +230,7 @@ func getName(r *http.Request) string {
 	return ""
 }
 
-func (s *Service) handlerSetup(tx storage.Tx, isAdmin bool, r *http.Request, scope string, item proto.Message) (*pb.DamConfig, *ga4gh.Identity, int, error) {
+func (s *Service) handlerSetup(tx storage.Tx, r *http.Request, scope string, item proto.Message) (*pb.DamConfig, *ga4gh.Identity, int, error) {
 	if item != nil {
 		if err := jsonpb.Unmarshal(r.Body, item); err != nil && err != io.EOF {
 			return nil, nil, http.StatusBadRequest, err
@@ -230,60 +244,24 @@ func (s *Service) handlerSetup(tx storage.Tx, isAdmin bool, r *http.Request, sco
 	if err != nil {
 		return nil, nil, status, err
 	}
-	if isAdmin {
-		if status, err := s.permissions.CheckAdmin(id); err != nil {
-			return nil, nil, status, err
-		}
-	}
 	return cfg, id, status, err
 }
 
 func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
-		common.AddCorsHeaders(w)
+		httputil.AddCorsHeaders(w)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	r.ParseForm()
 
-	if err := sh.s.checkClientCreds(r); err != nil {
-		httputil.WriteStatus(w, status.Convert(err))
-		return
-	}
+	// Inject http client for oauth lib.
+	r = r.WithContext(context.WithValue(r.Context(), oauth2.HTTPClient, sh.s.httpClient))
 
 	sh.Handler.ServeHTTP(w, r)
 }
 
-func (s *Service) checkClientCreds(r *http.Request) error {
-	if r.URL.Path == infoPath || r.URL.Path == loggedInPath || r.URL.Path == hydraLoginPath || r.URL.Path == hydraConsentPath {
-		return nil
-	}
-	cid := getClientID(r)
-	if len(cid) == 0 {
-		return status.Error(codes.Unauthenticated, "authorization requires a client ID")
-	}
-
-	// TODO: should also check the client id in config.
-
-	cs := getClientSecret(r)
-	if len(cs) == 0 {
-		return status.Error(codes.Unauthenticated, "authorization requires a client secret")
-	}
-
-	secrets, err := s.loadSecrets(nil)
-	if err != nil {
-		return status.Error(codes.Unauthenticated, "configuration unavailable")
-	}
-
-	if secret, ok := secrets.ClientSecrets[cid]; !ok || secret != cs {
-		return status.Error(codes.Unauthenticated, "unauthorized client")
-	}
-
-	return nil
-}
-
 func checkName(name string) error {
-	return common.CheckName("name", name, nil)
+	return httputil.CheckName("name", name, nil)
 }
 
 func (s *Service) getIssuerString() string {
@@ -294,18 +272,18 @@ func (s *Service) getIssuerString() string {
 	return ""
 }
 
-func (s *Service) damSignedBearerTokenToPassportIdentity(cfg *pb.DamConfig, tok, clientID string) (*ga4gh.Identity, error) {
+func (s *Service) damSignedBearerTokenToPassportIdentity(ctx context.Context, cfg *pb.DamConfig, tok, clientID string) (*ga4gh.Identity, error) {
 	id, err := common.ConvertTokenToIdentityUnsafe(tok)
 	if err != nil {
 		return nil, status.Errorf(codes.Unauthenticated, fmt.Sprintf("inspecting token: %v", err))
 	}
 
-	v, err := common.GetOIDCTokenVerifier(s.ctx, clientID, id.Issuer)
+	v, err := common.GetOIDCTokenVerifier(ctx, clientID, id.Issuer)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, fmt.Sprintf("GetOIDCTokenVerifier failed: %v", err))
 	}
 
-	if _, err = v.Verify(s.ctx, tok); err != nil {
+	if _, err = v.Verify(ctx, tok); err != nil {
 		return nil, status.Errorf(codes.Unavailable, fmt.Sprintf("token unauthorized: %v", err))
 	}
 
@@ -351,24 +329,24 @@ func (s *Service) damSignedBearerTokenToPassportIdentity(cfg *pb.DamConfig, tok,
 	return id, nil
 }
 
-func (s *Service) upstreamTokenToPassportIdentity(cfg *pb.DamConfig, tx storage.Tx, tok, clientID string) (*ga4gh.Identity, error) {
+func (s *Service) upstreamTokenToPassportIdentity(ctx context.Context, cfg *pb.DamConfig, tx storage.Tx, tok, clientID string) (*ga4gh.Identity, error) {
 	id, err := common.ConvertTokenToIdentityUnsafe(tok)
 	if err != nil {
 		return nil, fmt.Errorf("inspecting token: %v", err)
 	}
 
 	iss := id.Issuer
-	t, err := s.getIssuerTranslator(s.ctx, iss, cfg, nil, tx)
+	t, err := s.getIssuerTranslator(ctx, iss, cfg, nil, tx)
 	if err != nil {
 		return nil, err
 	}
 
-	id, err = t.TranslateToken(s.ctx, tok)
+	id, err = t.TranslateToken(ctx, tok)
 	if err != nil {
 		return nil, fmt.Errorf("translating token from issuer %q: %v", iss, err)
 	}
 	if common.HasUserinfoClaims(id) {
-		id, err = translator.FetchUserinfoClaims(s.ctx, id, tok, t)
+		id, err = translator.FetchUserinfoClaims(ctx, id, tok, t)
 		if err != nil {
 			return nil, fmt.Errorf("fetching user info from issuer %q: %v", iss, err)
 		}
@@ -393,7 +371,7 @@ func (s *Service) getBearerTokenIdentity(cfg *pb.DamConfig, r *http.Request) (*g
 		return nil, http.StatusBadRequest, err
 	}
 
-	id, err := s.damSignedBearerTokenToPassportIdentity(cfg, tok, getClientID(r))
+	id, err := s.damSignedBearerTokenToPassportIdentity(r.Context(), cfg, tok, getClientID(r))
 	if err != nil {
 		return nil, http.StatusUnauthorized, err
 	}
@@ -406,20 +384,20 @@ func (s *Service) getPassportIdentity(cfg *pb.DamConfig, tx storage.Tx, r *http.
 		return nil, http.StatusBadRequest, err
 	}
 
-	id, err := s.upstreamTokenToPassportIdentity(cfg, tx, tok, getClientID(r))
+	id, err := s.upstreamTokenToPassportIdentity(r.Context(), cfg, tx, tok, getClientID(r))
 	if err != nil {
 		return nil, http.StatusUnauthorized, err
 	}
 	return id, http.StatusOK, nil
 }
 
-func (s *Service) testPersona(personaName string, resources []string, cfg *pb.DamConfig) (string, []string, error) {
+func (s *Service) testPersona(ctx context.Context, personaName string, resources []string, cfg *pb.DamConfig) (string, []string, error) {
 	p := cfg.TestPersonas[personaName]
 	id, err := persona.ToIdentity(personaName, p, defaultPersonaScope, "")
 	if err != nil {
 		return "INVALID", nil, err
 	}
-	state, got, err := s.resolveAccessList(id, resources, nil, nil, cfg)
+	state, got, err := s.resolveAccessList(ctx, id, resources, nil, nil, cfg)
 	if err != nil {
 		return state, got, err
 	}
@@ -429,7 +407,27 @@ func (s *Service) testPersona(personaName string, resources []string, cfg *pb.Da
 	return "FAILED", got, fmt.Errorf("access does not match expectations")
 }
 
-func (s *Service) resolveAccessList(id *ga4gh.Identity, resources, views, roles []string, cfg *pb.DamConfig) (string, []string, error) {
+// syncToHydra pushes the configuration of clients and secrets to Hydra.
+// Use minFrequency of 0 if you always want the sync to proceed immediately after
+// the last one (if it doesn't time out), or non-zero to indicate that a recent sync
+// is good enough. Note there are some race conditions with several client changes
+// overlapping in flight that could still have the two services be out of sync.
+func (s *Service) syncToHydra(clients map[string]*cpb.Client, secrets map[string]string, minFrequency time.Duration) error {
+	if !s.useHydra {
+		return nil
+	}
+	tx := s.store.LockTx("hydra_"+s.serviceName, minFrequency, nil)
+	if tx != nil {
+		defer tx.Finish()
+		if err := oathclients.ResetClients(s.httpClient, s.hydraAdminURL, clients, secrets); err != nil {
+			glog.Errorf("failed to reset hydra clients: %v", err)
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) resolveAccessList(ctx context.Context, id *ga4gh.Identity, resources, views, roles []string, cfg *pb.DamConfig) (string, []string, error) {
 	var got []string
 	for _, rn := range resources {
 		r, ok := cfg.Resources[rn]
@@ -448,7 +446,7 @@ func (s *Service) resolveAccessList(id *ga4gh.Identity, resources, views, roles 
 				if len(roles) > 0 && !common.ListContains(roles, rname) {
 					continue
 				}
-				if _, err := s.checkAuthorization(id, 0, rn, vn, rname, cfg, noClientID); err != nil {
+				if _, err := s.checkAuthorization(ctx, id, 0, rn, vn, rname, cfg, noClientID); err != nil {
 					continue
 				}
 				got = append(got, rn+"/"+vn+"/"+rname)
@@ -469,16 +467,16 @@ func (s *Service) makeAccessList(id *ga4gh.Identity, resources, views, roles []s
 			return nil
 		}
 	}
-	_, got, err := s.resolveAccessList(id, resources, views, roles, cfg)
+	_, got, err := s.resolveAccessList(r.Context(), id, resources, views, roles, cfg)
 	if err != nil {
 		return nil
 	}
 	return got
 }
 
-func (s *Service) checkAuthorization(id *ga4gh.Identity, ttl time.Duration, resourceName, viewName, roleName string, cfg *pb.DamConfig, client string) (int, error) {
+func (s *Service) checkAuthorization(ctx context.Context, id *ga4gh.Identity, ttl time.Duration, resourceName, viewName, roleName string, cfg *pb.DamConfig, client string) (int, error) {
 	if stat := s.checkTrustedIssuer(id.Issuer, cfg); stat != nil {
-		return common.FromCode(stat.Code()), stat.Err()
+		return httputil.HTTPStatus(stat.Code()), stat.Err()
 	}
 	srcRes, ok := cfg.Resources[resourceName]
 	if !ok {
@@ -507,9 +505,9 @@ func (s *Service) checkAuthorization(id *ga4gh.Identity, ttl time.Duration, reso
 		if len(vRole.Policies) == 0 {
 			return http.StatusForbidden, fmt.Errorf("unauthorized for resource %q view %q role %q (no policy defined for this view's role)", resourceName, viewName, roleName)
 		}
-		ctxWithTTL := context.WithValue(s.ctx, requestTTLInNanoFloat64, float64(ttl.Nanoseconds())/1e9)
+		ctxWithTTL := context.WithValue(ctx, validator.RequestTTLInNanoFloat64, float64(ttl.Nanoseconds())/1e9)
 		for _, p := range vRole.Policies {
-			v, err := s.buildValidator(p, vRole, cfg)
+			v, err := s.buildValidator(ctxWithTTL, p, vRole, cfg)
 			if err != nil {
 				return http.StatusInternalServerError, fmt.Errorf("cannot enforce policies for resource %q view %q role %q: %v", resourceName, viewName, roleName, err)
 			}
@@ -908,13 +906,17 @@ func makeConfigOptions(opts *pb.ConfigOptions) *pb.ConfigOptions {
 			Label:       "GCP Service Account Project",
 			Description: "The GCP Project ID where service accounts will be created by DAM and where DAM has permissions to create these service accounts (not setting this value will disable the service account target adapter)",
 			Type:        "string",
-			Regexp:      "^[A-Za-z][-A-Za-z0-9]{1,30}[A-Za-z]$",
+			// See the documentation on GCP project ID.
+			// https://cloud.google.com/resource-manager/reference/rest/v1/projects
+			Regexp: "^[A-Za-z][-A-Za-z0-9]{4,28}[A-Za-z0-9]$",
 		},
 		"gcpIamBillingProject": {
 			Label:       "GCP IAM Billing Project",
 			Description: "The GCP Project ID that DAM can use for billing when making API calls that require a billing account (e.g. IAM calls on requester-pays buckets). If unset, billing will inherit the gcpServiceAccountProject setting.",
 			Type:        "string",
-			Regexp:      "^[A-Za-z][-A-Za-z0-9]{1,30}[A-Za-z]$",
+			// See the documentation on GCP project ID.
+			// https://cloud.google.com/resource-manager/reference/rest/v1/projects
+			Regexp: "^[A-Za-z][-A-Za-z0-9]{4,28}[A-Za-z0-9]$",
 		},
 	}
 	return out
@@ -950,15 +952,17 @@ func (s *Service) loadConfig(tx storage.Tx, realm string) (*pb.DamConfig, error)
 	if err := normalizeConfig(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config file %q: %v", storage.ConfigDatatype, err)
 	}
+
+	// glog.Infof("loaded DAM config: %+v", cfg)
 	return cfg, nil
 }
 
-func (s *Service) buildValidator(ap *pb.AccessRole_AccessPolicy, accessRole *pb.AccessRole, cfg *pb.DamConfig) (*validator.Policy, error) {
+func (s *Service) buildValidator(ctx context.Context, ap *pb.AccessRole_AccessPolicy, accessRole *pb.AccessRole, cfg *pb.DamConfig) (*validator.Policy, error) {
 	policy, ok := cfg.Policies[ap.Name]
 	if !ok {
 		return nil, fmt.Errorf("access policy name %q does not match any policy names", ap.Name)
 	}
-	return validator.BuildPolicyValidator(s.ctx, policy, cfg.ClaimDefinitions, cfg.TrustedSources, ap.Vars)
+	return validator.BuildPolicyValidator(ctx, policy, cfg.ClaimDefinitions, cfg.TrustedSources, ap.Vars)
 }
 
 func (s *Service) saveConfig(cfg *pb.DamConfig, desc, resType string, r *http.Request, id *ga4gh.Identity, orig, update proto.Message, modification *pb.ConfigModification, tx storage.Tx) error {
@@ -1109,43 +1113,58 @@ func getFileStore(store storage.Store, service string) storage.Store {
 
 // TODO: move registeration of endpoints to main package.
 func registerHandlers(r *mux.Router, s *Service) {
-	r.HandleFunc(infoPath, s.GetInfo)
-	r.HandleFunc(clientPath, common.MakeHandler(s, s.clientFactory()))
-	r.HandleFunc(resourcesPath, s.GetResources)
-	r.HandleFunc(resourcePath, s.GetResource)
-	r.HandleFunc(viewsPath, s.GetViews)
-	r.HandleFunc(flatViewsPath, s.GetFlatViews)
-	r.HandleFunc(viewPath, s.GetView)
-	r.HandleFunc(rolesPath, s.GetViewRoles)
-	r.HandleFunc(rolePath, s.GetViewRole)
-	r.HandleFunc(testPath, s.GetTestResults)
-	r.HandleFunc(adaptersPath, s.GetTargetAdapters)
-	r.HandleFunc(translatorsPath, s.GetPassportTranslators)
-	r.HandleFunc(damRoleCategoriesPath, s.GetDamRoleCategories)
-	r.HandleFunc(testPersonasPath, s.GetTestPersonas)
-	r.HandleFunc(processesPath, common.MakeHandler(s, s.processesFactory()))
-	r.HandleFunc(processPath, common.MakeHandler(s, s.processFactory()))
+	a := &authChecker{s: s}
+	checker := &auth.Checker{
+		Issuer:             s.getIssuerString(),
+		FetchClientSecrets: a.fetchClientSecrets,
+		IsAdmin:            a.isAdmin,
+		TransformIdentity:  a.transformIdentity,
+	}
 
-	r.HandleFunc(resourceTokensPath, s.ResourceTokens).Methods("GET", "POST")
+	// info endpoint
+	r.HandleFunc(infoPath, auth.MustWithAuth(s.GetInfo, checker, auth.RequireNone)).Methods(http.MethodGet)
 
-	r.HandleFunc(configHistoryPath, s.ConfigHistory)
-	r.HandleFunc(configHistoryRevisionPath, s.ConfigHistoryRevision)
-	r.HandleFunc(configResetPath, s.ConfigReset)
-	r.HandleFunc(configTestPersonasPath, s.ConfigTestPersonas)
+	// readonly config endpoints
+	r.HandleFunc(clientPath, auth.MustWithAuth(httputil.MakeHandler(s, s.clientFactory()), checker, auth.RequireClientIDAndSecret))
+	r.HandleFunc(resourcesPath, auth.MustWithAuth(s.GetResources, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(resourcePath, auth.MustWithAuth(s.GetResource, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(viewsPath, auth.MustWithAuth(s.GetViews, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(flatViewsPath, auth.MustWithAuth(s.GetFlatViews, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(viewPath, auth.MustWithAuth(s.GetView, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(rolesPath, auth.MustWithAuth(s.GetViewRoles, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(rolePath, auth.MustWithAuth(s.GetViewRole, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(adaptersPath, auth.MustWithAuth(s.GetTargetAdapters, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(translatorsPath, auth.MustWithAuth(s.GetPassportTranslators, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(damRoleCategoriesPath, auth.MustWithAuth(s.GetDamRoleCategories, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(testPersonasPath, auth.MustWithAuth(s.GetTestPersonas, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
+	r.HandleFunc(processesPath, auth.MustWithAuth(httputil.MakeHandler(s, s.processesFactory()), checker, auth.RequireClientIDAndSecret))
+	r.HandleFunc(processPath, auth.MustWithAuth(httputil.MakeHandler(s, s.processFactory()), checker, auth.RequireClientIDAndSecret))
 
-	r.HandleFunc(configPath, common.MakeHandler(s, s.configFactory()))
-	r.HandleFunc(configOptionsPath, common.MakeHandler(s, s.configOptionsFactory()))
-	r.HandleFunc(configResourcePath, common.MakeHandler(s, s.configResourceFactory()))
-	r.HandleFunc(configViewPath, common.MakeHandler(s, s.configViewFactory()))
-	r.HandleFunc(configTrustedPassportIssuerPath, common.MakeHandler(s, s.configIssuerFactory()))
-	r.HandleFunc(configTrustedSourcePath, common.MakeHandler(s, s.configSourceFactory()))
-	r.HandleFunc(configPolicyPath, common.MakeHandler(s, s.configPolicyFactory()))
-	r.HandleFunc(configClaimDefPath, common.MakeHandler(s, s.configClaimDefinitionFactory()))
-	r.HandleFunc(configServiceTemplatePath, common.MakeHandler(s, s.configServiceTemplateFactory()))
-	r.HandleFunc(configTestPersonaPath, common.MakeHandler(s, s.configPersonaFactory()))
-	r.HandleFunc(configClientPath, common.MakeHandler(s, s.configClientFactory()))
+	// administration endpoints
+	r.HandleFunc(realmPath, auth.MustWithAuth(httputil.MakeHandler(s, s.realmFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configHistoryPath, auth.MustWithAuth(s.ConfigHistory, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
+	r.HandleFunc(configHistoryRevisionPath, auth.MustWithAuth(s.ConfigHistoryRevision, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
+	r.HandleFunc(configResetPath, auth.MustWithAuth(s.ConfigReset, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
+	r.HandleFunc(configTestPersonasPath, auth.MustWithAuth(s.ConfigTestPersonas, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
+	r.HandleFunc(configPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configOptionsPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configOptionsFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configResourcePath, auth.MustWithAuth(httputil.MakeHandler(s, s.configResourceFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configViewPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configViewFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configTrustedPassportIssuerPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configIssuerFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configTrustedSourcePath, auth.MustWithAuth(httputil.MakeHandler(s, s.configSourceFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configPolicyPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configPolicyFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configClaimDefPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configClaimDefinitionFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configServiceTemplatePath, auth.MustWithAuth(httputil.MakeHandler(s, s.configServiceTemplateFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configTestPersonaPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configPersonaFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configClientPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configClientFactory()), checker, auth.RequireAdminToken))
 
-	r.HandleFunc(hydraLoginPath, s.HydraLogin).Methods(http.MethodGet)
-	r.HandleFunc(hydraConsentPath, s.HydraConsent).Methods(http.MethodGet)
-	r.HandleFunc(loggedInPath, s.LoggedInHandler)
+	// hydra related oidc endpoints
+	r.HandleFunc(hydraLoginPath, auth.MustWithAuth(s.HydraLogin, checker, auth.RequireNone)).Methods(http.MethodGet)
+	r.HandleFunc(hydraConsentPath, auth.MustWithAuth(s.HydraConsent, checker, auth.RequireNone)).Methods(http.MethodGet)
+
+	// oidc auth callback endpoint
+	r.HandleFunc(loggedInPath, auth.MustWithAuth(s.LoggedInHandler, checker, auth.RequireNone)).Methods(http.MethodGet)
+
+	// resource token exchange endpoint
+	r.HandleFunc(resourceTokensPath, auth.MustWithAuth(s.ResourceTokens, checker, auth.RequireUserToken)).Methods(http.MethodGet, http.MethodPost)
 }

@@ -23,7 +23,7 @@ import (
 
 	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"github.com/gorilla/mux" /* copybara-comment */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
@@ -33,13 +33,9 @@ import (
 
 // GetResources implements the GetResources RPC method.
 func (s *Service) GetResources(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	resMap := make(map[string]*pb.Resource, 0)
@@ -50,46 +46,38 @@ func (s *Service) GetResources(w http.ResponseWriter, r *http.Request) {
 	resp := pb.GetResourcesResponse{
 		Resources: resMap,
 	}
-	common.SendResponse(proto.Message(&resp), w)
+	httputil.SendResponse(proto.Message(&resp), w)
 }
 
 // GetResource implements the corresponding endpoint in the REST API.
 func (s *Service) GetResource(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	name := getName(r)
 	if err := checkName(name); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+		httputil.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
 	res, ok := cfg.Resources[name]
 	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("resource %q not found", name), w)
+		httputil.HandleError(http.StatusNotFound, fmt.Errorf("resource %q not found", name), w)
 		return
 	}
 	resp := pb.GetResourceResponse{
 		Resource: s.makeResource(name, res, cfg),
 		Access:   s.makeAccessList(nil, []string{name}, nil, nil, cfg, r),
 	}
-	common.SendResponse(proto.Message(&resp), w)
+	httputil.SendResponse(proto.Message(&resp), w)
 }
 
 // GetFlatViews implements the corresponding REST API endpoint.
 func (s *Service) GetFlatViews(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	viewMap := make(map[string]*pb.GetFlatViewsResponse_FlatView, 0)
@@ -98,12 +86,12 @@ func (s *Service) GetFlatViews(w http.ResponseWriter, r *http.Request) {
 			v := s.makeView(vname, view, res, cfg)
 			st, ok := cfg.ServiceTemplates[v.ServiceTemplate]
 			if !ok {
-				common.HandleError(http.StatusInternalServerError, fmt.Errorf("resource %q view %q service template %q is undefined", resname, vname, v.ServiceTemplate), w)
+				httputil.HandleError(http.StatusInternalServerError, fmt.Errorf("resource %q view %q service template %q is undefined", resname, vname, v.ServiceTemplate), w)
 				return
 			}
 			desc, ok := s.adapters.Descriptors[st.TargetAdapter]
 			if !ok {
-				common.HandleError(http.StatusInternalServerError, fmt.Errorf("resource %q view %q service template %q target adapter %q is undefined", resname, vname, v.ServiceTemplate, st.TargetAdapter), w)
+				httputil.HandleError(http.StatusInternalServerError, fmt.Errorf("resource %q view %q service template %q target adapter %q is undefined", resname, vname, v.ServiceTemplate, st.TargetAdapter), w)
 				return
 			}
 			for rolename := range v.AccessRoles {
@@ -153,28 +141,24 @@ func (s *Service) GetFlatViews(w http.ResponseWriter, r *http.Request) {
 	resp := pb.GetFlatViewsResponse{
 		Views: viewMap,
 	}
-	common.SendResponse(proto.Message(&resp), w)
+	httputil.SendResponse(proto.Message(&resp), w)
 }
 
 // GetViews implements the corresponding endpoint in the REST API.
 func (s *Service) GetViews(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	name := getName(r)
 	if err := checkName(name); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+		httputil.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
 	res, ok := cfg.Resources[name]
 	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("resource %q not found", name), w)
+		httputil.HandleError(http.StatusNotFound, fmt.Errorf("resource %q not found", name), w)
 		return
 	}
 	out := make(map[string]*pb.View, 0)
@@ -185,76 +169,68 @@ func (s *Service) GetViews(w http.ResponseWriter, r *http.Request) {
 		Views:  out,
 		Access: s.makeAccessList(nil, []string{name}, nil, nil, cfg, r),
 	}
-	common.SendResponse(proto.Message(&resp), w)
+	httputil.SendResponse(proto.Message(&resp), w)
 }
 
 // GetView implements the corresponding endpoint in the REST API.
 func (s *Service) GetView(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	name := getName(r)
 	if err := checkName(name); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+		httputil.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
 	res, ok := cfg.Resources[name]
 	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("resource %q not found", name), w)
+		httputil.HandleError(http.StatusNotFound, fmt.Errorf("resource %q not found", name), w)
 		return
 	}
 	viewName := mux.Vars(r)["view"]
 	if err := checkName(viewName); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+		httputil.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
 	view, ok := res.Views[viewName]
 	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("resource %q view %q not found", name, viewName), w)
+		httputil.HandleError(http.StatusNotFound, fmt.Errorf("resource %q view %q not found", name, viewName), w)
 		return
 	}
 	resp := pb.GetViewResponse{
 		View:   s.makeView(viewName, view, res, cfg),
 		Access: s.makeAccessList(nil, []string{name}, []string{viewName}, nil, cfg, r),
 	}
-	common.SendResponse(proto.Message(&resp), w)
+	httputil.SendResponse(proto.Message(&resp), w)
 }
 
 // GetViewRoles implements the corresponding endpoint in the REST API.
 func (s *Service) GetViewRoles(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	name := getName(r)
 	if err := checkName(name); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+		httputil.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
 	res, ok := cfg.Resources[name]
 	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("resource %q not found", name), w)
+		httputil.HandleError(http.StatusNotFound, fmt.Errorf("resource %q not found", name), w)
 		return
 	}
 	viewName := mux.Vars(r)["view"]
 	if err := checkName(viewName); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+		httputil.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
 	view, ok := res.Views[viewName]
 	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("resource %q view %q not found", name, viewName), w)
+		httputil.HandleError(http.StatusNotFound, fmt.Errorf("resource %q view %q not found", name, viewName), w)
 		return
 	}
 	out := s.makeViewRoles(view, res, cfg)
@@ -262,85 +238,61 @@ func (s *Service) GetViewRoles(w http.ResponseWriter, r *http.Request) {
 		Roles:  out,
 		Access: s.makeAccessList(nil, []string{name}, []string{viewName}, nil, cfg, r),
 	}
-	common.SendResponse(proto.Message(&resp), w)
+	httputil.SendResponse(proto.Message(&resp), w)
 }
 
 // GetViewRole implements the corresponding endpoint in the REST API.
 func (s *Service) GetViewRole(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	name := getName(r)
 	if err := checkName(name); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+		httputil.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
 	res, ok := cfg.Resources[name]
 	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("resource %q not found", name), w)
+		httputil.HandleError(http.StatusNotFound, fmt.Errorf("resource %q not found", name), w)
 		return
 	}
 	vars := mux.Vars(r)
 	viewName := vars["view"]
 	if err := checkName(viewName); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+		httputil.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
 	view, ok := res.Views[viewName]
 	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("resource %q view %q not found", name, viewName), w)
+		httputil.HandleError(http.StatusNotFound, fmt.Errorf("resource %q view %q not found", name, viewName), w)
 		return
 	}
 	roleName := vars["role"]
 	if err := checkName(roleName); err != nil {
-		common.HandleError(http.StatusBadRequest, err, w)
+		httputil.HandleError(http.StatusBadRequest, err, w)
 		return
 	}
 	roles := s.makeViewRoles(view, res, cfg)
 	role, ok := roles[roleName]
 	if !ok {
-		common.HandleError(http.StatusNotFound, fmt.Errorf("resource %q view %q role %q not found", name, viewName, roleName), w)
+		httputil.HandleError(http.StatusNotFound, fmt.Errorf("resource %q view %q role %q not found", name, viewName, roleName), w)
 		return
 	}
 	resp := pb.GetViewRoleResponse{
 		Role:   role,
 		Access: s.makeAccessList(nil, []string{name}, []string{viewName}, []string{roleName}, cfg, r),
 	}
-	common.SendResponse(proto.Message(&resp), w)
-}
-
-// GetTestResults implements the GetTestResults RPC method.
-// TODO: remove.
-func (s *Service) GetTestResults(w http.ResponseWriter, r *http.Request) {
-	cfg, err := s.loadConfig(nil, getRealm(r))
-	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
-		return
-	}
-	_, status, err := s.getBearerTokenIdentity(cfg, r)
-	if err != nil {
-		common.HandleError(status, err, w)
-		return
-	}
-	common.SendResponse(proto.Message(s.runTests(cfg, nil)), w)
+	httputil.SendResponse(proto.Message(&resp), w)
 }
 
 // GetTargetAdapters implements the corresponding REST API endpoint.
 func (s *Service) GetTargetAdapters(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	out := &pb.TargetAdaptersResponse{
 		TargetAdapters: s.adapters.Descriptors,
 	}
-	common.SendResponse(out, w)
+	httputil.SendResponse(out, w)
 }
 
 func (s *Service) getIssuerTranslator(ctx context.Context, issuer string, cfg *pb.DamConfig, secrets *pb.DamSecrets, tx storage.Tx) (translator.Translator, error) {
@@ -372,7 +324,7 @@ func (s *Service) getIssuerTranslator(ctx context.Context, issuer string, cfg *p
 		}
 	}
 
-	t, err = s.createIssuerTranslator(s.ctx, cfgTpi, secrets)
+	t, err = s.createIssuerTranslator(ctx, cfgTpi, secrets)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create translator for issuer %q: %v", issuer, err)
 	}
@@ -386,40 +338,28 @@ func (s *Service) createIssuerTranslator(ctx context.Context, cfgTpi *pb.Trusted
 
 // GetPassportTranslators implements the corresponding REST API endpoint.
 func (s *Service) GetPassportTranslators(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	out := translator.GetPassportTranslators()
-	common.SendResponse(out, w)
+	httputil.SendResponse(out, w)
 }
 
 // GetDamRoleCategories implements the corresponding REST API method.
 func (s *Service) GetDamRoleCategories(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	out := &pb.DamRoleCategoriesResponse{
 		DamRoleCategories: s.roleCategories,
 	}
-	common.SendResponse(out, w)
+	httputil.SendResponse(out, w)
 }
 
 // GetTestPersonas implements the corresponding REST API method.
 func (s *Service) GetTestPersonas(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	out := &pb.GetTestPersonasResponse{
 		Personas:       cfg.TestPersonas,
 		StandardClaims: persona.StandardClaims,
 	}
-	common.SendResponse(out, w)
+	httputil.SendResponse(out, w)
 }

@@ -253,8 +253,7 @@
                 "project": "dataset-example-project",
                 "dataset": "dataset-example-view1"
               }
-            },
-            {
+            }, {
               "vars": {
                 "project": "dataset-example-project",
                 "dataset": "dataset-example-view2"
@@ -265,7 +264,7 @@
             "viewer": {
               "policies": [
                 {
-                  "name": "dac",
+                  "name":"dac",
                   "vars": {
                     "DATASET": "phs000710"
                   }
@@ -295,8 +294,7 @@
                 "project": "dataset-example-project",
                 "bucket": "dataset-example-bucket1"
               }
-            },
-            {
+            }, {
               "vars": {
                 "project": "dataset-example-project",
                 "bucket": "dataset-example-bucket2"
@@ -338,8 +336,7 @@
                 "bucket": "dataset-example-payer-bucket1",
                 "type": "requester-pays"
               }
-            },
-            {
+            }, {
               "vars": {
                 "project": "dataset-example-project",
                 "bucket": "dataset-example-payer-bucket2",
@@ -382,8 +379,7 @@
                 "resource": "dataset_example",
                 "view": "bq_read"
               }
-            },
-            {
+            }, {
               "vars": {
                 "resource": "dataset_example",
                 "view": "gcs_read"
@@ -442,14 +438,12 @@
           "roles": {
             "discovery": {
               "policies": [
-                {
-                  "name": "bona_fide"
-                }
+                {"name":"bona_fide"}
               ]
             }
           },
           "defaultRole": "discovery",
-          "ui": {
+          "ui":{
             "label": "Beacon Discovery",
             "description": "Search data from Beacon Discovery"
           }
@@ -475,12 +469,7 @@
           "roles": {
             "viewer": {
               "policies": [
-                {
-                  "name": "bona_fide"
-                },
-                {
-                  "name": "ethics"
-                }
+                {"name":"bona_fide"}, {"name":"ethics"}
               ]
             }
           },
@@ -506,14 +495,12 @@
     "beacon": {
       "targetAdapter": "token:jwt:gatekeeper",
       "itemFormat": "url",
-      "roles": {
+      "roles" : {
         "basic_discovery": {
           "targetScopes": [
             "registered"
           ],
-          "damRoleCategories": [
-            "exists"
-          ],
+          "damRoleCategories": ["exists"],
           "ui": {
             "label": "Discovery Beacon Search without Metadata",
             "description": "Query genome data and return 'found' or 'not found' status"
@@ -524,9 +511,7 @@
             "registered",
             "controlled"
           ],
-          "damRoleCategories": [
-            "metadata"
-          ],
+          "damRoleCategories": ["metadata"],
           "ui": {
             "label": "Discovery Beacon Search with Metadata",
             "description": "Query genome data and receive metadata results"
@@ -546,29 +531,19 @@
       "itemFormat": "gcs",
       "roles": {
         "viewer": {
-          "targetRoles": [
-            "roles/storage.objectViewer"
-          ],
+          "targetRoles": ["roles/storage.objectViewer"],
           "targetScopes": [
             "https://www.googleapis.com/auth/cloud-platform"
           ],
-          "damRoleCategories": [
-            "metadata",
-            "list",
-            "read"
-          ],
+          "damRoleCategories": ["metadata", "list", "read"],
           "ui": {
             "label": "File Viewer",
             "description": "List and read files"
           }
         },
         "creator": {
-          "targetRoles": [
-            "roles/storage.objectCreator"
-          ],
-          "damRoleCategories": [
-            "write"
-          ],
+          "targetRoles": ["roles/storage.objectCreator"],
+          "damRoleCategories": ["write"],
           "ui": {
             "label": "File Creator",
             "description": "Write files (without read access)"
@@ -582,12 +557,7 @@
           "targetScopes": [
             "https://www.googleapis.com/auth/cloud-platform"
           ],
-          "damRoleCategories": [
-            "metadata",
-            "list",
-            "read",
-            "write"
-          ],
+          "damRoleCategories": ["metadata", "list", "read", "write"],
           "ui": {
             "label": "File Editor",
             "description": "Read and write files plus manipulate file metadata"
@@ -608,35 +578,22 @@
       "itemFormat": "bigquery",
       "roles": {
         "viewer": {
-          "targetRoles": [
-            "roles/BQReader"
-          ],
+          "targetRoles": ["roles/BQReader"],
           "targetScopes": [
             "https://www.googleapis.com/auth/cloud-platform"
           ],
-          "damRoleCategories": [
-            "metadata",
-            "list",
-            "read"
-          ],
+          "damRoleCategories": ["metadata", "list", "read"],
           "ui": {
             "label": "BigQuery Viewer",
             "description": "Query tables and view table metadata"
           }
         },
         "editor": {
-          "targetRoles": [
-            "roles/bigquery.dataEditor"
-          ],
+          "targetRoles": ["roles/bigquery.dataEditor"],
           "targetScopes": [
             "https://www.googleapis.com/auth/cloud-platform"
           ],
-          "damRoleCategories": [
-            "metadata",
-            "list",
-            "read",
-            "write"
-          ],
+          "damRoleCategories": ["metadata", "list", "read", "write"],
           "ui": {
             "label": "BigQuery Editor",
             "description": "Query and modify tables and table metadata"
@@ -649,6 +606,7 @@
       "ui": {
         "label": "Google BigQuery",
         "description": "Google BigQuery"
+
       }
     },
     "views": {
@@ -656,11 +614,7 @@
       "itemFormat": "view",
       "roles": {
         "viewer": {
-          "damRoleCategories": [
-            "metadata",
-            "list",
-            "read"
-          ],
+          "damRoleCategories": ["metadata", "list", "read"],
           "ui": {
             "label": "Viewer",
             "description": "Offers Viewer access across multiple views"
@@ -781,7 +735,7 @@
           }
         ]
       },
-      "access": [
+      "access" : [
         "ga4gh-apis/beacon/discovery",
         "ga4gh-apis/gcs_read/viewer"
       ]

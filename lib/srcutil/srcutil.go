@@ -19,6 +19,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var (
@@ -29,6 +30,9 @@ var (
 // Path returns the path to a file in the repo given its relative path to
 // the root of the module.
 func Path(path string) string {
+	if strings.HasPrefix(path, "/") {
+		return path
+	}
 	return filepath.Join(root, path)
 }
 
@@ -39,6 +43,15 @@ func Read(path string) ([]byte, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// LoadFile reads a file in the repo given its relative path to the root of module and returns a string.
+func LoadFile(path string) (string, error) {
+	b, err := Read(path)
+	if err != nil {
+		return "", err
+	}
+	return string(b), err
 }
 
 func moduleRoot() string {

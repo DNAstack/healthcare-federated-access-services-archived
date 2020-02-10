@@ -26,10 +26,15 @@ import (
 	"google.golang.org/grpc/status" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 	spb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/scim/v2" /* copybara-comment: go_proto */
+)
+
+const (
+	linkAuthorization = "X-Link-Authorization"
 )
 
 var (
@@ -123,13 +128,12 @@ func linkProto(p proto.Message) *cpb.ConnectedAccount {
 	return link
 }
 
-func (s *Service) scimMeFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) scimMeFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "user",
 		PathPrefix:          scimMePath,
 		HasNamedIdentifiers: false,
-		IsAdmin:             false,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return &scimMe{
 				s: s,
 				w: w,
@@ -147,14 +151,15 @@ type scimMe struct {
 }
 
 // Setup initializes the handler
-func (h *scimMe) Setup(tx storage.Tx, isAdmin bool) (int, error) {
+func (h *scimMe) Setup(tx storage.Tx) (int, error) {
+	h.r.ParseForm()
 	h.user = &scimUser{
 		s:     h.s,
 		w:     h.w,
 		r:     h.r,
 		input: &spb.Patch{},
 	}
-	return h.user.Setup(tx, isAdmin)
+	return h.user.Setup(tx)
 }
 
 // LookupItem returns true if the named object is found
@@ -204,13 +209,12 @@ func (h *scimMe) Save(tx storage.Tx, name string, vars map[string]string, desc, 
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) scimUserFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) scimUserFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "user",
 		PathPrefix:          scimUserPath,
 		HasNamedIdentifiers: true,
-		IsAdmin:             false,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return &scimUser{
 				s:     s,
 				w:     w,
@@ -233,8 +237,8 @@ type scimUser struct {
 }
 
 // Setup initializes the handler
-func (h *scimUser) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	_, _, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *scimUser) Setup(tx storage.Tx) (int, error) {
+	_, _, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	if err != nil {
 		return status, err
 	}
@@ -279,7 +283,7 @@ func (h *scimUser) NormalizeInput(name string, vars map[string]string) error {
 
 // Get sends a GET method response
 func (h *scimUser) Get(name string) error {
-	return common.SendResponse(h.s.newScimUser(h.item, getRealm(h.r)), h.w)
+	return httputil.SendResponse(h.s.newScimUser(h.item, getRealm(h.r)), h.w)
 }
 
 // Post receives a POST method request
@@ -304,7 +308,7 @@ func (h *scimUser) Patch(name string) error {
 		if photoPathRE.MatchString(path) {
 			path = "photo"
 		} else if emailPathRE.MatchString(path) {
-			path = "email"
+			path = "emails"
 		}
 		switch path {
 		case "active":
@@ -356,7 +360,18 @@ func (h *scimUser) Patch(name string) error {
 				return fmt.Errorf("operation %d: %q is not a recognized time zone", i, src)
 			}
 
-		case "email":
+		case "emails":
+			if patch.Op == "add" {
+				// SCIM extension for linking accounts.
+				if patch.Value != linkAuthorization {
+					return fmt.Errorf("operation %d: %q must be set to %q", i, patch.Value, linkAuthorization)
+				}
+				if err := h.linkEmail(); err != nil {
+					return err
+				}
+				break
+			}
+			// Standard SCIM email functionality.
 			link, match, err := selectLink(patch.Path, emailPathRE, scimEmailFilterMap, h.save)
 			if err != nil {
 				return err
@@ -421,7 +436,7 @@ func (h *scimUser) Patch(name string) error {
 			return fmt.Errorf("operation %d: invalid op %q", i, patch.Op)
 		}
 	}
-	return common.SendResponse(h.s.newScimUser(h.save, getRealm(h.r)), h.w)
+	return httputil.SendResponse(h.s.newScimUser(h.save, getRealm(h.r)), h.w)
 }
 
 // Remove receives a DELETE method request
@@ -454,15 +469,77 @@ func (h *scimUser) Save(tx storage.Tx, name string, vars map[string]string, desc
 	return h.s.saveAccount(h.item, h.save, desc, h.r, h.id.Subject, h.tx)
 }
 
+func (h *scimUser) linkEmail() error {
+	link, err := linkToken(h.r)
+	if err != nil {
+		return err
+	}
+	if !hasScopes("link", h.id.Scope, matchFullScope) {
+		return fmt.Errorf("bearer token unauthorized for scope %q", "link")
+	}
+	linkID, _, err := h.s.requestTokenToIdentity(link, "link", h.r, h.tx)
+	if err != nil {
+		return err
+	}
+	if !hasScopes("link", linkID.Scope, matchFullScope) {
+		return fmt.Errorf("link bearer token unauthorized for scope %q", "link")
+	}
+	linkSub := linkID.Subject
+	idSub := h.save.Properties.Subject
+	if linkSub == idSub {
+		return fmt.Errorf("the accounts provided are already linked together")
+	}
+	linkAcct, _, err := h.s.loadAccount(linkSub, getRealm(h.r), h.tx)
+	if err != nil {
+		return err
+	}
+	if linkAcct.State != storage.StateActive {
+		return fmt.Errorf("the link account is not found or no longer available")
+	}
+	for _, acct := range linkAcct.ConnectedAccounts {
+		if acct.Properties == nil || len(acct.Properties.Subject) == 0 {
+			continue
+		}
+		lookup := &cpb.AccountLookup{
+			Subject:  h.save.Properties.Subject,
+			Revision: acct.LinkRevision,
+			State:    storage.StateActive,
+		}
+		if err := h.s.saveAccountLookup(lookup, getRealm(h.r), acct.Properties.Subject, h.r, h.id, h.tx); err != nil {
+			return fmt.Errorf("service dependencies not available; try again later")
+		}
+		acct.LinkRevision++
+		h.save.ConnectedAccounts = append(h.save.ConnectedAccounts, acct)
+	}
+	linkAcct.ConnectedAccounts = make([]*cpb.ConnectedAccount, 0)
+	linkAcct.State = "LINKED"
+	linkAcct.Owner = h.save.Properties.Subject
+	if err = h.s.saveAccount(nil, linkAcct, "LINK account", h.r, h.id.Subject, h.tx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func linkToken(r *http.Request) (string, error) {
+	parts := strings.SplitN(r.Header.Get(linkAuthorization), " ", 2)
+	tok := ""
+	if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+		tok = parts[1]
+	}
+	if len(tok) == 0 {
+		return "", fmt.Errorf("missing or invalid %q header", linkAuthorization)
+	}
+	return tok, nil
+}
+
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) scimUsersFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) scimUsersFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "users",
 		PathPrefix:          scimUsersPath,
 		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return &scimUsers{
 				s: s,
 				w: w,
@@ -481,8 +558,8 @@ type scimUsers struct {
 }
 
 // Setup initializes the handler
-func (h *scimUsers) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	_, _, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, nil)
+func (h *scimUsers) Setup(tx storage.Tx) (int, error) {
+	_, _, id, status, err := h.s.handlerSetup(tx, h.r, noScope, nil)
 	h.id = id
 	h.tx = tx
 	return status, err
@@ -500,19 +577,19 @@ func (h *scimUsers) NormalizeInput(name string, vars map[string]string) error {
 
 // Get sends a GET method response
 func (h *scimUsers) Get(name string) error {
-	filters, err := storage.BuildFilters(common.GetParam(h.r, "filter"), scimUserFilterMap)
+	filters, err := storage.BuildFilters(httputil.GetParam(h.r, "filter"), scimUserFilterMap)
 	if err != nil {
 		return err
 	}
 	// "startIndex" is a 1-based starting location, to be converted to an offset for the query.
-	start := common.ExtractIntParam(h.r, "startIndex")
+	start := httputil.ExtractIntParam(h.r, "startIndex")
 	if start == 0 {
 		start = 1
 	}
 	offset := start - 1
 	// "count" is the number of results desired on this request's page.
-	max := common.ExtractIntParam(h.r, "count")
-	if len(common.GetParam(h.r, "count")) == 0 {
+	max := httputil.ExtractIntParam(h.r, "count")
+	if len(httputil.GetParam(h.r, "count")) == 0 {
 		max = storage.DefaultPageSize
 	}
 
@@ -533,7 +610,7 @@ func (h *scimUsers) Get(name string) error {
 	}
 	sort.Strings(subjects)
 	realm := getRealm(h.r)
-	list := []*spb.User{}
+	var list []*spb.User
 	for _, sub := range subjects {
 		list = append(list, h.s.newScimUser(accts[sub], realm))
 	}
@@ -548,7 +625,8 @@ func (h *scimUsers) Get(name string) error {
 		StartIndex:   uint32(start),
 		Resources:    list,
 	}
-	return common.SendResponse(resp, h.w)
+	httputil.WriteProtoResp(h.w, resp)
+	return nil
 }
 
 // Post receives a POST method request

@@ -22,22 +22,21 @@ import (
 
 	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"google.golang.org/grpc/status" /* copybara-comment */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/check" /* copybara-comment: check */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
-func (s *Service) configFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) configFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "config",
 		PathPrefix:          configPath,
 		HasNamedIdentifiers: false,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return NewConfigHandler(s, w, r)
 		},
 	}
@@ -62,8 +61,8 @@ func NewConfigHandler(s *Service, w http.ResponseWriter, r *http.Request) *confi
 		input: &pb.ConfigRequest{},
 	}
 }
-func (h *configHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *configHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.tx = tx
 	h.cfg = cfg
 	h.id = id
@@ -74,7 +73,7 @@ func (h *configHandler) LookupItem(name string, vars map[string]string) bool {
 	return true
 }
 func (h *configHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.GetRequest(h.input, h.r); err != nil {
 		return err
 	}
 	if h.input.Item == nil {
@@ -94,7 +93,7 @@ func (h *configHandler) NormalizeInput(name string, vars map[string]string) erro
 	return nil
 }
 func (h *configHandler) Get(name string) error {
-	common.SendResponse(makeConfig(h.cfg), h.w)
+	httputil.SendResponse(makeConfig(h.cfg), h.w)
 	return nil
 }
 func (h *configHandler) Post(name string) error {
@@ -123,6 +122,16 @@ func (h *configHandler) Save(tx storage.Tx, name string, vars map[string]string,
 	if err := h.s.saveConfig(h.save, desc, typeName, h.r, h.id, h.cfg, h.save, h.input.Modification, tx); err != nil {
 		return err
 	}
+	secrets, err := h.s.loadSecrets(tx)
+	if err != nil {
+		return err
+	}
+	// Assumes that secrets don't change within this handler.
+	if h.s.useHydra && !check.ClientsEqual(h.cfg.Clients, h.save.Clients) {
+		if err = h.s.syncToHydra(h.save.Clients, secrets.ClientSecrets, 0); err != nil {
+			return err
+		}
+	}
 	if !proto.Equal(h.cfg.Options, h.save.Options) {
 		return h.s.registerProject(h.save, getRealm(h.r))
 	}
@@ -131,13 +140,12 @@ func (h *configHandler) Save(tx storage.Tx, name string, vars map[string]string,
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) configOptionsFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) configOptionsFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "configOptions",
 		PathPrefix:          configOptionsPath,
 		HasNamedIdentifiers: false,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return NewConfigOptionsHandler(s, w, r)
 		},
 	}
@@ -164,8 +172,8 @@ func NewConfigOptionsHandler(s *Service, w http.ResponseWriter, r *http.Request)
 		input: &pb.ConfigOptionsRequest{},
 	}
 }
-func (h *configOptionsHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *configOptionsHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.cfg = cfg
 	h.id = id
 	h.tx = tx
@@ -176,7 +184,7 @@ func (h *configOptionsHandler) LookupItem(name string, vars map[string]string) b
 	return true
 }
 func (h *configOptionsHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.GetRequest(h.input, h.r); err != nil {
 		return err
 	}
 	if h.input.Item == nil {
@@ -186,7 +194,7 @@ func (h *configOptionsHandler) NormalizeInput(name string, vars map[string]strin
 	return nil
 }
 func (h *configOptionsHandler) Get(name string) error {
-	common.SendResponse(makeConfigOptions(h.item), h.w)
+	httputil.SendResponse(makeConfigOptions(h.item), h.w)
 	return nil
 }
 func (h *configOptionsHandler) Post(name string) error {
@@ -225,13 +233,12 @@ func (h *configOptionsHandler) Save(tx storage.Tx, name string, vars map[string]
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) configResourceFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) configResourceFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "configResource",
 		PathPrefix:          configResourcePath,
 		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return NewConfigResourceHandler(s, w, r)
 		},
 	}
@@ -257,8 +264,8 @@ func NewConfigResourceHandler(s *Service, w http.ResponseWriter, r *http.Request
 		input: &pb.ConfigResourceRequest{},
 	}
 }
-func (h *configResourceHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *configResourceHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.cfg = cfg
 	h.id = id
 	h.tx = tx
@@ -273,7 +280,7 @@ func (h *configResourceHandler) LookupItem(name string, vars map[string]string) 
 	return true
 }
 func (h *configResourceHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.GetRequest(h.input, h.r); err != nil {
 		return err
 	}
 	if h.input.Item == nil {
@@ -286,7 +293,7 @@ func (h *configResourceHandler) NormalizeInput(name string, vars map[string]stri
 	return nil
 }
 func (h *configResourceHandler) Get(name string) error {
-	common.SendResponse(h.item, h.w)
+	httputil.SendResponse(h.item, h.w)
 	return nil
 }
 func (h *configResourceHandler) Post(name string) error {
@@ -321,13 +328,12 @@ func (h *configResourceHandler) Save(tx storage.Tx, name string, vars map[string
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) configViewFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) configViewFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "configView",
 		PathPrefix:          configViewPath,
 		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return NewConfigViewHandler(s, w, r)
 		},
 	}
@@ -355,8 +361,8 @@ func NewConfigViewHandler(s *Service, w http.ResponseWriter, r *http.Request) *c
 		input: &pb.ConfigViewRequest{},
 	}
 }
-func (h *configViewHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *configViewHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.cfg = cfg
 	h.id = id
 	h.tx = tx
@@ -381,7 +387,7 @@ func (h *configViewHandler) LookupItem(name string, vars map[string]string) bool
 	return true
 }
 func (h *configViewHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.GetRequest(h.input, h.r); err != nil {
 		return err
 	}
 	if h.input.Item == nil {
@@ -391,7 +397,7 @@ func (h *configViewHandler) NormalizeInput(name string, vars map[string]string) 
 	return nil
 }
 func (h *configViewHandler) Get(name string) error {
-	common.SendResponse(h.item, h.w)
+	httputil.SendResponse(h.item, h.w)
 	return nil
 }
 func (h *configViewHandler) Post(name string) error {
@@ -427,13 +433,12 @@ func (h *configViewHandler) Save(tx storage.Tx, name string, vars map[string]str
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) configIssuerFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) configIssuerFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "configTrustedPassportIssuer",
 		PathPrefix:          configTrustedPassportIssuerPath,
 		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return NewConfigIssuerHandler(s, w, r)
 		},
 	}
@@ -459,8 +464,8 @@ func NewConfigIssuerHandler(s *Service, w http.ResponseWriter, r *http.Request) 
 		input: &pb.ConfigTrustedPassportIssuerRequest{},
 	}
 }
-func (h *configIssuerHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *configIssuerHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.cfg = cfg
 	h.id = id
 	h.tx = tx
@@ -475,7 +480,7 @@ func (h *configIssuerHandler) LookupItem(name string, vars map[string]string) bo
 	return true
 }
 func (h *configIssuerHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.GetRequest(h.input, h.r); err != nil {
 		return err
 	}
 	if h.input.Item == nil {
@@ -487,7 +492,7 @@ func (h *configIssuerHandler) NormalizeInput(name string, vars map[string]string
 	return nil
 }
 func (h *configIssuerHandler) Get(name string) error {
-	common.SendResponse(h.item, h.w)
+	httputil.SendResponse(h.item, h.w)
 	return nil
 }
 func (h *configIssuerHandler) Post(name string) error {
@@ -520,13 +525,12 @@ func (h *configIssuerHandler) Save(tx storage.Tx, name string, vars map[string]s
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) configSourceFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) configSourceFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "configTrustedSource",
 		PathPrefix:          configTrustedSourcePath,
 		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return NewConfigSourceHandler(s, w, r)
 		},
 	}
@@ -552,8 +556,8 @@ func NewConfigSourceHandler(s *Service, w http.ResponseWriter, r *http.Request) 
 		input: &pb.ConfigTrustedSourceRequest{},
 	}
 }
-func (h *configSourceHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *configSourceHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.cfg = cfg
 	h.id = id
 	h.tx = tx
@@ -568,7 +572,7 @@ func (h *configSourceHandler) LookupItem(name string, vars map[string]string) bo
 	return true
 }
 func (h *configSourceHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.GetRequest(h.input, h.r); err != nil {
 		return err
 	}
 	if h.input.Item == nil {
@@ -580,7 +584,7 @@ func (h *configSourceHandler) NormalizeInput(name string, vars map[string]string
 	return nil
 }
 func (h *configSourceHandler) Get(name string) error {
-	common.SendResponse(h.item, h.w)
+	httputil.SendResponse(h.item, h.w)
 	return nil
 }
 func (h *configSourceHandler) Post(name string) error {
@@ -615,13 +619,12 @@ func (h *configSourceHandler) Save(tx storage.Tx, name string, vars map[string]s
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) configPolicyFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) configPolicyFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "configPolicy",
 		PathPrefix:          configPolicyPath,
 		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return NewConfigPolicyHandler(s, w, r)
 		},
 	}
@@ -647,8 +650,8 @@ func NewConfigPolicyHandler(s *Service, w http.ResponseWriter, r *http.Request) 
 		input: &pb.ConfigPolicyRequest{},
 	}
 }
-func (h *configPolicyHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *configPolicyHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.cfg = cfg
 	h.id = id
 	h.tx = tx
@@ -663,7 +666,7 @@ func (h *configPolicyHandler) LookupItem(name string, vars map[string]string) bo
 	return true
 }
 func (h *configPolicyHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.GetRequest(h.input, h.r); err != nil {
 		return err
 	}
 	if h.input.Item == nil {
@@ -675,7 +678,7 @@ func (h *configPolicyHandler) NormalizeInput(name string, vars map[string]string
 	return nil
 }
 func (h *configPolicyHandler) Get(name string) error {
-	common.SendResponse(h.item, h.w)
+	httputil.SendResponse(h.item, h.w)
 	return nil
 }
 func (h *configPolicyHandler) Post(name string) error {
@@ -709,13 +712,12 @@ func (h *configPolicyHandler) Save(tx storage.Tx, name string, vars map[string]s
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) configClaimDefinitionFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) configClaimDefinitionFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "configClaimDefinition",
 		PathPrefix:          configClaimDefPath,
 		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return NewConfigClaimDefinitionHandler(s, w, r)
 		},
 	}
@@ -741,8 +743,8 @@ func NewConfigClaimDefinitionHandler(s *Service, w http.ResponseWriter, r *http.
 		input: &pb.ConfigClaimDefinitionRequest{},
 	}
 }
-func (h *configClaimDefinitionHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *configClaimDefinitionHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.cfg = cfg
 	h.id = id
 	h.tx = tx
@@ -757,7 +759,7 @@ func (h *configClaimDefinitionHandler) LookupItem(name string, vars map[string]s
 	return true
 }
 func (h *configClaimDefinitionHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.GetRequest(h.input, h.r); err != nil {
 		return err
 	}
 	if h.input.Item == nil {
@@ -769,7 +771,7 @@ func (h *configClaimDefinitionHandler) NormalizeInput(name string, vars map[stri
 	return nil
 }
 func (h *configClaimDefinitionHandler) Get(name string) error {
-	common.SendResponse(h.item, h.w)
+	httputil.SendResponse(h.item, h.w)
 	return nil
 }
 func (h *configClaimDefinitionHandler) Post(name string) error {
@@ -802,13 +804,12 @@ func (h *configClaimDefinitionHandler) Save(tx storage.Tx, name string, vars map
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) configServiceTemplateFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) configServiceTemplateFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "configServiceTemplate",
 		PathPrefix:          configServiceTemplatePath,
 		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return NewConfigServiceTemplateHandler(s, w, r)
 		},
 	}
@@ -834,8 +835,8 @@ func NewConfigServiceTemplateHandler(s *Service, w http.ResponseWriter, r *http.
 		input: &pb.ConfigServiceTemplateRequest{},
 	}
 }
-func (h *configServiceTemplateHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *configServiceTemplateHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.cfg = cfg
 	h.id = id
 	h.tx = tx
@@ -850,7 +851,7 @@ func (h *configServiceTemplateHandler) LookupItem(name string, vars map[string]s
 	return true
 }
 func (h *configServiceTemplateHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.GetRequest(h.input, h.r); err != nil {
 		return err
 	}
 	if h.input.Item == nil {
@@ -868,7 +869,7 @@ func (h *configServiceTemplateHandler) NormalizeInput(name string, vars map[stri
 	return nil
 }
 func (h *configServiceTemplateHandler) Get(name string) error {
-	common.SendResponse(h.item, h.w)
+	httputil.SendResponse(h.item, h.w)
 	return nil
 }
 func (h *configServiceTemplateHandler) Post(name string) error {
@@ -903,13 +904,12 @@ func (h *configServiceTemplateHandler) Save(tx storage.Tx, name string, vars map
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) configPersonaFactory() *common.HandlerFactory {
-	return &common.HandlerFactory{
+func (s *Service) configPersonaFactory() *httputil.HandlerFactory {
+	return &httputil.HandlerFactory{
 		TypeName:            "configTestPersona",
 		PathPrefix:          configTestPersonaPath,
 		HasNamedIdentifiers: true,
-		IsAdmin:             true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) common.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
 			return NewConfigPersonaHandler(s, w, r)
 		},
 	}
@@ -935,8 +935,8 @@ func NewConfigPersonaHandler(s *Service, w http.ResponseWriter, r *http.Request)
 		input: &pb.ConfigTestPersonaRequest{},
 	}
 }
-func (h *configPersonaHandler) Setup(tx storage.Tx, isAdmin bool) (int, error) {
-	cfg, id, status, err := h.s.handlerSetup(tx, isAdmin, h.r, noScope, h.input)
+func (h *configPersonaHandler) Setup(tx storage.Tx) (int, error) {
+	cfg, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	h.cfg = cfg
 	h.id = id
 	h.tx = tx
@@ -951,7 +951,7 @@ func (h *configPersonaHandler) LookupItem(name string, vars map[string]string) b
 	return true
 }
 func (h *configPersonaHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := common.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.GetRequest(h.input, h.r); err != nil {
 		return err
 	}
 	if h.input.Item == nil {
@@ -972,7 +972,7 @@ func (h *configPersonaHandler) NormalizeInput(name string, vars map[string]strin
 	return nil
 }
 func (h *configPersonaHandler) Get(name string) error {
-	common.SendResponse(h.item, h.w)
+	httputil.SendResponse(h.item, h.w)
 	return nil
 }
 func (h *configPersonaHandler) Post(name string) error {
@@ -1007,91 +1007,78 @@ func (h *configPersonaHandler) Save(tx storage.Tx, name string, vars map[string]
 
 // ConfigHistory implements the HistoryConfig RPC method.
 func (s *Service) ConfigHistory(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	id, status, err := s.getBearerTokenIdentity(cfg, r)
 	if err != nil {
-		common.HandleError(status, err, w)
+		httputil.HandleError(status, err, w)
 		return
 	}
 	if status, err := s.permissions.CheckAdmin(id); err != nil {
-		common.HandleError(status, err, w)
+		httputil.HandleError(status, err, w)
 		return
 	}
 	h, status, err := storage.GetHistory(s.store, storage.ConfigDatatype, getRealm(r), storage.DefaultUser, storage.DefaultID, r)
 	if err != nil {
-		common.HandleError(status, err, w)
+		httputil.HandleError(status, err, w)
 	}
-	common.SendResponse(h, w)
+	httputil.SendResponse(h, w)
 }
 
 // ConfigHistoryRevision implements the HistoryRevisionConfig RPC method.
 func (s *Service) ConfigHistoryRevision(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	name := getName(r)
 	rev, err := strconv.ParseInt(name, 10, 64)
 	if err != nil {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("invalid history revision: %q (must be a positive integer)", name), w)
+		httputil.HandleError(http.StatusBadRequest, fmt.Errorf("invalid history revision: %q (must be a positive integer)", name), w)
 		return
 	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	id, status, err := s.getBearerTokenIdentity(cfg, r)
 	if err != nil {
-		common.HandleError(status, err, w)
+		httputil.HandleError(status, err, w)
 		return
 	}
 	if status, err := s.permissions.CheckAdmin(id); err != nil {
-		common.HandleError(status, err, w)
+		httputil.HandleError(status, err, w)
 		return
 	}
 	cfg = &pb.DamConfig{}
 	if status, err := s.realmReadTx(storage.ConfigDatatype, getRealm(r), storage.DefaultUser, storage.DefaultID, rev, cfg, nil); err != nil {
-		common.HandleError(status, err, w)
+		httputil.HandleError(status, err, w)
 		return
 	}
-	common.SendResponse(cfg, w)
+	httputil.SendResponse(cfg, w)
 }
 
 // ConfigReset implements the corresponding method in the DAM API.
 func (s *Service) ConfigReset(w http.ResponseWriter, r *http.Request) {
-	// TODO: probably should not be a GET, but handy for now on a browser...
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 	}
 	id, status, err := s.getBearerTokenIdentity(cfg, r)
 	if err != nil {
-		common.HandleError(status, err, w)
+		httputil.HandleError(status, err, w)
 		return
 	}
 	if status, err := s.permissions.CheckAdmin(id); err != nil {
-		common.HandleError(status, err, w)
+		httputil.HandleError(status, err, w)
 		return
 	}
 	if err = s.store.Wipe(storage.WipeAllRealms); err != nil {
-		common.HandleError(http.StatusInternalServerError, err, w)
+		httputil.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}
 	if err = s.ImportFiles(importDefault); err != nil {
-		common.HandleError(http.StatusInternalServerError, err, w)
+		httputil.HandleError(http.StatusInternalServerError, err, w)
 		return
 	}
 
@@ -1099,18 +1086,18 @@ func (s *Service) ConfigReset(w http.ResponseWriter, r *http.Request) {
 	if s.useHydra {
 		conf, err := s.loadConfig(nil, storage.DefaultRealm)
 		if err != nil {
-			common.HandleError(http.StatusServiceUnavailable, err, w)
+			httputil.HandleError(http.StatusServiceUnavailable, err, w)
 			return
 		}
 
 		secrets, err := s.loadSecrets(nil)
 		if err != nil {
-			common.HandleError(http.StatusServiceUnavailable, err, w)
+			httputil.HandleError(http.StatusServiceUnavailable, err, w)
 			return
 		}
 
-		if err := oathclients.ResetClients(s.httpClient, s.hydraAdminURL, conf.Clients, secrets.ClientSecrets); err != nil {
-			common.HandleError(http.StatusServiceUnavailable, err, w)
+		if err := s.syncToHydra(conf.Clients, secrets.ClientSecrets, 0); err != nil {
+			httputil.HandleError(http.StatusServiceUnavailable, err, w)
 			return
 		}
 	}
@@ -1118,26 +1105,22 @@ func (s *Service) ConfigReset(w http.ResponseWriter, r *http.Request) {
 
 // ConfigTestPersonas implements the ConfigTestPersonas RPC method.
 func (s *Service) ConfigTestPersonas(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		common.HandleError(http.StatusBadRequest, fmt.Errorf("request method not supported: %q", r.Method), w)
-		return
-	}
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		common.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.HandleError(http.StatusServiceUnavailable, err, w)
 		return
 	}
 	id, status, err := s.getBearerTokenIdentity(cfg, r)
 	if err != nil {
-		common.HandleError(status, err, w)
+		httputil.HandleError(status, err, w)
 		return
 	}
 	if status, err := s.permissions.CheckAdmin(id); err != nil {
-		common.HandleError(status, err, w)
+		httputil.HandleError(status, err, w)
 		return
 	}
 	out := &pb.GetTestPersonasResponse{
 		Personas: cfg.TestPersonas,
 	}
-	common.SendResponse(out, w)
+	httputil.SendResponse(out, w)
 }

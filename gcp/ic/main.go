@@ -85,8 +85,17 @@ func main() {
 		hydraPublicAddr = osenv.MustVar("HYDRA_PUBLIC_URL")
 	}
 
-	s := ic.NewService(ctx, srvAddr, acctDomain, hydraAdminAddr, hydraPublicAddr, store, gcpkms, useHydra)
+	s := ic.NewService(&ic.Options{
+		Domain:         srvAddr,
+		ServiceName:    srvName,
+		AccountDomain:  acctDomain,
+		Store:          store,
+		Encryption:     gcpkms,
+		UseHydra:       useHydra,
+		HydraAdminURL:  hydraAdminAddr,
+		HydraPublicURL: hydraPublicAddr,
+	})
 
-	glog.Infof("Listening on port %v", port)
+	glog.Infof("IC listening on port %v", port)
 	glog.Exit(http.ListenAndServe(":"+port, s.Handler))
 }

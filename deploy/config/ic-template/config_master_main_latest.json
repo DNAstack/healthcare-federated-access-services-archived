@@ -15,13 +15,13 @@
       "ui": {
         "label": "Google",
         "description": "Google identity provider",
-        "iconUrl": "/identity/static/google_identity.png"
+        "iconUrl": "/identity/static/images/google_identity.png"
       }
     },
     "persona": {
-      "issuer": "https://persona-staging-dot-hcls-data-connect-demo.appspot.com/oidc",
-      "authorizeUrl": "https://persona-staging-dot-hcls-data-connect-demo.appspot.com/oidc/authorize",
-      "tokenUrl": "https://persona-staging-dot-hcls-data-connect-demo.appspot.com/oidc/token",
+      "issuer": "https://personas${YOUR_ENVIRONMENT}-dot-${YOUR_PROJECT_ID}.appspot.com/oidc",
+      "authorizeUrl": "https://personas${YOUR_ENVIRONMENT}-dot-${YOUR_PROJECT_ID}.appspot.com/oidc/authorize",
+      "tokenUrl": "https://personas${YOUR_ENVIRONMENT}-dot-${YOUR_PROJECT_ID}.appspot.com/oidc/token",
       "clientId": "ic-client-id",
       "scopes": ["openid", "profile", "identities", "ga4gh_passport_v1", "email"],
       "ui": {
@@ -36,13 +36,13 @@
       "clientId": "903cfaeb-57d9-4ef6-5659-04377794ed65",
       "redirectUris": [
         "http://localhost:8091/test",
-        "https://ic-dot-${YOUR_PROJECT_ID}.appspot.com/identity/hydra-test"
+        "https://icdemo${YOUR_ENVIRONMENT}-dot-${YOUR_PROJECT_ID}.appspot.com/test"
       ],
       "ui": {
         "label": "Test Page",
         "description": "Test page"
       },
-      "scope": "openid offline ga4gh_passport_v1 profile email identities account_admin",
+      "scope": "openid offline ga4gh_passport_v1 profile email identities account_admin link",
       "grantTypes": ["authorization_code"],
       "responseTypes": ["token", "code", "id_token"]
     },
@@ -53,34 +53,11 @@
         "description": "Data Access Manager Service"
       },
       "redirectUris": [
-        "https://dam-dot-${YOUR_PROJECT_ID}.appspot.com/dam/oidc/loggedin"
+        "https://dam${YOUR_ENVIRONMENT}-dot-${YOUR_PROJECT_ID}.appspot.com/dam/oidc/loggedin"
       ],
-      "scope": "openid offline ga4gh_passport_v1 profile email identities account_admin",
+      "scope": "openid offline ga4gh_passport_v1 profile email identities account_admin link",
       "grantTypes": ["authorization_code"],
       "responseTypes": ["token", "code", "id_token"]
-    }
-  },
-  "accountTags": {
-    "IC": {
-      "category": "system",
-      "ui": {
-        "label": "Identity Concentrator",
-        "description": "User has a System assigned role within an Identity Concentrator"
-      }
-    },
-    "DAM": {
-      "category": "system",
-      "ui": {
-        "label": "Data Access Manager",
-        "description": "User has a System assigned role within a Data Access Manager"
-      }
-    },
-    "GCP": {
-      "category": "platform",
-      "ui": {
-        "label": "Google Cloud Platform",
-        "description": "User is a target for resource access within GCP"
-      }
     }
   },
   "options": {

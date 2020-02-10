@@ -74,8 +74,17 @@ func main() {
 		hydraAdminAddr = osenv.MustVar("HYDRA_ADMIN_URL")
 		hydraPublicAddr = osenv.MustVar("HYDRA_PUBLIC_URL")
 	}
-	s := dam.NewService(ctx, srvAddr, defaultBroker, hydraAdminAddr, hydraPublicAddr, store, wh, useHydra)
+	s := dam.NewService(&dam.Options{
+		Domain:         srvAddr,
+		ServiceName:    srvName,
+		DefaultBroker:  defaultBroker,
+		Store:          store,
+		Warehouse:      wh,
+		UseHydra:       true,
+		HydraAdminURL:  hydraAdminAddr,
+		HydraPublicURL: hydraPublicAddr,
+	})
 
-	glog.Infof("Listening on port %v", port)
+	glog.Infof("DAM listening on port %v", port)
 	glog.Fatal(http.ListenAndServe(":"+port, s.Handler))
 }
