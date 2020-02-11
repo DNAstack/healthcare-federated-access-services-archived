@@ -943,17 +943,7 @@ func (s *Service) loginTokenToIdentity(acTok, idTok string, idp *cpb.IdentityPro
 // is good enough. Note there are some race conditions with several client changes
 // overlapping in flight that could still have the two services be out of sync.
 func (s *Service) syncToHydra(clients map[string]*cpb.Client, secrets map[string]string, minFrequency time.Duration) error {
-	if !s.useHydra {
-		return nil
-	}
-	tx := s.store.LockTx("hydra_"+s.serviceName, minFrequency, nil)
-	if tx != nil {
-		defer tx.Finish()
-		if err := oathclients.ResetClients(s.httpClient, s.hydraAdminURL, clients, secrets); err != nil {
-			glog.Errorf("failed to reset hydra clients: %v", err)
-			return err
-		}
-	}
+	glog.Infoln("skipping hydra sync until logic fixed")
 	return nil
 }
 
