@@ -30,28 +30,27 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
-	"github.com/golang/protobuf/proto" /* copybara-comment */
-	"github.com/gorilla/mux" /* copybara-comment */
-	"google.golang.org/grpc/codes" /* copybara-comment */
-	"google.golang.org/grpc/status" /* copybara-comment */
-	"golang.org/x/oauth2" /* copybara-comment */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter" /* copybara-comment: adapter */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/auth" /* copybara-comment: auth */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter"     /* copybara-comment: adapter */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/auth"        /* copybara-comment: auth */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"      /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"      /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"       /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil"    /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/permissions" /* copybara-comment: permissions */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator" /* copybara-comment: validator */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona"     /* copybara-comment: persona */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"     /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"  /* copybara-comment: translator */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator"   /* copybara-comment: validator */
+	"github.com/golang/protobuf/jsonpb"                                                   /* copybara-comment */
+	"github.com/golang/protobuf/proto"                                                    /* copybara-comment */
+	"github.com/gorilla/mux"                                                              /* copybara-comment */
+	"golang.org/x/oauth2"                                                                 /* copybara-comment */
+	"google.golang.org/grpc/codes"                                                        /* copybara-comment */
+	"google.golang.org/grpc/status"                                                       /* copybara-comment */
 
-	glog "github.com/golang/glog" /* copybara-comment */
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"     /* copybara-comment: go_proto */
+	glog "github.com/golang/glog"                                                             /* copybara-comment */
 )
 
 const (
