@@ -26,21 +26,21 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"   /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"   /* copybara-comment: common */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"  /* copybara-comment: storage */
 
 	"github.com/cenkalti/backoff" /* copybara-comment */
-	"golang.org/x/crypto/sha3" /* copybara-comment */
+	"golang.org/x/crypto/sha3"    /* copybara-comment */
 
 	// Using a deprecated library because the new version doesn't support setting IAM roles in
 	// BigQuery datasets yet.
-	"google.golang.org/api/bigquery/v2" /* copybara-comment: bigquery */
+	"google.golang.org/api/bigquery/v2"             /* copybara-comment: bigquery */
 	"google.golang.org/api/cloudresourcemanager/v1" /* copybara-comment: cloudresourcemanager */
-	"google.golang.org/api/googleapi" /* copybara-comment: googleapi */
-	"google.golang.org/api/iam/v1" /* copybara-comment: iam */
-	"google.golang.org/api/iamcredentials/v1" /* copybara-comment: iamcredentials */
+	"google.golang.org/api/googleapi"               /* copybara-comment: googleapi */
+	"google.golang.org/api/iam/v1"                  /* copybara-comment: iam */
+	"google.golang.org/api/iamcredentials/v1"       /* copybara-comment: iamcredentials */
 	cloudstorage "google.golang.org/api/storage/v1" /* copybara-comment: storage */
 
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
@@ -48,6 +48,7 @@ import (
 
 const (
 	projectVariable       = "project"
+	jobProjectVariable    = "job-project"
 	bucketVariable        = "bucket"
 	datasetVariable       = "dataset"
 	inheritProject        = "-"
@@ -439,6 +440,10 @@ func (wh *AccountWarehouse) configureRoles(ctx context.Context, email string, pa
 				}
 				dr[ds] = append(dr[ds], resolvedRole)
 				resolvedRole = "roles/bigquery.user"
+				jobProj, ok := item[jobProjectVariable]
+				if ok {
+					proj = jobProj
+				}
 			}
 			// Otherwise, store project-level configuration.
 			prMap[proj] = append(prMap[proj], resolvedRole)
