@@ -41,6 +41,8 @@ const (
 	// infoPath: metadata about the service, like versions of various services.
 	// Required permission: admin
 	infoPath = "/identity"
+	// Return the JWKS of keys for visas signed by the IC.
+	jwksPath = "/visas/jwks"
 
 	// The following are for managing realms.
 	realmPath = "/identity/v1alpha/{realm}"
@@ -56,6 +58,10 @@ const (
 	// ConfigReset: resets the config to its initial state read from configuration file.
 	// Required permission: admin
 	configResetPath = "/identity/v1alpha/{realm}/config/reset"
+
+	// SyncClients: performs a sync of clients to Hydra.
+	// Required permission: trusted client with "sync" scope defined in the config.
+	syncClientsPath = "/identity/v1alpha/{realm}/clients:sync"
 
 	// ConfigHistory: history of configuration changes.
 	// Required permission: admin
@@ -90,8 +96,6 @@ const (
 	// ---------------------------------------------------------------------------
 	// The following are unsupported and to be removed.
 	// ---------------------------------------------------------------------------
-	accountPath            = "/identity/v1alpha/{realm}/accounts/{name}"
-	accountSubjectPath     = "/identity/v1alpha/{realm}/accounts/{name}/subjects/{subject}"
 	adminClaimsPath        = "/identity/v1alpha/{realm}/admin/subjects/{name}/account/claims"
 	adminTokenMetadataPath = "/identity/v1alpha/{realm}/admin/tokens"
 )

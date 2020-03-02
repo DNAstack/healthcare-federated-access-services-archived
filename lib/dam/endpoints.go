@@ -69,6 +69,10 @@ const (
 	// Required permission: admin
 	configResetPath = "/dam/v1alpha/{realm}/config/reset"
 
+	// SyncClients: performs a sync of clients to Hydra.
+	// Required permission: trusted client with "sync" scope defined in the config.
+	syncClientsPath = "/dam/v1alpha/{realm}/clients:sync"
+
 	// ConfigHistory: history of configuration changes.
 	// Required permission: admin
 	configHistoryPath         = "/dam/v1alpha/{realm}/config/history"

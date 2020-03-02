@@ -21,9 +21,10 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto" /* copybara-comment */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"bitbucket.org/creachadair/stringset" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
 
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
@@ -54,7 +55,7 @@ func CheckReadOnly(realm string, readOnlyMaster bool, whitelistedRealms []string
 		if readOnlyMaster {
 			return fmt.Errorf(`config option "readOnlyMasterRealm" setting prevents updating the config on realm %q`, realm)
 		}
-	} else if len(whitelistedRealms) > 0 && !common.ListContains(whitelistedRealms, realm) {
+	} else if len(whitelistedRealms) > 0 && !stringset.Contains(whitelistedRealms, realm) {
 		return fmt.Errorf(`config option "whitelistedRealms" setting prevents updating realm %q config`, realm)
 	}
 	return nil
@@ -147,15 +148,15 @@ func OptInt(str string) int32 {
 }
 
 func OptDuration(optName, optVal, minVal, maxVal string) (time.Duration, time.Duration, time.Duration, error) {
-	v, err := common.ParseDuration(optVal, time.Hour)
+	v, err := timeutil.ParseDuration(optVal)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("option %q: value %q format error: %v", optName, optVal, err)
 	}
-	min, err := common.ParseDuration(minVal, time.Hour)
+	min, err := timeutil.ParseDuration(minVal)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("option %q: minimum %q format error: %v", optName, minVal, err)
 	}
-	max, err := common.ParseDuration(maxVal, time.Hour)
+	max, err := timeutil.ParseDuration(maxVal)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("option %q: maximum %q format error: %v", optName, maxVal, err)
 	}
@@ -168,16 +169,16 @@ func CheckUI(ui map[string]string, requireDescription bool) (string, error) {
 		return "ui", fmt.Errorf("UI object missing")
 	}
 
-	if label := ui[common.UILabel]; len(label) == 0 {
-		return httputil.StatusPath("ui", common.UILabel), fmt.Errorf("UI object missing %q field", common.UILabel)
+	if label := ui["label"]; len(label) == 0 {
+		return httputil.StatusPath("ui", "label"), fmt.Errorf("UI object missing %q field", "label")
 	}
 
 	if !requireDescription {
 		return "", nil
 	}
 
-	if desc := ui[common.UIDescription]; len(desc) == 0 {
-		return httputil.StatusPath("ui", common.UIDescription), fmt.Errorf("UI object missing %q field", common.UIDescription)
+	if desc := ui["description"]; len(desc) == 0 {
+		return httputil.StatusPath("ui", "description"), fmt.Errorf("UI object missing %q field", "description")
 	}
 
 	return "", nil

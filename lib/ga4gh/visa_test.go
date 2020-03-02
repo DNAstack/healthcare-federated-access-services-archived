@@ -28,7 +28,7 @@ import (
 func TestNewVisaFromData(t *testing.T) {
 	d, j := fakeVisaDataAndJWT(t)
 
-	v, err := NewVisaFromData(d, RS256, testkeys.Default.Private, testkeys.Default.ID)
+	v, err := NewVisaFromData(d, JWTEmptyJKU, RS256, testkeys.Default.Private, testkeys.Default.ID)
 	if err != nil {
 		t.Fatalf("NewVisaFromData(%v) failed: %v", d, err)
 	}
@@ -37,6 +37,22 @@ func TestNewVisaFromData(t *testing.T) {
 	want := j
 	if diff := cmp.Diff(want, got); diff != "" {
 		t.Fatalf("NewVisaFromData(%v) returned diff (-want +got):\n%s", d, diff)
+	}
+}
+
+func TestNewVisaFromData_NoJKUFormat(t *testing.T) {
+	d, _ := fakeVisaDataAndJWT(t)
+
+	v, err := NewVisaFromData(d, JWTEmptyJKU, RS256, testkeys.Default.Private, testkeys.Default.ID)
+	if err != nil {
+		t.Fatalf("NewVisaFromData(%v) failed: %v", d, err)
+	}
+
+	if v.JKU() != JWTEmptyJKU {
+		t.Errorf("visa jku mismatch: got %q, want %q", v.JKU(), JWTEmptyJKU)
+	}
+	if v.Format() != AccessTokenVisaFormat {
+		t.Errorf("visa format mismatch: got %v, want %v", v.Format(), AccessTokenVisaFormat)
 	}
 }
 
@@ -70,13 +86,47 @@ func TestVisaJSONFormat(t *testing.T) {
 func TestVisaVerify(t *testing.T) {
 	d, _ := fakeVisaDataAndJWT(t)
 
-	p, err := NewVisaFromData(d, RS256, testkeys.Default.Private, testkeys.Default.ID)
+	p, err := NewVisaFromData(d, JWTEmptyJKU, RS256, testkeys.Default.Private, testkeys.Default.ID)
 	if err != nil {
 		t.Fatalf("NewPassportFromData(%v) failed: %v", d, err)
 	}
 
 	if err := p.Verify(testkeys.Default.Public); err != nil {
 		t.Fatalf("Verify(_) failed: %v", err)
+	}
+}
+
+func TestNewVisaFromData_JKU(t *testing.T) {
+	d, _ := fakeVisaDataAndJWT(t)
+
+	jku := "https://oidc.example.org/.well-known/jwks"
+	p, err := NewVisaFromData(d, jku, RS256, testkeys.Default.Private, testkeys.Default.ID)
+	if err != nil {
+		t.Fatalf("NewPassportFromData(%v) failed: %v", d, err)
+	}
+	v, err := NewVisaFromJWT(p.JWT())
+	if err != nil {
+		t.Fatalf("NewVisaFromJWT(%v) failed: %v", p.JWT(), err)
+	}
+	if v.JKU() != jku {
+		t.Errorf("visa jku mismatch: got %q, want %q", v.JKU(), jku)
+	}
+}
+
+func TestNewVisaFromData_JKUFormat(t *testing.T) {
+	d, _ := fakeVisaDataAndJWT(t)
+
+	jku := "https://oidc.example.org/.well-known/jwks"
+	p, err := NewVisaFromData(d, jku, RS256, testkeys.Default.Private, testkeys.Default.ID)
+	if err != nil {
+		t.Fatalf("NewPassportFromData(%v) failed: %v", d, err)
+	}
+	v, err := NewVisaFromJWT(p.JWT())
+	if err != nil {
+		t.Fatalf("NewVisaFromJWT(%v) failed: %v", p.JWT(), err)
+	}
+	if v.Format() != DocumentVisaFormat {
+		t.Errorf("visa format mismatch: got %v, want %v", v.Format(), DocumentVisaFormat)
 	}
 }
 
@@ -133,7 +183,7 @@ func fakeVisaData() *VisaData {
 				{
 					{
 						Type:   "AffiliationAndRole",
-						Value:  "glob:faculty@*",
+						Value:  "pattern:faculty@*",
 						Source: "const:https://fake-broker.org",
 						By:     "const:system",
 					},
@@ -173,7 +223,7 @@ func fakeVisaDataJSON() string {
       [
         {
           "type": "AffiliationAndRole",
-          "value": "glob:faculty@*",
+          "value": "pattern:faculty@*",
           "source": "const:https://fake-broker.org",
           "by": "const:system"
         },

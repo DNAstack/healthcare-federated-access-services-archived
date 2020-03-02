@@ -28,11 +28,11 @@ import (
 	"golang.org/x/oauth2" /* copybara-comment */
 	"github.com/pborman/uuid" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter" /* copybara-comment: adapter */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
 
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
@@ -63,7 +63,7 @@ func extractBearerToken(r *http.Request) (string, error) {
 }
 
 func extractAuthCode(r *http.Request) (string, error) {
-	code := httputil.GetParam(r, "code")
+	code := httputil.QueryParam(r, "code")
 	if len(code) != 0 {
 		return code, nil
 	}
@@ -72,13 +72,13 @@ func extractAuthCode(r *http.Request) (string, error) {
 
 func parseTTL(maxAgeStr, ttlStr string) (time.Duration, error) {
 	if len(maxAgeStr) > 0 {
-		return common.ParseSeconds(maxAgeStr)
+		return timeutil.ParseSeconds(maxAgeStr)
 	}
 	if len(ttlStr) == 0 {
 		return defaultTTL, nil
 	}
 
-	ttl, err := common.ParseDuration(ttlStr, defaultTTL)
+	ttl, err := timeutil.ParseDuration(ttlStr)
 	if err != nil {
 		return 0, fmt.Errorf("TTL parameter %q format error: %v", ttlStr, err)
 	}
@@ -102,7 +102,7 @@ func extractTTL(maxAgeStr, ttlStr string) (time.Duration, error) {
 }
 
 func responseKeyFile(r *http.Request) bool {
-	return httputil.GetParam(r, "response_type") == "key-file-type"
+	return httputil.QueryParam(r, "response_type") == "key-file-type"
 }
 
 func (s *Service) generateResourceToken(ctx context.Context, clientID, resourceName, viewName, role string, ttl time.Duration, useKeyFile bool, id *ga4gh.Identity, cfg *pb.DamConfig, res *pb.Resource, view *pb.View) (*pb.ResourceTokens_ResourceToken, int, error) {
@@ -120,7 +120,7 @@ func (s *Service) generateResourceToken(ctx context.Context, clientID, resourceN
 	adapt := s.adapters.ByName[st.TargetAdapter]
 	var aggregates []*adapter.AggregateView
 	if adapt.IsAggregator() {
-		aggregates, err = s.resolveAggregates(res, view, cfg)
+		aggregates, err = resolveAggregates(res, view, cfg, s.adapters)
 		if err != nil {
 			return nil, http.StatusInternalServerError, err
 		}
@@ -159,8 +159,8 @@ func (s *Service) generateResourceToken(ctx context.Context, clientID, resourceN
 			Platform:    adapt.Platform(),
 			// TODO: remove these older fields
 			Name: resourceName,
-			View: s.makeView(viewName, view, res, cfg),
-			Ttl:  common.TtlString(ttl),
+			View: makeView(viewName, view, res, cfg, s.hidePolicyBasis, s.adapters),
+			Ttl:  timeutil.TTLString(ttl),
 		}, http.StatusOK, nil
 	}
 
@@ -168,11 +168,6 @@ func (s *Service) generateResourceToken(ctx context.Context, clientID, resourceN
 		return &pb.ResourceTokens_ResourceToken{KeyFile: result.Token}, http.StatusOK, nil
 	}
 	return nil, http.StatusBadRequest, fmt.Errorf("adapter cannot create key file format")
-}
-
-func sendRedirect(url string, r *http.Request, w http.ResponseWriter) {
-	httputil.AddCorsHeaders(w)
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
 }
 
 func (s *Service) oauthConf(brokerName string, broker *pb.TrustedPassportIssuer, clientSecret string, scopes []string) *oauth2.Config {
@@ -356,7 +351,7 @@ func (s *Service) auth(ctx context.Context, in authHandlerIn) (*authHandlerOut, 
 		ResponseKeyFile: in.responseKeyFile,
 		Resources:       list,
 		Challenge:       in.challenge,
-		EpochSeconds:    common.GetNowInUnix(),
+		EpochSeconds:    time.Now().Unix(),
 		Realm:           realm,
 	}
 
@@ -448,7 +443,7 @@ func (s *Service) loggedInForDatasetToken(ctx context.Context, id *ga4gh.Identit
 		if r.Realm != realm {
 			return nil, http.StatusConflict, fmt.Errorf("cannot authorize resources using different realms")
 		}
-		status, err := s.checkAuthorization(ctx, id, ttl, r.Resource, r.View, r.Role, cfg, state.ClientId)
+		status, err := checkAuthorization(ctx, id, ttl, r.Resource, r.View, r.Role, cfg, state.ClientId, s.ValidateCfgOpts())
 		if err != nil {
 			return nil, status, err
 		}
@@ -490,14 +485,14 @@ func (s *Service) loggedInForEndpointToken(id *ga4gh.Identity, state *pb.Resourc
 func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
 	tx, err := s.store.Tx(false)
 	if err != nil {
-		httputil.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.WriteError(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	defer tx.Finish()
 
 	auth, err := extractBearerToken(r)
 	if err != nil {
-		httputil.HandleError(http.StatusBadRequest, err, w)
+		httputil.WriteError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -512,16 +507,16 @@ func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
 
 	state, id, err := s.resourceTokenState(cart, tx)
 	if err != nil {
-		httputil.HandleError(http.StatusBadRequest, err, w)
+		httputil.WriteError(w, http.StatusBadRequest, err)
 		return
 	}
 	if len(state.Resources) == 0 {
-		httputil.HandleError(http.StatusBadRequest, fmt.Errorf("empty resource list"), w)
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Errorf("empty resource list"))
 		return
 	}
 	cfg, err := s.loadConfig(tx, state.Resources[0].Realm)
 	if err != nil {
-		httputil.HandleError(http.StatusBadRequest, err, w)
+		httputil.WriteError(w, http.StatusBadRequest, err)
 		return
 	}
 
@@ -530,31 +525,31 @@ func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
 	out := &pb.ResourceTokens{
 		Resources:    make(map[string]*pb.ResourceTokens_Descriptor),
 		Access:       make(map[string]*pb.ResourceTokens_ResourceToken),
-		EpochSeconds: uint32(common.GetNowInUnix()),
+		EpochSeconds: uint32(time.Now().Unix()),
 	}
 	for i, r := range state.Resources {
 		res, ok := cfg.Resources[r.Resource]
 		if !ok {
-			httputil.HandleError(http.StatusNotFound, fmt.Errorf("resource not found: %q", r.Resource), w)
+			httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource not found: %q", r.Resource))
 			return
 		}
 
 		view, ok := res.Views[r.View]
 		if !ok {
-			httputil.HandleError(http.StatusNotFound, fmt.Errorf("view %q not found for resource %q", r.View, r.Resource), w)
+			httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("view %q not found for resource %q", r.View, r.Resource))
 			return
 		}
 
 		tok, status, err := s.generateResourceToken(ctx, state.ClientId, r.Resource, r.View, r.Role, time.Duration(state.Ttl), keyFile, id, cfg, res, view)
 		if err != nil {
-			httputil.HandleError(status, err, w)
+			httputil.WriteError(w, status, err)
 			return
 		}
 		access := strconv.Itoa(i)
 
 		out.Resources[r.Url] = &pb.ResourceTokens_Descriptor{
-			Interfaces:  s.makeViewInterfaces(view, res, cfg),
-			Permissions: s.makeRoleCategories(view, r.Role, cfg),
+			Interfaces:  makeViewInterfaces(view, res, cfg, s.adapters),
+			Permissions: makeRoleCategories(view, r.Role, cfg),
 			Access:      access,
 		}
 		// TODO: remove these fields when no longer needed for the older interface
@@ -563,7 +558,7 @@ func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
 		tok.Ttl = ""
 		out.Access[access] = tok
 	}
-	httputil.SendResponse(out, w)
+	httputil.WriteProtoResp(w, out)
 }
 
 func (s *Service) resourceTokenState(stateID string, tx storage.Tx) (*pb.ResourceTokenRequestState, *ga4gh.Identity, error) {
@@ -577,7 +572,7 @@ func (s *Service) resourceTokenState(stateID string, tx storage.Tx) (*pb.Resourc
 		return nil, nil, fmt.Errorf("unauthorized")
 	}
 
-	now := common.GetNowInUnix()
+	now := time.Now().Unix()
 	if now-state.EpochSeconds > maxResourceStateSeconds {
 		return nil, nil, fmt.Errorf("authorization expired")
 	}
@@ -593,18 +588,18 @@ func (s *Service) LoggedInHandler(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	code, err := extractAuthCode(r)
 	if err != nil {
-		httputil.HandleError(http.StatusBadRequest, err, w)
+		httputil.WriteError(w, http.StatusBadRequest, err)
 		return
 	}
 
-	stateID := httputil.GetParam(r, "state")
+	stateID := httputil.QueryParam(r, "state")
 	if len(stateID) == 0 {
-		httputil.HandleError(http.StatusBadRequest, fmt.Errorf("request must include state"), w)
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Errorf("request must include state"))
 	}
 
 	out, st, err := s.loggedIn(r.Context(), loggedInHandlerIn{authCode: code, stateID: stateID})
 	if err != nil {
-		httputil.HandleError(st, err, w)
+		httputil.WriteError(w, st, err)
 		return
 	}
 

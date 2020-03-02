@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -29,8 +30,10 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"github.com/google/go-cmp/cmp" /* copybara-comment */
 	"github.com/google/go-cmp/cmp/cmpopts" /* copybara-comment */
+	"google.golang.org/grpc/codes" /* copybara-comment */
 	"github.com/go-openapi/strfmt" /* copybara-comment */
 	"google.golang.org/protobuf/testing/protocmp" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
@@ -96,6 +99,7 @@ func TestHandlers(t *testing.T) {
 		UseHydra:       useHydra,
 		HydraAdminURL:  hydraAdminURL,
 		HydraPublicURL: hydraPublicURL,
+		HydraSyncFreq:  time.Nanosecond,
 	})
 	tests := []test.HandlerTest{
 		// Realm tests.
@@ -145,88 +149,74 @@ func TestHandlers(t *testing.T) {
 			Status: http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/master/targetAdapters",
-			Output: `^.+$`,
-			Status: http.StatusOK,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/master/processes",
+			Persona: "admin",
+			Output:  `^\{"processes":\{.*"gckeys"`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/master/passportTranslators",
-			Output: `^.+$`,
-			Status: http.StatusOK,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/master/processes",
+			Persona: "admin",
+			Output:  `^.*exists`,
+			Status:  http.StatusConflict,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/master/damRoleCategories",
-			Output: `^.+$`,
-			Status: http.StatusOK,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/master/processes",
+			Persona: "admin",
+			Output:  `^.*not allowed`,
+			Status:  http.StatusBadRequest,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/master/testPersonas",
-			Output: `^.*dr_joe.*standardClaims.*"iss":"Issuer of the Passport".*$`,
-			Status: http.StatusOK,
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/master/processes",
+			Persona: "admin",
+			Output:  `^.*not allowed`,
+			Status:  http.StatusBadRequest,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/master/processes",
-			Output: `^\{"processes":\{.*"gckeys"`,
-			Status: http.StatusOK,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/master/processes",
+			Persona: "admin",
+			Output:  `^.*not allowed`,
+			Status:  http.StatusBadRequest,
 		},
 		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/master/processes",
-			Output: `^.*exists`,
-			Status: http.StatusConflict,
+			Method:  "GET",
+			Path:    "/dam/v1alpha/master/processes/gckeys",
+			Persona: "admin",
+			Output:  `^\{"process":\{.*"processName":"gckeys"`,
+			Status:  http.StatusOK,
 		},
 		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/master/processes",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
+			Method:  "POST",
+			Path:    "/dam/v1alpha/master/processes/gckeys",
+			Persona: "admin",
+			Output:  `^.*exists`,
+			Status:  http.StatusConflict,
 		},
 		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/master/processes",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/master/processes/gckeys",
+			Persona: "admin",
+			Output:  `^.*not allowed`,
+			Status:  http.StatusBadRequest,
 		},
 		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/master/processes",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/master/processes/gckeys",
+			Persona: "admin",
+			Output:  `^.*not allowed`,
+			Status:  http.StatusBadRequest,
 		},
 		{
-			Method: "GET",
-			Path:   "/dam/v1alpha/master/processes/gckeys",
-			Output: `^\{"process":\{.*"processName":"gckeys"`,
-			Status: http.StatusOK,
-		},
-		{
-			Method: "POST",
-			Path:   "/dam/v1alpha/master/processes/gckeys",
-			Output: `^.*exists`,
-			Status: http.StatusConflict,
-		},
-		{
-			Method: "PUT",
-			Path:   "/dam/v1alpha/master/processes/gckeys",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Method: "PATCH",
-			Path:   "/dam/v1alpha/master/processes/gckeys",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
-		},
-		{
-			Method: "DELETE",
-			Path:   "/dam/v1alpha/master/processes/gckeys",
-			Output: `^.*not allowed`,
-			Status: http.StatusBadRequest,
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/master/processes/gckeys",
+			Persona: "admin",
+			Output:  `^.*not allowed`,
+			Status:  http.StatusBadRequest,
 		},
 		{
 			Method:  "GET",
@@ -537,7 +527,7 @@ func TestHandlers(t *testing.T) {
 			Method:  "POST",
 			Path:    "/dam/v1alpha/test/config/policies/new-policy",
 			Persona: "admin",
-			Input:   `{"item":{"anyOf":[{"allOf":[{"type":"BonaFide","value":"const:https://test.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
+			Input:   `{"item":{"anyOf":[{"allOf":[{"type":"ResearcherStatus","value":"const:https://test.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
 			Output:  ``,
 			Status:  http.StatusOK,
 		},
@@ -545,14 +535,14 @@ func TestHandlers(t *testing.T) {
 			Method:  "PUT",
 			Path:    "/dam/v1alpha/test/config/policies/new-policy",
 			Persona: "admin",
-			Input:   `{"item":{"anyOf":[{"allOf":[{"type":"BonaFide","value":"const:https://test2.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
+			Input:   `{"item":{"anyOf":[{"allOf":[{"type":"ResearcherStatus","value":"const:https://test2.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
 			Status:  http.StatusOK,
 		},
 		{
 			Method:  "PATCH",
 			Path:    "/dam/v1alpha/test/config/policies/new-policy",
 			Persona: "admin",
-			Input:   `{"item":{"anyOf":[{"allOf":[{"type":"BonaFide","value":"const:https://test3.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
+			Input:   `{"item":{"anyOf":[{"allOf":[{"type":"ResearcherStatus","value":"const:https://test3.org"}]}],"ui":{"label":"foo","description":"bar"}}}`,
 			Status:  http.StatusOK,
 		},
 		{
@@ -564,7 +554,7 @@ func TestHandlers(t *testing.T) {
 		},
 		{
 			Method:  "GET",
-			Path:    "/dam/v1alpha/test/config/claimDefinitions/BonaFide",
+			Path:    "/dam/v1alpha/test/config/claimDefinitions/ResearcherStatus",
 			Persona: "admin",
 			Output:  `^.*"ui"`,
 			Status:  http.StatusOK,
@@ -812,7 +802,7 @@ func TestHandlers(t *testing.T) {
 						},
 						"ga4ghAssertions": [
 							{
-								"type": "BonaFide",
+								"type": "ResearcherStatus",
 								"source": "https://example.edu",
 								"value": "https://www.nature.com/articles/s41431-018-0219-y",
 								"assertedDuration": "1d",
@@ -838,6 +828,36 @@ func TestHandlers(t *testing.T) {
 			Output: `^.*"removeAccess":\["ga4gh-apis/`,
 			Status: http.StatusBadRequest,
 		},
+		{
+			Method:  "PUT",
+			Path:    "/dam/v1alpha/test/clients:sync",
+			Persona: "non-admin",
+			Output:  `^.*not allowed`,
+			Status:  http.StatusBadRequest,
+		},
+		{
+			Method:       "PUT",
+			Path:         "/dam/v1alpha/test/clients:sync",
+			Persona:      "non-admin",
+			ClientID:     "bad",
+			ClientSecret: "worse",
+			Output:       `^.*unrecognized`,
+			Status:       http.StatusUnauthorized,
+		},
+		{
+			Method:  "PATCH",
+			Path:    "/dam/v1alpha/test/clients:sync",
+			Persona: "non-admin",
+			Output:  `^.*not allowed`,
+			Status:  http.StatusBadRequest,
+		},
+		{
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/clients:sync",
+			Persona: "non-admin",
+			Output:  `^.*not allowed`,
+			Status:  http.StatusBadRequest,
+		},
 	}
 	test.HandlerTests(t, s.Handler, tests, hydraPublicURL, server.Config())
 }
@@ -849,15 +869,17 @@ func TestMinConfig(t *testing.T) {
 		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
 	}
 	opts := &Options{
-		HTTPClient:     server.Client(),
-		Domain:         "test.org",
-		ServiceName:    "dam",
-		DefaultBroker:  "no-broker",
-		Store:          store,
-		Warehouse:      nil,
-		UseHydra:       useHydra,
-		HydraAdminURL:  hydraAdminURL,
-		HydraPublicURL: hydraPublicURL,
+		HTTPClient:       server.Client(),
+		Domain:           "test.org",
+		ServiceName:      "dam",
+		DefaultBroker:    "no-broker",
+		Store:            store,
+		Warehouse:        nil,
+		UseHydra:         useHydra,
+		HydraAdminURL:    hydraAdminURL,
+		HydraPublicURL:   hydraPublicURL,
+		HidePolicyBasis:  true,
+		HideRejectDetail: true,
 	}
 	s := NewService(opts)
 	verifyService(t, s.domainURL, opts.Domain, "domainURL")
@@ -866,6 +888,8 @@ func TestMinConfig(t *testing.T) {
 	verifyService(t, strconv.FormatBool(s.useHydra), strconv.FormatBool(opts.UseHydra), "useHydra")
 	verifyService(t, s.hydraAdminURL, opts.HydraAdminURL, "hydraAdminURL")
 	verifyService(t, s.hydraPublicURL, opts.HydraPublicURL, "hydraPublicURL")
+	verifyServiceBool(t, s.hidePolicyBasis, opts.HidePolicyBasis, "hidePolicyBasis")
+	verifyServiceBool(t, s.hideRejectDetail, opts.HideRejectDetail, "hideRejectDetail")
 
 	tests := []test.HandlerTest{
 		{
@@ -889,8 +913,16 @@ func TestMinConfig(t *testing.T) {
 }
 
 func verifyService(t *testing.T, got, want, field string) {
+	t.Helper()
 	if got != want {
 		t.Errorf("service %q mismatch: got %q, want %q", field, got, want)
+	}
+}
+
+func verifyServiceBool(t *testing.T, got, want bool, field string) {
+	t.Helper()
+	if got != want {
+		t.Errorf("service %q mismatch: got %v, want %v", field, got, want)
 	}
 }
 
@@ -912,7 +944,20 @@ func (contextMatcher) String() string {
 	return "context has requested_ttl"
 }
 
-func TestCheckAuthorization(t *testing.T) {
+type authTestContext struct {
+	dam      *Service
+	ctx      context.Context
+	id       *ga4gh.Identity
+	ttl      time.Duration
+	cfg      *pb.DamConfig
+	resource string
+	view     string
+	role     string
+}
+
+func setupAuthorizationTest(t *testing.T) *authTestContext {
+	t.Helper()
+
 	store := storage.NewMemoryStorage("dam", "testdata/config")
 	server, err := fakeoidcissuer.New(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config", false)
 	if err != nil {
@@ -920,6 +965,7 @@ func TestCheckAuthorization(t *testing.T) {
 	}
 	ctx := server.ContextWithClient(context.Background())
 	s := NewService(&Options{
+		HTTPClient:     server.Client(),
 		Domain:         "test.org",
 		ServiceName:    "dam",
 		DefaultBroker:  "no-broker",
@@ -943,22 +989,48 @@ func TestCheckAuthorization(t *testing.T) {
 		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
 	}
 
-	resName := "ga4gh-apis"
-	viewName := "gcs_read"
-	role := "viewer"
-	ttl := time.Hour
-
 	id, err := s.upstreamTokenToPassportIdentity(ctx, cfg, nil, string(acTok), test.TestClientID)
 	if err != nil {
 		t.Fatalf("unable to obtain passport identity: %v", err)
 	}
 
-	status, err := s.checkAuthorization(ctx, id, ttl, resName, viewName, role, cfg, test.TestClientID)
+	return &authTestContext{
+		dam:      s,
+		ctx:      ctx,
+		id:       id,
+		ttl:      time.Hour,
+		cfg:      cfg,
+		resource: "ga4gh-apis",
+		view:     "gcs_read",
+		role:     "viewer",
+	}
+}
+
+func TestCheckAuthorization(t *testing.T) {
+	auth := setupAuthorizationTest(t)
+	status, err := checkAuthorization(auth.ctx, auth.id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts())
 	if status != http.StatusOK || err != nil {
-		t.Errorf("checkAuthorization(id, %v, %q, %q, %q, cfg, %q) failed, expected %q, got %q: %v", ttl, resName, viewName, role, test.TestClientID, http.StatusOK, status, err)
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got %d: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, http.StatusOK, status, err)
 	}
 
 	// TODO: we need more tests for other condition in checkAuthorization()
+}
+
+func TestCheckAuthorization_Untrusted(t *testing.T) {
+	// Perform exactly the same call as TestCheckAuthorization() except remove trust of the visa issuer string
+	auth := setupAuthorizationTest(t)
+	delete(auth.cfg.TrustedPassportIssuers, "test")
+	delete(auth.cfg.TrustedPassportIssuers, "testBroker")
+
+	id, err := auth.dam.populateIdentityVisas(auth.ctx, auth.id, auth.cfg)
+	if err != nil {
+		t.Fatalf("unable to obtain passport identity: %v", err)
+	}
+
+	status, err := checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts())
+	if status != http.StatusForbidden || err == nil {
+		t.Errorf("using untrusted issuer: checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got %d: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, http.StatusForbidden, status, err)
+	}
 }
 
 func setupHydraTest() (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Server, *persona.Server, error) {
@@ -981,6 +1053,7 @@ func setupHydraTest() (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Serve
 		UseHydra:       useHydra,
 		HydraAdminURL:  hydraAdminURL,
 		HydraPublicURL: hydraPublicURL,
+		HydraSyncFreq:  time.Nanosecond,
 	})
 
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
@@ -1199,6 +1272,11 @@ func TestLogin_Hydra_Error(t *testing.T) {
 			name:       "second resource invalid",
 			authParams: "resource=" + ga4ghGCSViewer + "&resource=invalid",
 			respCode:   http.StatusBadRequest,
+		},
+		{
+			name:       "resource not at same realm",
+			authParams: "resource=" + ga4ghGCSViewer + "&resource=" + strings.ReplaceAll(ga4ghGCSViewer, "master", "test"),
+			respCode:   http.StatusConflict,
 		},
 	}
 
@@ -1649,27 +1727,34 @@ func TestResourceTokens_CartNotExistsInStorage(t *testing.T) {
 	}
 }
 
-func sendClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
+func damSendTestRequest(t *testing.T, method, path, pathname, personaName, clientID, clientSecret string, data proto.Message, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
 	if iss.Config() != nil {
-		p = iss.Config().TestPersonas[pname]
+		p = iss.Config().TestPersonas[personaName]
 	}
 
-	tok, _, err := persona.NewAccessToken(pname, hydraPublicURL, clientID, noScope, p)
+	tok, _, err := persona.NewAccessToken(personaName, hydraPublicURL, clientID, noScope, p)
 	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
+		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", personaName, hydraPublicURL, err)
 	}
 
-	path := strings.ReplaceAll(clientPath, "{realm}", "test")
-	path = strings.ReplaceAll(path, "{name}", clientName)
+	var buf bytes.Buffer
+	if data != nil {
+		if err := (&jsonpb.Marshaler{}).Marshal(&buf, data); err != nil {
+			t.Fatal(fmt.Errorf("marshaling message %+v failed: %v", data, err))
+		}
+	}
+
+	path = strings.ReplaceAll(path, "{realm}", "test")
+	path = strings.ReplaceAll(path, "{name}", pathname)
 	q := url.Values{
 		"client_id":     []string{clientID},
 		"client_secret": []string{clientSecret},
 	}
 	h := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
-	return testhttp.SendTestRequest(t, s.Handler, http.MethodGet, path, q, nil, h)
+	return testhttp.SendTestRequest(t, s.Handler, method, path, q, &buf, h)
 }
 
 func TestClients_Get(t *testing.T) {
@@ -1682,7 +1767,7 @@ func TestClients_Get(t *testing.T) {
 	pname := "non-admin"
 	cli := cfg.Clients[clientName]
 
-	resp := sendClientsGet(t, pname, clientName, cli.ClientId, sec.ClientSecrets[cli.ClientId], s, iss)
+	resp := damSendTestRequest(t, http.MethodGet, clientPath, clientName, pname, cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
 
 	got := &cpb.ClientResponse{}
 	if err := jsonpb.Unmarshal(resp.Body, got); err != nil && err != io.EOF {
@@ -1723,12 +1808,77 @@ func TestClients_Get_Error(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pname := "non-admin"
 
-			resp := sendClientsGet(t, pname, tc.clientName, test.TestClientID, test.TestClientSecret, s, iss)
+			resp := damSendTestRequest(t, http.MethodGet, clientPath, tc.clientName, pname, test.TestClientID, test.TestClientSecret, nil, s, iss)
 
 			if resp.StatusCode != tc.status {
 				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
 			}
 		})
+	}
+}
+
+func TestSyncClients_Get(t *testing.T) {
+	s, cfg, sec, _, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+	cli := cfg.Clients[clientName]
+
+	resp := damSendTestRequest(t, http.MethodGet, syncClientsPath, clientName, "", cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
+
+	wantStatus := http.StatusOK
+	if resp.StatusCode != wantStatus {
+		t.Errorf("syncClients resp.StatusCode = %d, want %d", resp.StatusCode, wantStatus)
+	}
+	got := &cpb.ClientState{}
+	if err := jsonpb.Unmarshal(resp.Body, got); err != nil && err != io.EOF {
+		t.Fatalf("jsonpb.Unmarshal() failed: %v", err)
+	}
+	if codes.Code(got.Status.Code) != codes.OK {
+		t.Errorf("syncClients status code mismatch: got code %d, want code %d, got body: %+v", got.Status.Code, codes.OK, got)
+	}
+}
+
+func TestSyncClients_Post(t *testing.T) {
+	s, cfg, sec, _, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client"
+	cli := cfg.Clients[clientName]
+
+	resp := damSendTestRequest(t, http.MethodPost, syncClientsPath, clientName, "", cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
+
+	wantStatus := http.StatusOK
+	if resp.StatusCode != wantStatus {
+		t.Errorf("syncClients resp.StatusCode = %d, want %d", resp.StatusCode, wantStatus)
+	}
+	got := &cpb.ClientState{}
+	if err := jsonpb.Unmarshal(resp.Body, got); err != nil && err != io.EOF {
+		t.Fatalf("jsonpb.Unmarshal() failed: %v", err)
+	}
+	if codes.Code(got.Status.Code) != codes.OK {
+		t.Errorf("syncClients status code mismatch: got code %d, want code %d, got body: %+v", got.Status.Code, codes.OK, got)
+	}
+}
+
+func TestSyncClients_ScopeError(t *testing.T) {
+	s, cfg, sec, _, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	clientName := "test_client2"
+	cli := cfg.Clients[clientName]
+
+	resp := damSendTestRequest(t, http.MethodGet, syncClientsPath, clientName, "", cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
+
+	wantStatus := http.StatusForbidden
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("clientsSync resp.StatusCode mismatch: got %d, want %d", resp.StatusCode, wantStatus)
 	}
 }
 
@@ -2111,30 +2261,7 @@ func TestConfigClients_Create_Hydra_Error(t *testing.T) {
 func sendConfigClientsUpdate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
-	var p *cpb.TestPersona
-	if iss.Config() != nil {
-		p = iss.Config().TestPersonas[pname]
-	}
-
-	tok, _, err := persona.NewAccessToken(pname, hydraPublicURL, clientID, noScope, p)
-	if err != nil {
-		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
-	}
-
-	m := jsonpb.Marshaler{}
-	var buf bytes.Buffer
-	if err := m.Marshal(&buf, &cpb.ConfigClientRequest{Item: cli}); err != nil {
-		t.Fatal(err)
-	}
-
-	path := strings.ReplaceAll(configClientPath, "{realm}", "test")
-	path = strings.ReplaceAll(path, "{name}", clientName)
-	q := url.Values{
-		"client_id":     []string{clientID},
-		"client_secret": []string{clientSecret},
-	}
-	h := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
-	return testhttp.SendTestRequest(t, s.Handler, http.MethodPatch, path, q, &buf, h)
+	return damSendTestRequest(t, http.MethodPatch, configClientPath, clientName, pname, clientID, clientSecret, &cpb.ConfigClientRequest{Item: cli}, s, iss)
 }
 
 func TestConfigClients_Update_Success(t *testing.T) {
@@ -2474,6 +2601,82 @@ func TestConfigClients_Delete_Hydra_Error(t *testing.T) {
 	}
 	if diff := cmp.Diff(cfg, conf, protocmp.Transform()); len(diff) != 0 {
 		t.Errorf("config should not update, (-want, +got): %s", diff)
+	}
+}
+
+func TestConfig_Hydra_Put(t *testing.T) {
+	s, _, _, h, iss, err := setupHydraTest()
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	cfg, err := s.loadConfig(nil, "test")
+	if err != nil {
+		t.Fatalf(`s.loadConfig(_, "test") failed %v`, err)
+	}
+	sec, err := s.loadSecrets(nil)
+	if err != nil {
+		t.Fatalf("s.loadSecrets(_) failed %v", err)
+	}
+
+	clientName := "test_client"
+	cli, ok := cfg.Clients[clientName]
+	if !ok {
+		t.Fatalf("client %q not defined in config", clientName)
+	}
+
+	existing := []*hydraapi.Client{}
+	for name, c := range cfg.Clients {
+		existing = append(existing, &hydraapi.Client{
+			Name:          name,
+			ClientID:      c.ClientId,
+			Secret:        sec.ClientSecrets[c.ClientId],
+			RedirectURIs:  c.RedirectUris,
+			Scope:         defaultScope,
+			GrantTypes:    defaultGrantTypes,
+			ResponseTypes: defaultResponseTypes,
+		})
+	}
+	h.ListClientsResp = existing
+	h.UpdateClientResp = &hydraapi.Client{
+		ClientID:      cli.ClientId,
+		Name:          clientName,
+		Secret:        "secret",
+		RedirectURIs:  cli.RedirectUris,
+		Scope:         defaultScope,
+		GrantTypes:    defaultGrantTypes,
+		ResponseTypes: defaultResponseTypes,
+	}
+
+	pname := "admin"
+	updatedScope := cli.Scope + " new-scope"
+	cli.Scope = updatedScope
+
+	resp := damSendTestRequest(t, http.MethodPut, configPath, "", pname, test.TestClientID, test.TestClientSecret, &pb.ConfigRequest{Item: cfg}, s, iss)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := ioutil.ReadAll(resp.Body)
+		t.Fatalf("damSendTestRequest() status mismatch: got %d, want %d, body: %v", resp.StatusCode, http.StatusOK, string(body))
+	}
+
+	got := &pb.ConfigResponse{}
+	if err := jsonpb.Unmarshal(resp.Body, got); err != nil && err != io.EOF {
+		t.Fatalf("jsonpb.Unmarshal() failed: %v", err)
+	}
+
+	wantReq := &hydraapi.Client{
+		Name:          clientName,
+		GrantTypes:    cli.GrantTypes,
+		ResponseTypes: cli.ResponseTypes,
+		Scope:         updatedScope,
+		RedirectURIs:  cli.RedirectUris,
+	}
+	if diff := diffOfHydraClientIgnoreClientIDAndSecret(wantReq, h.UpdateClientReq); len(diff) > 0 {
+		t.Errorf("client (-want, +got): %s", diff)
+	}
+
+	wantResp := &pb.ConfigResponse{}
+	if diff := cmp.Diff(wantResp, got, protocmp.Transform()); len(diff) > 0 {
+		t.Errorf("response (-want, +got): %s", diff)
 	}
 }
 

@@ -25,7 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"reflect"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -33,39 +33,45 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/auth"        /* copybara-comment: auth */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/check"       /* copybara-comment: check */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"      /* copybara-comment: common */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"       /* copybara-comment: ga4gh */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil"    /* copybara-comment: httputil */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra"       /* copybara-comment: hydra */
+	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"cloud.google.com/go/logging" /* copybara-comment: logging */
+	"github.com/google/go-cmp/cmp" /* copybara-comment */
+	"github.com/gorilla/mux" /* copybara-comment */
+	"google.golang.org/grpc/codes" /* copybara-comment */
+	"google.golang.org/grpc/status" /* copybara-comment */
+	"golang.org/x/oauth2" /* copybara-comment */
+	"github.com/pborman/uuid" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/auth" /* copybara-comment: auth */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/check" /* copybara-comment: check */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/permissions" /* copybara-comment: permissions */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/srcutil"     /* copybara-comment: srcutil */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"     /* copybara-comment: storage */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"  /* copybara-comment: translator */
-	"github.com/golang/protobuf/jsonpb"                                                   /* copybara-comment */
-	"github.com/golang/protobuf/proto"                                                    /* copybara-comment */
-	"github.com/gorilla/mux"                                                              /* copybara-comment */
-	"golang.org/x/oauth2"                                                                 /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/srcutil" /* copybara-comment: srcutil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/strutil" /* copybara-comment: strutil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
 
+	glog "github.com/golang/glog" /* copybara-comment */
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1"      /* copybara-comment: go_proto */
-	glog "github.com/golang/glog"                                                             /* copybara-comment */
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1" /* copybara-comment: go_proto */
 )
 
 const (
-	keyID = "kid"
+	keyID = "visa"
 
 	maxClaimsLength = 1900
 
+	linkedIdentitiesMaxLifepan = time.Hour
+
 	loginPageFile              = "pages/login.html"
-	loginPageInfoFile          = "pages/login-info.html"
-	clientLoginPageFile        = "pages/client_login.html"
-	informationReleasePageFile = "pages/information_release.html"
-	testPageFile               = "pages/test.html"
-	tokenFlowTestPageFile      = "pages/new-flow-test.html"
-	hydraICTestPageFile        = "pages/hydra-ic-test.html"
+	loginPageInfoFile          = "pages/ic/login_info.html"
+	clientLoginPageFile        = "pages/ic/client_login.html"
+	informationReleasePageFile = "pages/ic/inforelease.html"
 	staticDirectory            = "assets/serve/"
 
 	serviceTitle            = "Identity Concentrator"
@@ -140,7 +146,7 @@ var (
 		Label:        "Default Passport Token TTL",
 		Description:  "The duration of a passport TTL when no 'ttl' parameter is provided to the token minting endpoint",
 		Type:         "string:duration",
-		Regexp:       common.DurationRegexpString,
+		Regexp:       timeutil.DurationREStr,
 		Min:          "10s",
 		Max:          "180d",
 		DefaultValue: "10m",
@@ -149,7 +155,7 @@ var (
 		Label:        "Maximum Passport Token TTL",
 		Description:  "Passport requests with a 'ttl' parameter exceeding this value will be refused",
 		Type:         "string:duration",
-		Regexp:       common.DurationRegexpString,
+		Regexp:       timeutil.DurationREStr,
 		Min:          "10s",
 		Max:          "180d",
 		DefaultValue: "10m",
@@ -158,7 +164,7 @@ var (
 		Label:        "Authorization Code TTL",
 		Description:  "The valid duration of an authorization code requested from the login flow of the API (auth codes must be converted into another token before this expiry)",
 		Type:         "string:duration",
-		Regexp:       common.DurationRegexpString,
+		Regexp:       timeutil.DurationREStr,
 		Min:          "10s",
 		Max:          "60m",
 		DefaultValue: "10m",
@@ -167,7 +173,7 @@ var (
 		Label:        "Access Token TTL",
 		Description:  "The valid duration of an access token (for authentication and authorization purposes) requested from the login flow of the API",
 		Type:         "string:duration",
-		Regexp:       common.DurationRegexpString,
+		Regexp:       timeutil.DurationREStr,
 		Min:          "10s",
 		Max:          "180d",
 		DefaultValue: "1h",
@@ -176,7 +182,7 @@ var (
 		Label:        "Refresh Token TTL",
 		Description:  "The valid duration of an refresh token requested from the refresh token flow of the API",
 		Type:         "string:duration",
-		Regexp:       common.DurationRegexpString,
+		Regexp:       timeutil.DurationREStr,
 		Min:          "10s",
 		Max:          "180d",
 		DefaultValue: "12h",
@@ -185,7 +191,7 @@ var (
 		Label:        "Claim TTL Cap",
 		Description:  "A maximum duration of how long individual claims can be cached and used before requiring them to be refreshed from the authority issuing the claim",
 		Type:         "string:duration",
-		Regexp:       common.DurationRegexpString,
+		Regexp:       timeutil.DurationREStr,
 		Min:          "10s",
 		Max:          "9125d",
 		DefaultValue: "90d",
@@ -198,8 +204,6 @@ var (
 
 	// skipURLValidationInTokenURL is for skipping URL validation for TokenUrl in format "FOO_BAR=https://...".
 	skipURLValidationInTokenURL = regexp.MustCompile("^[A-Z_]*=https://.*$")
-
-	importDefault = os.Getenv("IMPORT")
 )
 
 type Service struct {
@@ -218,7 +222,9 @@ type Service struct {
 	hydraPublicURL        string
 	translators           sync.Map
 	encryption            Encryption
+	logger                *logging.Client
 	useHydra              bool
+	hydraSyncFreq         time.Duration
 }
 
 type ServiceHandler struct {
@@ -246,12 +252,16 @@ type Options struct {
 	Store storage.Store
 	// Encryption: the encryption use for storing tokens safely in database.
 	Encryption Encryption
+	// Logger: audit log logger
+	Logger *logging.Client
 	// UseHydra: service use hydra integrated OIDC.
 	UseHydra bool
 	// HydraAdminURL: hydra admin endpoints url.
 	HydraAdminURL string
 	// HydraPublicURL: hydra public endpoints url.
 	HydraPublicURL string
+	// HydraSyncFreq: how often to allow clients:sync to be called
+	HydraSyncFreq time.Duration
 }
 
 // NewService create new IC service.
@@ -274,6 +284,10 @@ func NewService(params *Options) *Service {
 	if err != nil {
 		glog.Fatalf("cannot load information release page: %v", err)
 	}
+	syncFreq := time.Minute
+	if params.HydraSyncFreq > 0 {
+		syncFreq = params.HydraSyncFreq
+	}
 
 	perms, err := permissions.LoadPermissions(params.Store)
 	if err != nil {
@@ -294,7 +308,9 @@ func NewService(params *Options) *Service {
 		hydraAdminURL:         params.HydraAdminURL,
 		hydraPublicURL:        params.HydraPublicURL,
 		encryption:            params.Encryption,
+		logger:                params.Logger,
 		useHydra:              params.UseHydra,
+		hydraSyncFreq:         syncFreq,
 	}
 
 	if s.httpClient == nil {
@@ -307,8 +323,14 @@ func NewService(params *Options) *Service {
 	}); err != nil {
 		glog.Fatalf(err.Error())
 	}
-	if err = s.ImportFiles(importDefault); err != nil {
-		glog.Fatalf("cannot initialize storage: %v", err)
+	exists, err := configExists(params.Store)
+	if err != nil {
+		glog.Fatalf("cannot use storage layer: %v", err)
+	}
+	if !exists {
+		if err = ImportConfig(params.Store, params.ServiceName, nil); err != nil {
+			glog.Fatalf("cannot import configs to service %q: %v", params.ServiceName, err)
+		}
 	}
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
@@ -330,6 +352,8 @@ func NewService(params *Options) *Service {
 		}
 	}
 
+	s.syncToHydra(cfg.Clients, secrets.ClientSecrets, 30*time.Second, nil)
+
 	sh.s = s
 	sh.Handler = mux.NewRouter()
 	registerHandlers(sh.Handler, s)
@@ -337,23 +361,23 @@ func NewService(params *Options) *Service {
 }
 
 func getClientID(r *http.Request) string {
-	cid := httputil.GetParam(r, "client_id")
+	cid := httputil.QueryParam(r, "client_id")
 	if len(cid) > 0 {
 		return cid
 	}
-	return httputil.GetParam(r, "clientId")
+	return httputil.QueryParam(r, "clientId")
 }
 
 func getClientSecret(r *http.Request) string {
-	cs := httputil.GetParam(r, "client_secret")
+	cs := httputil.QueryParam(r, "client_secret")
 	if len(cs) > 0 {
 		return cs
 	}
-	return httputil.GetParam(r, "clientSecret")
+	return httputil.QueryParam(r, "clientSecret")
 }
 
 func getNonce(r *http.Request) (string, error) {
-	n := httputil.GetParam(r, "nonce")
+	n := httputil.QueryParam(r, "nonce")
 	if len(n) > 0 {
 		return n, nil
 	}
@@ -363,7 +387,7 @@ func getNonce(r *http.Request) (string, error) {
 }
 
 func extractState(r *http.Request) (string, error) {
-	n := httputil.GetParam(r, "state")
+	n := httputil.QueryParam(r, "state")
 	if len(n) > 0 {
 		return n, nil
 	}
@@ -374,7 +398,7 @@ func extractState(r *http.Request) (string, error) {
 
 func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
-		httputil.AddCorsHeaders(w)
+		httputil.WriteCorsHeaders(w)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -456,7 +480,7 @@ func (s *Service) buildState(idpName, realm, scope, challenge string, tx storage
 		Challenge: challenge,
 	}
 
-	id := common.GenerateGUID()
+	id := uuid.New()
 
 	err := s.store.WriteTx(storage.LoginStateDatatype, storage.DefaultRealm, storage.DefaultUser, id, storage.LatestRev, login, nil, tx)
 	if err != nil {
@@ -506,13 +530,13 @@ func (s *Service) login(in loginIn, w http.ResponseWriter, r *http.Request, cfg 
 
 	idp, ok := cfg.IdentityProviders[in.idpName]
 	if !ok {
-		httputil.HandleError(http.StatusNotFound, fmt.Errorf("login service %q not found", in.idpName), w)
+		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("login service %q not found", in.idpName))
 		return
 	}
 
 	idpc, state, err := s.idpAuthorize(in, idp, cfg, nil)
 	if err != nil {
-		httputil.HandleError(http.StatusBadRequest, err, w)
+		httputil.WriteError(w, http.StatusBadRequest, err)
 		return
 	}
 	resType := idp.ResponseType
@@ -530,16 +554,16 @@ func (s *Service) login(in loginIn, w http.ResponseWriter, r *http.Request, cfg 
 	url := idpc.AuthCodeURL(state, options...)
 	url = strings.Replace(url, "${CLIENT_ID}", idp.ClientId, -1)
 	url = strings.Replace(url, "${REDIRECT_URI}", buildRedirectNonOIDC(idp, idpc, state), -1)
-	httputil.SendRedirect(url, r, w)
+	httputil.WriteRedirect(w, r, url)
 }
 
 func getStateRedirect(r *http.Request) (string, error) {
-	redirect, err := url.Parse(httputil.GetParam(r, "redirect_uri"))
+	redirect, err := url.Parse(httputil.QueryParam(r, "redirect_uri"))
 	if err != nil {
 		return "", fmt.Errorf("redirect_uri missing or invalid: %v", err)
 	}
 	q := redirect.Query()
-	if clientState := httputil.GetParam(r, "state"); len(clientState) > 0 {
+	if clientState := httputil.QueryParam(r, "state"); len(clientState) > 0 {
 		q.Set("state", clientState)
 	}
 	redirect.RawQuery = q.Encode()
@@ -565,7 +589,7 @@ func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, cli
 	realm := getRealm(r)
 	lookup, err := s.accountLookup(realm, id.Subject, tx)
 	if err != nil {
-		httputil.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.WriteError(w, http.StatusServiceUnavailable, err)
 		return
 	}
 	var subject string
@@ -573,24 +597,23 @@ func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, cli
 		subject = lookup.Subject
 		acct, _, err := s.loadAccount(subject, realm, tx)
 		if err != nil {
-			httputil.HandleError(http.StatusServiceUnavailable, err, w)
+			httputil.WriteError(w, http.StatusServiceUnavailable, err)
 			return
 		}
-		claims, err := s.accountLinkToClaims(r.Context(), acct, id.Subject, cfg, secrets)
-		visas, err := s.accountLinkToVisas(r.Context(), acct, id.Subject, cfg, secrets)
+		visas, err := s.accountLinkToVisas(r.Context(), acct, id.Subject, provider, cfg, secrets)
 		if err != nil {
-			httputil.HandleError(http.StatusServiceUnavailable, err, w)
+			httputil.WriteError(w, http.StatusServiceUnavailable, err)
 			return
 		}
-		if !claimsAreEqual(claims, id.GA4GH) || !visasAreEqual(visas, id.VisaJWTs) {
+		if !visasAreEqual(visas, id.VisaJWTs) {
 			// Refresh the claims in the storage layer.
-			if err := s.populateAccountClaims(r.Context(), acct, id, provider); err != nil {
-				httputil.HandleError(http.StatusServiceUnavailable, err, w)
+			if err := s.populateAccountVisas(r.Context(), acct, id, provider); err != nil {
+				httputil.WriteError(w, http.StatusServiceUnavailable, err)
 				return
 			}
 			err := s.saveAccount(nil, acct, "REFRESH claims "+id.Subject, r, id.Subject, tx)
 			if err != nil {
-				httputil.HandleError(http.StatusServiceUnavailable, err, w)
+				httputil.WriteError(w, http.StatusServiceUnavailable, err)
 				return
 			}
 		}
@@ -598,12 +621,12 @@ func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, cli
 		// Create an account for the identity automatically.
 		acct, err := s.newAccountWithLink(r.Context(), id, provider, cfg)
 		if err != nil {
-			httputil.HandleError(http.StatusServiceUnavailable, err, w)
+			httputil.WriteError(w, http.StatusServiceUnavailable, err)
 			return
 		}
 
 		if err = s.saveNewLinkedAccount(acct, id, "New Account", r, tx, lookup); err != nil {
-			httputil.HandleError(http.StatusServiceUnavailable, err, w)
+			httputil.WriteError(w, http.StatusServiceUnavailable, err)
 			return
 		}
 		subject = acct.Properties.Subject
@@ -623,11 +646,11 @@ func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, cli
 		LoginHint: loginHint,
 	}
 
-	stateID := common.GenerateGUID()
+	stateID := uuid.New()
 
 	err = s.store.WriteTx(storage.AuthTokenStateDatatype, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, auth, nil, tx)
 	if err != nil {
-		httputil.HandleError(http.StatusInternalServerError, err, w)
+		httputil.WriteError(w, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -642,8 +665,8 @@ func extractClientName(cfg *pb.IcConfig, clientID string) string {
 	clientName := "the application"
 	for name, cli := range cfg.Clients {
 		if cli.ClientId == clientID {
-			if cli.Ui != nil && len(cli.Ui[common.UILabel]) > 0 {
-				clientName = cli.Ui[common.UILabel]
+			if cli.Ui != nil && len("label") > 0 {
+				clientName = cli.Ui["label"]
 			} else {
 				clientName = name
 			}
@@ -701,7 +724,7 @@ func (s *Service) sendInformationReleasePage(id *ga4gh.Identity, stateID, client
 	page = strings.ReplaceAll(page, "${STATE}", stateID)
 	page = strings.ReplaceAll(page, "${PATH}", strings.ReplaceAll(acceptInformationReleasePath, "{realm}", realm))
 
-	httputil.SendHTML(page, w)
+	httputil.WriteHTMLResp(w, page)
 }
 
 //////////////////////////////////////////////////////////////////
@@ -729,27 +752,35 @@ func getName(r *http.Request) string {
 	return ""
 }
 
-func (s *Service) handlerSetup(tx storage.Tx, r *http.Request, scope string, item proto.Message) (*pb.IcConfig, *pb.IcSecrets, *ga4gh.Identity, int, error) {
+func (s *Service) handlerSetupNoAuth(tx storage.Tx, r *http.Request, item proto.Message) (*pb.IcConfig, int, error) {
 	r.ParseForm()
 	if item != nil {
 		if err := jsonpb.Unmarshal(r.Body, item); err != nil && err != io.EOF {
-			return nil, nil, nil, http.StatusBadRequest, err
+			return nil, http.StatusBadRequest, status.Errorf(codes.InvalidArgument, "%v", err)
 		}
 	}
 	cfg, err := s.loadConfig(tx, getRealm(r))
 	if err != nil {
-		return nil, nil, nil, http.StatusServiceUnavailable, err
+		return nil, http.StatusServiceUnavailable, status.Errorf(codes.Unavailable, "%v", err)
+	}
+	return cfg, http.StatusOK, nil
+}
+
+func (s *Service) handlerSetup(tx storage.Tx, r *http.Request, scope string, item proto.Message) (*pb.IcConfig, *pb.IcSecrets, *ga4gh.Identity, int, error) {
+	cfg, st, err := s.handlerSetupNoAuth(tx, r, item)
+	if err != nil {
+		return nil, nil, nil, st, err
 	}
 	secrets, err := s.loadSecrets(tx)
 	if err != nil {
-		return nil, nil, nil, http.StatusServiceUnavailable, err
+		return nil, nil, nil, http.StatusServiceUnavailable, status.Errorf(codes.Unavailable, "%v", err)
 	}
-	id, status, err := s.getIdentity(r, scope, getRealm(r), cfg, secrets, tx)
+	id, st, err := s.getIdentity(r, scope, getRealm(r), cfg, secrets, tx)
 	if err != nil {
-		return nil, nil, nil, status, err
+		return nil, nil, nil, st, status.Errorf(httputil.RPCCode(st), "%v", err)
 	}
 
-	return cfg, secrets, id, status, err
+	return cfg, secrets, id, st, status.Errorf(httputil.RPCCode(st), "%v", err)
 }
 
 func (s *Service) getIdentity(r *http.Request, scope, realm string, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
@@ -765,7 +796,7 @@ func (s *Service) tokenRealm(r *http.Request) (string, int, error) {
 	if len(tok) == 0 {
 		return "", http.StatusUnauthorized, fmt.Errorf("bearer token not found")
 	}
-	id, err := common.ConvertTokenToIdentityUnsafe(tok)
+	id, err := ga4gh.ConvertTokenToIdentityUnsafe(tok)
 	if err != nil {
 		return "", http.StatusUnauthorized, fmt.Errorf("inspecting token: %v", err)
 	}
@@ -777,12 +808,12 @@ func (s *Service) tokenRealm(r *http.Request) (string, int, error) {
 }
 
 func (s *Service) getTokenIdentity(ctx context.Context, tok, scope, clientID string, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	id, err := common.ConvertTokenToIdentityUnsafe(tok)
+	id, err := ga4gh.ConvertTokenToIdentityUnsafe(tok)
 	if err != nil {
 		return nil, http.StatusUnauthorized, fmt.Errorf("inspecting token: %v", err)
 	}
 
-	v, err := common.GetOIDCTokenVerifier(ctx, clientID, id.Issuer)
+	v, err := ga4gh.GetOIDCTokenVerifier(ctx, clientID, id.Issuer)
 	if err != nil {
 		return nil, http.StatusServiceUnavailable, fmt.Errorf("GetOIDCTokenVerifier failed: %v", err)
 	}
@@ -793,7 +824,7 @@ func (s *Service) getTokenIdentity(ctx context.Context, tok, scope, clientID str
 
 	if len(id.Scope) == 0 && len(id.Scp) > 0 {
 		// Hydra populates "scp" instead of "scope", so populate "scope" accordingly.
-		id.Scope = common.JoinNonEmpty(id.Scp, " ")
+		id.Scope = strutil.JoinNonEmpty(id.Scp, " ")
 	}
 
 	// TODO: add more checks here as appropriate.
@@ -804,7 +835,7 @@ func (s *Service) getTokenIdentity(ctx context.Context, tok, scope, clientID str
 		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized for issuer %q", id.Issuer)
 	} else if len(scope) > 0 && !hasScopes(scope, id.Scope, matchFullScope) {
 		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized for scope %q", scope)
-	} else if !common.IsAudience(id, clientID, iss) {
+	} else if !ga4gh.IsAudience(id, clientID, iss) {
 		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized party")
 	}
 	return id, http.StatusOK, nil
@@ -917,7 +948,7 @@ func (s *Service) loginTokenToIdentity(acTok, idTok string, idp *cpb.IdentityPro
 		if err != nil {
 			return nil, http.StatusUnauthorized, fmt.Errorf("translating access token from issuer %q: %v", idp.Issuer, err)
 		}
-		if !common.HasUserinfoClaims(tid) {
+		if !ga4gh.HasUserinfoClaims(tid) {
 			return tid, http.StatusOK, nil
 		}
 		id, err := translator.FetchUserinfoClaims(r.Context(), tid, acTok, t)
@@ -942,9 +973,24 @@ func (s *Service) loginTokenToIdentity(acTok, idTok string, idp *cpb.IdentityPro
 // the last one (if it doesn't time out), or non-zero to indicate that a recent sync
 // is good enough. Note there are some race conditions with several client changes
 // overlapping in flight that could still have the two services be out of sync.
-func (s *Service) syncToHydra(clients map[string]*cpb.Client, secrets map[string]string, minFrequency time.Duration) error {
-	glog.Infoln("skipping hydra sync until logic fixed")
-	return nil
+func (s *Service) syncToHydra(clients map[string]*cpb.Client, secrets map[string]string, minFrequency time.Duration, tx storage.Tx) (*cpb.ClientState, error) {
+	if !s.useHydra {
+		return nil, nil
+	}
+	ltx := s.store.LockTx("hydra_"+s.serviceName, minFrequency, tx)
+	if ltx == nil {
+		return nil, fmt.Errorf("hydra sync has completed recently or is active")
+	}
+	if tx == nil {
+		// Is a new tx (i.e. ltx didn't override tx)
+		defer ltx.Finish()
+	}
+	state, err := oathclients.SyncClients(s.httpClient, s.hydraAdminURL, clients, secrets)
+	if err != nil {
+		glog.Errorf("failed to sync hydra clients: %v", err)
+		return nil, err
+	}
+	return state, nil
 }
 
 func (s *Service) idpProvidesPassports(idp *cpb.IdentityProvider) bool {
@@ -959,29 +1005,11 @@ func (s *Service) idpProvidesPassports(idp *cpb.IdentityProvider) bool {
 	return false
 }
 
-func (s *Service) accountLinkToClaims(ctx context.Context, acct *cpb.Account, subject string, cfg *pb.IcConfig, secrets *pb.IcSecrets) (map[string][]ga4gh.OldClaim, error) {
-	id := &ga4gh.Identity{
-		GA4GH: make(map[string][]ga4gh.OldClaim),
-	}
-	link, _ := findLinkedAccount(acct, subject)
+func (s *Service) accountLinkToVisas(ctx context.Context, acct *cpb.Account, subject, provider string, cfg *pb.IcConfig, secrets *pb.IcSecrets) ([]string, error) {
+	id := &ga4gh.Identity{}
+	link, _ := findLinkedAccount(acct, subject, provider)
 	if link == nil {
-		return id.GA4GH, nil
-	}
-	ttl := getDurationOption(cfg.Options.ClaimTtlCap, descClaimTtlCap)
-	if err := s.populateLinkVisas(ctx, id, link, ttl, cfg, secrets); err != nil {
-		return nil, err
-	}
-
-	return id.GA4GH, nil
-}
-
-func (s *Service) accountLinkToVisas(ctx context.Context, acct *cpb.Account, subject string, cfg *pb.IcConfig, secrets *pb.IcSecrets) ([]string, error) {
-	id := &ga4gh.Identity{
-		VisaJWTs: make([]string, 0),
-	}
-	link, _ := findLinkedAccount(acct, subject)
-	if link == nil {
-		return id.VisaJWTs, nil
+		return []string{}, nil
 	}
 	ttl := getDurationOption(cfg.Options.ClaimTtlCap, descClaimTtlCap)
 	if err := s.populateLinkVisas(ctx, id, link, ttl, cfg, secrets); err != nil {
@@ -1003,10 +1031,13 @@ func (s *Service) addLinkedIdentities(id *ga4gh.Identity, link *cpb.ConnectedAcc
 	}
 
 	subjectIssuers := map[string]bool{}
-	now := time.Now().Unix()
+	now := time.Now()
 
 	// TODO: add config option for LinkedIdentities expiry.
-	exp := id.Expiry
+	exp := now.Add(linkedIdentitiesMaxLifepan).Unix()
+	if exp > id.Expiry {
+		exp = id.Expiry
+	}
 
 	idp, ok := cfg.IdentityProviders[link.Provider]
 	if !ok {
@@ -1036,7 +1067,7 @@ func (s *Service) addLinkedIdentities(id *ga4gh.Identity, link *cpb.ConnectedAcc
 		StdClaims: ga4gh.StdClaims{
 			Subject:   id.Subject,
 			Issuer:    s.getVisaIssuerString(),
-			IssuedAt:  now,
+			IssuedAt:  now.Unix(),
 			ExpiresAt: exp,
 		},
 		Scope: "openid",
@@ -1048,7 +1079,7 @@ func (s *Service) addLinkedIdentities(id *ga4gh.Identity, link *cpb.ConnectedAcc
 		},
 	}
 
-	v, err := ga4gh.NewVisaFromData(d, ga4gh.RS256, privateKey, keyID)
+	v, err := ga4gh.NewVisaFromData(d, s.visaIssuerJKU(), ga4gh.RS256, privateKey, keyID)
 	if err != nil {
 		return fmt.Errorf("ga4gh.NewVisaFromData(_) failed: %v", err)
 	}
@@ -1090,7 +1121,7 @@ func getBearerToken(r *http.Request) string {
 }
 
 func getScope(r *http.Request) (string, error) {
-	s := httputil.GetParam(r, "scope")
+	s := httputil.QueryParam(r, "scope")
 	if !hasScopes(scopeOpenID, s, matchFullScope) {
 		return "", fmt.Errorf("scope must include 'openid'")
 	}
@@ -1122,7 +1153,7 @@ func scopedIdentity(identity *ga4gh.Identity, scope, iss, subject, nonce string,
 		Audiences:        ga4gh.Audiences(aud),
 		IssuedAt:         iat,
 		NotBefore:        nbf,
-		ID:               common.GenerateGUID(),
+		ID:               uuid.New(),
 		AuthorizedParty:  azp,
 		Expiry:           exp,
 		Scope:            scope,
@@ -1168,8 +1199,12 @@ func (auth *authToken) Valid() error {
 	return nil
 }
 
+func (s *Service) visaIssuerJKU() string {
+	return path.Join(s.getVisaIssuerString(), "/jwks")
+}
+
 func (s *Service) getVisaIssuerString() string {
-	return s.getDomainURL() + "/oidc"
+	return s.getDomainURL() + "/visas"
 }
 
 func (s *Service) getIssuerString() string {
@@ -1222,11 +1257,11 @@ func matchRedirect(client *cpb.Client, redirect string) bool {
 }
 
 func (s *Service) newAccountWithLink(ctx context.Context, linkID *ga4gh.Identity, provider string, cfg *pb.IcConfig) (*cpb.Account, error) {
-	now := common.GetNowInUnixNano()
+	now := time.Now()
 	genlen := getIntOption(cfg.Options.AccountNameLength, descAccountNameLength)
 	accountPrefix := "ic_"
 	genlen -= len(accountPrefix)
-	subject := accountPrefix + strings.Replace(common.GenerateGUID(), "-", "", -1)[:genlen]
+	subject := accountPrefix + strings.Replace(uuid.New(), "-", "", -1)[:genlen]
 
 	acct := &cpb.Account{
 		Revision:          0,
@@ -1236,7 +1271,7 @@ func (s *Service) newAccountWithLink(ctx context.Context, linkID *ga4gh.Identity
 		State:             storage.StateActive,
 		Ui:                make(map[string]string),
 	}
-	err := s.populateAccountClaims(ctx, acct, linkID, provider)
+	err := s.populateAccountVisas(ctx, acct, linkID, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -1269,22 +1304,22 @@ func (s *Service) decryptEmbeddedTokens(ctx context.Context, tokens [][]byte) ([
 	return res, nil
 }
 
-func (s *Service) populateAccountClaims(ctx context.Context, acct *cpb.Account, id *ga4gh.Identity, provider string) error {
-	link, _ := findLinkedAccount(acct, id.Subject)
-	now := common.GetNowInUnixNano()
+func (s *Service) populateAccountVisas(ctx context.Context, acct *cpb.Account, id *ga4gh.Identity, provider string) error {
+	link, _ := findLinkedAccount(acct, id.Subject, provider)
+	now := time.Now()
 	if link == nil {
 		link = &cpb.ConnectedAccount{
 			Profile:      setupAccountProfile(id),
 			Properties:   setupAccountProperties(id, id.Subject, now, now),
 			Provider:     provider,
-			Refreshed:    now,
+			Refreshed:    float64(now.UnixNano()) / 1e9,
 			Revision:     1,
 			LinkRevision: 1,
 		}
 		acct.ConnectedAccounts = append(acct.ConnectedAccounts, link)
 	} else {
 		// TODO: refresh some account profile attributes.
-		link.Refreshed = now
+		link.Refreshed = float64(now.UnixNano()) / 1e9
 		link.Revision++
 	}
 	tokens, err := s.encryptEmbeddedTokens(ctx, id.VisaJWTs)
@@ -1312,70 +1347,34 @@ func setupAccountProfile(id *ga4gh.Identity) *cpb.AccountProfile {
 	}
 }
 
-func setupAccountProperties(id *ga4gh.Identity, subject string, created, modified float64) *cpb.AccountProperties {
+func setupAccountProperties(id *ga4gh.Identity, subject string, created, modified time.Time) *cpb.AccountProperties {
 	return &cpb.AccountProperties{
 		Subject:       subject,
 		Email:         id.Email,
 		EmailVerified: id.EmailVerified,
-		Created:       created,
-		Modified:      modified,
+		Created:       float64(created.UnixNano()) / 1e9,
+		Modified:      float64(modified.UnixNano()) / 1e9,
 	}
 }
 
-func claimsAreEqual(a, b map[string][]ga4gh.OldClaim) bool {
+func visasAreEqual(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for k, av := range a {
-		bv, ok := b[k]
-		if !ok || len(av) != len(bv) {
-			return false
-		}
-		for i := 0; i < len(av); i++ {
-			if reflect.DeepEqual(av[i], bv[i]) {
-				continue
-			}
-			found := false
-			for j := 0; j < len(bv); j++ {
-				if i != j && reflect.DeepEqual(av[i], bv[j]) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return false
-			}
-		}
+	sort.Strings(a)
+	sort.Strings(b)
+	if diff := cmp.Diff(a, b); diff == "" {
+		return true
 	}
-	return true
+	return false
 }
 
-func visasAreEqual(a []string, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	found := make(map[string]int, len(a))
-
-	for i := 0; i < len(a); i++ {
-		found[a[i]] += 1
-		found[b[i]] += 1
-	}
-
-	for _, count := range found {
-		if count != 2 {
-			return false
-		}
-	}
-
-	return true
-}
-
-func findLinkedAccount(acct *cpb.Account, subject string) (*cpb.ConnectedAccount, int) {
+func findLinkedAccount(acct *cpb.Account, subject, provider string) (*cpb.ConnectedAccount, int) {
 	if acct.ConnectedAccounts == nil {
 		return nil, -1
 	}
 	for i, link := range acct.ConnectedAccounts {
-		if link.Properties.Subject == subject {
+		if link.Provider == provider && link.Properties.Subject == subject {
 			return link, i
 		}
 	}
@@ -1652,30 +1651,22 @@ func (s *Service) saveNewLinkedAccount(newAcct *cpb.Account, id *ga4gh.Identity,
 
 func validateURLs(input map[string]string) error {
 	for k, v := range input {
-		if !common.IsURL(v) {
+		if !strutil.IsURL(v) {
 			return fmt.Errorf("%q value %q is not a URL", k, v)
 		}
 	}
 	return nil
 }
 
-func getDuration(d string, def time.Duration) time.Duration {
-	out, err := common.ParseDuration(d, def)
-	if err != nil {
-		return def
-	}
-	return out
-}
-
 func getDurationOption(d string, desc *pb.ConfigOptions_Descriptor) time.Duration {
 	if desc == nil || len(desc.DefaultValue) == 0 {
-		return getDuration(d, noDuration)
+		return timeutil.ParseDurationWithDefault(d, noDuration)
 	}
-	defVal, err := common.ParseDuration(desc.DefaultValue, noDuration)
+	defVal, err := timeutil.ParseDuration(desc.DefaultValue)
 	if err != nil || defVal == 0 {
-		return getDuration(d, noDuration)
+		return timeutil.ParseDurationWithDefault(d, noDuration)
 	}
-	return getDuration(d, defVal)
+	return timeutil.ParseDurationWithDefault(d, defVal)
 }
 
 func getIntOption(val int32, desc *pb.ConfigOptions_Descriptor) int {
@@ -1714,7 +1705,7 @@ func (s *Service) saveConfig(cfg *pb.IcConfig, desc, resType string, r *http.Req
 		return nil
 	}
 	cfg.Revision++
-	cfg.CommitTime = common.GetNowInUnixNano()
+	cfg.CommitTime = float64(time.Now().UnixNano()) / 1e9
 	if err := s.store.WriteTx(storage.ConfigDatatype, getRealm(r), storage.DefaultUser, storage.DefaultID, cfg.Revision, cfg, storage.MakeConfigHistory(desc, resType, cfg.Revision, cfg.CommitTime, r, id.Subject, orig, update), tx); err != nil {
 		return fmt.Errorf("service storage unavailable: %v, retry later", err)
 	}
@@ -1763,7 +1754,7 @@ func (s *Service) accountLookup(realm, acct string, tx storage.Tx) (*cpb.Account
 
 func (s *Service) saveAccountLookup(lookup *cpb.AccountLookup, realm, fedAcct string, r *http.Request, id *ga4gh.Identity, tx storage.Tx) error {
 	lookup.Revision++
-	lookup.CommitTime = common.GetNowInUnixNano()
+	lookup.CommitTime = float64(time.Now().UnixNano()) / 1e9
 	if err := s.store.WriteTx(storage.AccountLookupDatatype, realm, storage.DefaultUser, fedAcct, lookup.Revision, lookup, storage.MakeConfigHistory("link account", storage.AccountLookupDatatype, lookup.Revision, lookup.CommitTime, r, id.Subject, nil, lookup), tx); err != nil {
 		return fmt.Errorf("service storage unavailable: %v, retry later", err)
 	}
@@ -1784,7 +1775,7 @@ func (s *Service) removeAccountLookup(rev int64, realm, fedAcct string, r *http.
 
 func (s *Service) saveAccount(oldAcct, newAcct *cpb.Account, desc string, r *http.Request, subject string, tx storage.Tx) error {
 	newAcct.Revision++
-	newAcct.Properties.Modified = common.GetNowInUnixNano()
+	newAcct.Properties.Modified = float64(time.Now().UnixNano()) / 1e9
 	if newAcct.Properties.Created == 0 {
 		if oldAcct != nil && oldAcct.Properties.Created != 0 {
 			newAcct.Properties.Created = oldAcct.Properties.Created
@@ -1847,42 +1838,13 @@ type damArgs struct {
 	persona      string
 }
 
-// ImportFiles ingests bootstrap configuration files to the IC's storage sytem.
-func (s *Service) ImportFiles(importType string) error {
-	wipe := false
-	switch importType {
-	case "AUTO_RESET":
-		cfg, err := s.loadConfig(nil, storage.DefaultRealm)
-		if err != nil {
-			if !storage.ErrNotFound(err) {
-				wipe = true
-			}
-		} else if err := s.checkConfigIntegrity(cfg); err != nil {
-			wipe = true
-		}
-	case "FORCE_WIPE":
-		wipe = true
-	}
-	if wipe {
-		glog.Infof("prepare for IC config import: wipe data store for all realms")
-		if err := s.store.Wipe(storage.WipeAllRealms); err != nil {
-			return err
-		}
-	}
-
-	tx, err := s.store.Tx(true)
+// ImportConfig ingests bootstrap configuration files to the IC's storage sytem.
+func ImportConfig(store storage.Store, service string, cfgVars map[string]string) error {
+	tx, err := store.Tx(true)
 	if err != nil {
 		return err
 	}
 	defer tx.Finish()
-
-	ok, err := s.store.Exists(storage.SecretsDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev)
-	if err != nil {
-		return err
-	}
-	if ok {
-		return nil
-	}
 
 	glog.Infof("import IC config into data store")
 	history := &cpb.HistoryEntry{
@@ -1891,8 +1853,7 @@ func (s *Service) ImportFiles(importType string) error {
 		CommitTime: float64(time.Now().Unix()),
 		Desc:       "Inital config",
 	}
-	info := s.store.Info()
-	service := info["service"]
+	info := store.Info()
 	path := info["path"]
 	if service == "" || path == "" {
 		return nil
@@ -1904,7 +1865,10 @@ func (s *Service) ImportFiles(importType string) error {
 		return err
 	}
 	history.Revision = cfg.Revision
-	if err = s.store.WriteTx(storage.ConfigDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, cfg.Revision, cfg, history, tx); err != nil {
+	if err = storage.ReplaceContentVariables(cfg, cfgVars); err != nil {
+		return fmt.Errorf("replacing variables on config file: %v", err)
+	}
+	if err = store.WriteTx(storage.ConfigDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, cfg.Revision, cfg, history, tx); err != nil {
 		return err
 	}
 	secrets := &pb.IcSecrets{}
@@ -1912,16 +1876,24 @@ func (s *Service) ImportFiles(importType string) error {
 		return err
 	}
 	history.Revision = secrets.Revision
-	if err = s.store.WriteTx(storage.SecretsDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, secrets.Revision, secrets, history, tx); err != nil {
+	if err = storage.ReplaceContentVariables(secrets, cfgVars); err != nil {
+		return fmt.Errorf("replacing variables on secrets file: %v", err)
+	}
+	if err = store.WriteTx(storage.SecretsDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, secrets.Revision, secrets, history, tx); err != nil {
 		return err
 	}
 	return nil
+}
+
+func configExists(store storage.Store) (bool, error) {
+	return store.Exists(storage.SecretsDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev)
 }
 
 // TODO: move registeration of endpoints to main package.
 func registerHandlers(r *mux.Router, s *Service) {
 	a := &authChecker{s: s}
 	checker := &auth.Checker{
+		Logger:             s.logger,
 		Issuer:             s.getIssuerString(),
 		FetchClientSecrets: a.fetchClientSecrets,
 		IsAdmin:            a.isAdmin,
@@ -1942,28 +1914,32 @@ func registerHandlers(r *mux.Router, s *Service) {
 	r.HandleFunc(hydraLoginPath, auth.MustWithAuth(s.HydraLogin, checker, auth.RequireNone)).Methods(http.MethodGet)
 	r.HandleFunc(hydraConsentPath, auth.MustWithAuth(s.HydraConsent, checker, auth.RequireNone)).Methods(http.MethodGet)
 
-	// info endpoint
+	// info endpoints
 	r.HandleFunc(infoPath, auth.MustWithAuth(s.Status, checker, auth.RequireNone)).Methods(http.MethodGet)
+	r.HandleFunc(jwksPath, auth.MustWithAuth(s.JWKS, checker, auth.RequireNone)).Methods(http.MethodGet)
 
 	// administration endpoints
-	r.HandleFunc(realmPath, auth.MustWithAuth(httputil.MakeHandler(s, s.realmFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configIdentityProvidersPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configIdpFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configClientsPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configClientFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configOptionsPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configOptionsFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(realmPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.realmFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configIdentityProvidersPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configIdpFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configClientsPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configClientFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configOptionsPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configOptionsFactory()), checker, auth.RequireAdminToken))
 	r.HandleFunc(configResetPath, auth.MustWithAuth(s.ConfigReset, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
 	r.HandleFunc(configHistoryPath, auth.MustWithAuth(s.ConfigHistory, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
 	r.HandleFunc(configHistoryRevisionPath, auth.MustWithAuth(s.ConfigHistoryRevision, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
 
+	// light-weight admin functions using client_id, client_secret and client scope to limit use
+	r.HandleFunc(syncClientsPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.syncClientsFactory()), checker, auth.RequireClientIDAndSecret))
+
 	// readonly config endpoints
 	r.HandleFunc(identityProvidersPath, auth.MustWithAuth(s.IdentityProviders, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
 	r.HandleFunc(translatorsPath, auth.MustWithAuth(s.PassportTranslators, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
-	r.HandleFunc(clientPath, auth.MustWithAuth(httputil.MakeHandler(s, s.clientFactory()), checker, auth.RequireClientIDAndSecret))
+	r.HandleFunc(clientPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.clientFactory()), checker, auth.RequireClientIDAndSecret))
 
 	// scim service endpoints
-	r.HandleFunc(scimMePath, auth.MustWithAuth(httputil.MakeHandler(s, s.scimMeFactory()), checker, auth.RequireUserToken))
-	r.HandleFunc(scimUserPath, auth.MustWithAuth(httputil.MakeHandler(s, s.scimUserFactory()), checker, auth.RequireUserToken))
-	r.HandleFunc(scimUsersPath, auth.MustWithAuth(httputil.MakeHandler(s, s.scimUsersFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(scimMePath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.scimMeFactory()), checker, auth.RequireUserToken))
+	r.HandleFunc(scimUserPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.scimUserFactory()), checker, auth.RequireUserToken))
+	r.HandleFunc(scimUsersPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.scimUsersFactory()), checker, auth.RequireAdminToken))
 
 	// token service endpoints
 	tokens := &stubTokens{token: fakeToken}
@@ -1977,8 +1953,6 @@ func registerHandlers(r *mux.Router, s *Service) {
 	r.HandleFunc(consentPath, auth.MustWithAuth(NewConsentsHandler(consents).DeleteConsent, checker, auth.RequireUserToken)).Methods(http.MethodDelete)
 
 	// legacy endpoints
-	r.HandleFunc(accountPath, auth.MustWithAuth(httputil.MakeHandler(s, s.accountFactory()), checker, auth.RequireUserToken))
-	r.HandleFunc(accountSubjectPath, auth.MustWithAuth(httputil.MakeHandler(s, s.accountSubjectFactory()), checker, auth.RequireUserToken))
-	r.HandleFunc(adminClaimsPath, auth.MustWithAuth(httputil.MakeHandler(s, s.adminClaimsFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(adminTokenMetadataPath, auth.MustWithAuth(httputil.MakeHandler(s, s.adminTokenMetadataFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(adminClaimsPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.adminClaimsFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(adminTokenMetadataPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.adminTokenMetadataFactory()), checker, auth.RequireAdminToken))
 }

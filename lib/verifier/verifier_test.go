@@ -80,7 +80,7 @@ func TestVerifier_Verify(t *testing.T) {
 			ExpiresAt: time.Now().Add(time.Hour).Unix(),
 		},
 	}
-	visa, err := ga4gh.NewVisaFromData(d, ga4gh.RS256, key.Private, key.ID)
+	visa, err := ga4gh.NewVisaFromData(d, ga4gh.JWTEmptyJKU, ga4gh.RS256, key.Private, key.ID)
 	if err != nil {
 		t.Fatalf("ga4gh.NewVisaFromData() failed: %v", err)
 	}
@@ -92,6 +92,37 @@ func TestVerifier_Verify(t *testing.T) {
 
 	if err := v.Verify(ctx, string(visa.JWT())); err != nil {
 		t.Fatalf("Verifier.Verify(_,_) failed: %v", err)
+	}
+}
+
+func TestVerifier_Verify_EmptyClientID(t *testing.T) {
+	f, cleanup := newFix(t)
+	defer cleanup()
+
+	// Create and sign a Visa using the Issuer's private key.
+	key := f.Issuer0.Keys[0]
+	d := &ga4gh.VisaData{
+		StdClaims: ga4gh.StdClaims{
+			Issuer:    key.ID,
+			Subject:   subject,
+			Audience:  ga4gh.NewAudience(client),
+			ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		},
+	}
+	visa, err := ga4gh.NewVisaFromData(d, ga4gh.JWTEmptyJKU, ga4gh.RS256, key.Private, key.ID)
+	if err != nil {
+		t.Fatalf("ga4gh.NewVisaFromData() failed: %v", err)
+	}
+
+	// Make calls by oidc package use the fake HTTP client.
+	ctx := oidc.ClientContext(context.Background(), f.HTTP.Client)
+
+	// An audience is specified in the token. If the verifier does not specify a client,
+	// the verifier should fail since we cannot confirm we are the intended audience.
+	v := New("")
+
+	if err := v.Verify(ctx, string(visa.JWT())); err == nil {
+		t.Fatalf("Verifier.Verify(_,_) unexpected success when audience cannot be confirmed")
 	}
 }
 
@@ -110,7 +141,7 @@ func TestVerifier_Verify_SecondIssuer(t *testing.T) {
 		},
 	}
 
-	visa, err := ga4gh.NewVisaFromData(d, ga4gh.RS256, key.Private, key.ID)
+	visa, err := ga4gh.NewVisaFromData(d, ga4gh.JWTEmptyJKU, ga4gh.RS256, key.Private, key.ID)
 	if err != nil {
 		t.Fatalf("ga4gh.NewVisaFromData() failed: %v", err)
 	}
@@ -139,7 +170,7 @@ func TestVerifier_Verify_Fail_WrongIssuerURL(t *testing.T) {
 			ExpiresAt: time.Now().Add(time.Hour).Unix(),
 		},
 	}
-	visa, err := ga4gh.NewVisaFromData(d, ga4gh.RS256, key.Private, key.ID)
+	visa, err := ga4gh.NewVisaFromData(d, ga4gh.JWTEmptyJKU, ga4gh.RS256, key.Private, key.ID)
 	if err != nil {
 		t.Fatalf("ga4gh.NewVisaFromData() failed: %v", err)
 	}
@@ -170,7 +201,7 @@ func TestVerifier_Verify_Fail_WrongKey(t *testing.T) {
 	}
 
 	wrongKey := testkeys.Keys[testkeys.VisaIssuer1]
-	visa, err := ga4gh.NewVisaFromData(d, ga4gh.RS256, wrongKey.Private, key.ID)
+	visa, err := ga4gh.NewVisaFromData(d, ga4gh.JWTEmptyJKU, ga4gh.RS256, wrongKey.Private, key.ID)
 	if err != nil {
 		t.Fatalf("ga4gh.NewVisaFromData() failed: %v", err)
 	}
@@ -200,7 +231,7 @@ func TestVerifier_Verify_Fail_WrongClient(t *testing.T) {
 		},
 	}
 
-	visa, err := ga4gh.NewVisaFromData(d, ga4gh.RS256, key.Private, key.ID)
+	visa, err := ga4gh.NewVisaFromData(d, ga4gh.JWTEmptyJKU, ga4gh.RS256, key.Private, key.ID)
 	if err != nil {
 		t.Fatalf("ga4gh.NewVisaFromData() failed: %v", err)
 	}
@@ -230,7 +261,7 @@ func TestVerifier_Verify_Fail_TokenExpired(t *testing.T) {
 		},
 	}
 
-	visa, err := ga4gh.NewVisaFromData(d, ga4gh.RS256, key.Private, key.ID)
+	visa, err := ga4gh.NewVisaFromData(d, ga4gh.JWTEmptyJKU, ga4gh.RS256, key.Private, key.ID)
 	if err != nil {
 		t.Fatalf("ga4gh.NewVisaFromData() failed: %v", err)
 	}

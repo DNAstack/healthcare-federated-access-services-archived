@@ -1,0 +1,158 @@
+// Copyright 2019 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+// Package process provides protocol buffers for background process state.
+package process;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/process/v1";
+
+///////////////////////////////////////////////////
+
+// Background process state
+message Process {
+  // Error message that is kept in context with the background process
+  // for debugging.
+  message Error {
+    // Timestamp of the error.
+    google.protobuf.Timestamp time = 1;
+
+    // Error message.
+    string text = 2;
+  }
+
+  // Input parameters configured for the background process that control
+  // its behavior.
+  message Params {
+    // Process-specific map of integer parameter name to parameter value.
+    map<string, int64> int_params = 1;
+
+    // Process-specific map of string parameter name to parameter value.
+    map<string, string> string_params = 2;
+  }
+
+  // Execution status for a particular run or snapshot of the process.
+  message Status {
+    // Time period start.
+    google.protobuf.Timestamp start_time = 1;
+
+    // Time of last progress status update. This will be equal to the
+    // finish_time if the processing has completed.
+    google.protobuf.Timestamp progress_time = 2;
+
+    // Time period end.
+    google.protobuf.Timestamp finish_time = 3;
+
+    // Time of most recent error.
+    google.protobuf.Timestamp last_error_time = 4;
+
+    // Statistics collected of statistic label to statistic value.
+    map<string, double> stats = 5;
+
+    // Recent errors, which may have less entries than total errors to reduce
+    // space and noise.
+    repeated Error errors = 6;
+
+    // Total number of errors before the process completed or aborted.
+    int64 total_errors = 7;
+
+    enum State {
+      UNSPECIFIED = 0;
+      NEW = 1;         // added to the processing queue
+      ACTIVE = 2;      // worker was actively processing it as of last update
+      ABORTED = 3;     // error state aborted execution early
+      INCOMPLETE = 4;  // has errors and must be retried
+      COMPLETED = 5;   // processing completed without significant errors
+    }
+
+    State state = 8;
+  }
+
+  // Processes may act on a set of work items, and may have different input
+  // parameters per item. What work items represent may be different between
+  // different types of workers. A worker gets called for each item on a work
+  // list (stored as maps, but can be iterated over as a list).
+  // A named work item can only appear on one of three maps:
+  // 1. active_work
+  // 2. cleanup_work
+  // 3. dropped_work
+  message Work {
+    // Time when the work item's settings was last modified.
+    google.protobuf.Timestamp modified = 1;
+
+    // Input parameters for the work item. These will vary depending on the
+    // needs of process workers that may need input parameters to complete their
+    // work.
+    // Example: if there were a rename process that occationally updates the
+    // names of objects in the storage layer, then it may have params of:
+    //   {
+    //     "stringParams": {
+    //       "find": "old_name",
+    //       "replace": "new_name"
+    //     }
+    //     "intParams": {
+    //       "maxReplacements": 1
+    //     }
+    //   }
+    // Note: this structure allows input parameters to vary between work items.
+    Params params = 2;
+
+    // Work status. Changes here do not cause "modified" settings timestamp
+    // to change.
+    Status status = 3;
+  }
+
+  // Name of the process.
+  string process_name = 1;
+
+  // A GUID or other unique identifier for the last process instance that has
+  // updated the process. This is a means of tracking state as multiple
+  // background processes can attempt to grab and lock process state. It may
+  // be used as a means to detect that locks have been lost.
+  string instance = 2;
+
+  // Frequency of how often a process is scheduled to start processing.
+  google.protobuf.Duration schedule_frequency = 3;
+
+  // A set of active work items being processed. The key is the name of the work
+  // item.
+  map<string, Work> active_work = 4;
+
+  // Work to be dropped during a future active period. Is a map of the work
+  // item name to timestamp of request. Some workers may treat this as a no-op
+  // while others may have critical cleanup to do before dropping the work.
+  // The key is the name of the work item.
+  map<string, google.protobuf.Timestamp> cleanup_work = 5;
+
+  // Work that are no longer active (i.e. dropped) as a form of tracking
+  // previous state. Is a map of work item name to timestamp of when the work
+  // item was dropped. The key is the name of the work item.
+  map<string, google.protobuf.Timestamp> dropped_work = 6;
+
+  // Input parameters for the worker to use across work items.
+  Params settings = 7;
+
+  // Time of most recent change to the ProcessStatus.Params settings.
+  google.protobuf.Timestamp settings_time = 8;
+
+  // Status over all work items for the most recent period or active period.
+  Status process_status = 9;
+
+  // Aggregate stats over all time periods for all work items since last reset.
+  map<string, double> aggregate_stats = 10;
+}

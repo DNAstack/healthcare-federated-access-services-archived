@@ -22,10 +22,11 @@ import (
 	"time"
 
 	"github.com/dgrijalva/jwt-go" /* copybara-comment */
+	"github.com/pborman/uuid" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
 
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
@@ -100,7 +101,7 @@ func (a *GatekeeperAdapter) CheckConfig(templateName string, template *pb.Servic
 // MintToken has the adapter mint a token.
 func (a *GatekeeperAdapter) MintToken(ctx context.Context, input *Action) (*MintTokenResult, error) {
 	if input.MaxTTL > 0 && input.TTL > input.MaxTTL {
-		return nil, fmt.Errorf("minting gatekeeper token: TTL of %q exceeds max TTL of %q", common.TtlString(input.TTL), common.TtlString(input.MaxTTL))
+		return nil, fmt.Errorf("minting gatekeeper token: TTL of %q exceeds max TTL of %q", timeutil.TTLString(input.TTL), timeutil.TTLString(input.MaxTTL))
 	}
 	block, _ := pem.Decode([]byte(a.privateKey))
 	priv, err := x509.ParsePKCS1PrivateKey(block.Bytes)
@@ -117,7 +118,7 @@ func (a *GatekeeperAdapter) MintToken(ctx context.Context, input *Action) (*Mint
 			ExpiresAt: now.Add(input.TTL).Unix(),
 			NotBefore: now.Add(-1 * time.Minute).Unix(),
 			IssuedAt:  now.Unix(),
-			Id:        common.GenerateGUID(),
+			Id:        uuid.New(),
 		},
 		Scopes: input.ServiceRole.TargetScopes,
 	}

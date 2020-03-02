@@ -20,20 +20,21 @@ import (
 
 	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"google.golang.org/grpc/status" /* copybara-comment */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp" /* copybara-comment: gcp */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
+	ppb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/process/v1" /* copybara-comment: go_proto */
 )
 
-func (s *Service) processesFactory() *httputil.HandlerFactory {
-	return &httputil.HandlerFactory{
+func (s *Service) processesFactory() *handlerfactory.HandlerFactory {
+	return &handlerfactory.HandlerFactory{
 		TypeName:            "processes",
 		PathPrefix:          processesPath,
 		HasNamedIdentifiers: false,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
 			return NewProcessesHandler(s, w, r)
 		},
 	}
@@ -44,7 +45,7 @@ type processesHandler struct {
 	w     http.ResponseWriter
 	r     *http.Request
 	input *pb.BackgroundProcessesRequest
-	item  map[string]*pb.BackgroundProcess
+	item  map[string]*ppb.Process
 	cfg   *pb.DamConfig
 	id    *ga4gh.Identity
 	tx    storage.Tx
@@ -66,15 +67,15 @@ func (h *processesHandler) Setup(tx storage.Tx) (int, error) {
 	return status, err
 }
 func (h *processesHandler) LookupItem(name string, vars map[string]string) bool {
-	h.item = make(map[string]*pb.BackgroundProcess)
+	h.item = make(map[string]*ppb.Process)
 	m := make(map[string]map[string]proto.Message)
-	_, err := h.s.store.MultiReadTx(gcp.BackgroundProcessDataType, storage.DefaultRealm, storage.DefaultUser, nil, 0, storage.MaxPageSize, m, &pb.BackgroundProcess{}, h.tx)
+	_, err := h.s.store.MultiReadTx(storage.ProcessDataType, storage.DefaultRealm, storage.DefaultUser, nil, 0, storage.MaxPageSize, m, &ppb.Process{}, h.tx)
 	if err != nil {
 		return false
 	}
 	for _, userVal := range m {
 		for k, v := range userVal {
-			if process, ok := v.(*pb.BackgroundProcess); ok {
+			if process, ok := v.(*ppb.Process); ok {
 				h.item[k] = process
 			}
 		}
@@ -82,16 +83,14 @@ func (h *processesHandler) LookupItem(name string, vars map[string]string) bool 
 	return true
 }
 func (h *processesHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := httputil.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.DecodeProtoReq(h.input, h.r); err != nil {
 		return err
 	}
 	return nil
 }
 func (h *processesHandler) Get(name string) error {
 	if h.item != nil {
-		httputil.SendResponse(&pb.BackgroundProcessesResponse{
-			Processes: h.item,
-		}, h.w)
+		httputil.WriteProtoResp(h.w, &pb.BackgroundProcessesResponse{Processes: h.item})
 	}
 	return nil
 }
@@ -116,12 +115,12 @@ func (h *processesHandler) Save(tx storage.Tx, name string, vars map[string]stri
 
 /////////////////////////////////////////////////////////
 
-func (s *Service) processFactory() *httputil.HandlerFactory {
-	return &httputil.HandlerFactory{
+func (s *Service) processFactory() *handlerfactory.HandlerFactory {
+	return &handlerfactory.HandlerFactory{
 		TypeName:            "process",
 		PathPrefix:          processPath,
 		HasNamedIdentifiers: true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
 			return NewProcessHandler(s, w, r)
 		},
 	}
@@ -132,7 +131,7 @@ type processHandler struct {
 	w     http.ResponseWriter
 	r     *http.Request
 	input *pb.BackgroundProcessRequest
-	item  *pb.BackgroundProcess
+	item  *ppb.Process
 	cfg   *pb.DamConfig
 	id    *ga4gh.Identity
 	tx    storage.Tx
@@ -154,24 +153,22 @@ func (h *processHandler) Setup(tx storage.Tx) (int, error) {
 	return status, err
 }
 func (h *processHandler) LookupItem(name string, vars map[string]string) bool {
-	h.item = &pb.BackgroundProcess{}
-	err := h.s.store.ReadTx(gcp.BackgroundProcessDataType, storage.DefaultRealm, storage.DefaultUser, name, storage.LatestRev, h.item, h.tx)
+	h.item = &ppb.Process{}
+	err := h.s.store.ReadTx(storage.ProcessDataType, storage.DefaultRealm, storage.DefaultUser, name, storage.LatestRev, h.item, h.tx)
 	if err != nil {
 		return false
 	}
 	return true
 }
 func (h *processHandler) NormalizeInput(name string, vars map[string]string) error {
-	if err := httputil.GetRequest(h.input, h.r); err != nil {
+	if err := httputil.DecodeProtoReq(h.input, h.r); err != nil {
 		return err
 	}
 	return nil
 }
 func (h *processHandler) Get(name string) error {
 	if h.item != nil {
-		httputil.SendResponse(&pb.BackgroundProcessResponse{
-			Process: h.item,
-		}, h.w)
+		httputil.WriteProtoResp(h.w, &pb.BackgroundProcessResponse{Process: h.item})
 	}
 	return nil
 }

@@ -35,6 +35,7 @@
     "test_page": {
       "clientId": "903cfaeb-57d9-4ef6-5659-04377794ed65",
       "redirectUris": [
+        "/",
         "http://localhost:8091/test",
         "https://icdemo${YOUR_ENVIRONMENT}-dot-${YOUR_PROJECT_ID}.appspot.com/test"
       ],
@@ -43,6 +44,17 @@
         "description": "Test page"
       },
       "scope": "openid offline ga4gh_passport_v1 profile email identities account_admin link",
+      "grantTypes": ["authorization_code"],
+      "responseTypes": ["token", "code", "id_token"]
+    },
+    "admin_tool": {
+      "clientId": "1b2b57c0-46dc-48ce-bd5b-389f26489bcd",
+      "ui": {
+        "label": "Admin Tool",
+        "description": "Administrator's admin.bash tool"
+      },
+      "redirectUris": ["/"],
+      "scope": "openid offline ga4gh_passport_v1 profile email identities account_admin sync",
       "grantTypes": ["authorization_code"],
       "responseTypes": ["token", "code", "id_token"]
     },

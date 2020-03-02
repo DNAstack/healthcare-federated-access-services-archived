@@ -28,10 +28,12 @@ import (
 	"github.com/gorilla/mux" /* copybara-comment */
 	"gopkg.in/square/go-jose.v2" /* copybara-comment */
 	"github.com/dgrijalva/jwt-go" /* copybara-comment */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
+	"github.com/pborman/uuid" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/srcutil" /* copybara-comment: srcutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/strutil" /* copybara-comment: strutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys" /* copybara-comment: testkeys */
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 	dampb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
@@ -40,10 +42,10 @@ import (
 
 const (
 	loginPageFile     = "pages/login.html"
-	loginPageInfoFile = "pages/login-info-persona.html"
+	loginPageInfoFile = "pages/personas/login_info.html"
+	staticDirectory   = "assets/serve/"
 	serviceTitle      = "Persona Playground"
 	loginInfoTitle    = "Persona Playground"
-	staticDirectory   = "assets/serve/"
 )
 
 // Server is a fake OIDC passport broker service for a playground
@@ -144,14 +146,14 @@ func (s *Server) oidcUserInfo(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	parts := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
 	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-		httputil.HandleError(http.StatusUnauthorized, fmt.Errorf("missing or invalid Authorization header"), w)
+		httputil.WriteError(w, http.StatusUnauthorized, fmt.Errorf("missing or invalid Authorization header"))
 		return
 	}
 	token := parts[1]
 
-	src, err := common.ConvertTokenToIdentityUnsafe(token)
+	src, err := ga4gh.ConvertTokenToIdentityUnsafe(token)
 	if err != nil {
-		httputil.HandleError(http.StatusUnauthorized, fmt.Errorf("invalid Authorization token"), w)
+		httputil.WriteError(w, http.StatusUnauthorized, fmt.Errorf("invalid Authorization token"))
 		return
 	}
 	sub := src.Subject
@@ -165,54 +167,54 @@ func (s *Server) oidcUserInfo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if persona == nil {
-		httputil.HandleError(http.StatusUnauthorized, fmt.Errorf("persona %q not found", sub), w)
+		httputil.WriteError(w, http.StatusUnauthorized, fmt.Errorf("persona %q not found", sub))
 		return
 	}
 	id, err := ToIdentity(pname, persona, "openid profile identities ga4gh_passport_v1 email", s.issuerURL)
 	if err != nil {
-		httputil.HandleError(http.StatusUnauthorized, fmt.Errorf("preparing persona %q: %v", sub, err), w)
+		httputil.WriteError(w, http.StatusUnauthorized, fmt.Errorf("preparing persona %q: %v", sub, err))
 		return
 	}
 	data, err := json.Marshal(id)
 	if err != nil {
-		httputil.HandleError(http.StatusInternalServerError, fmt.Errorf("cannot encode user identity %q into JSON: %v", sub, err), w)
+		httputil.WriteError(w, http.StatusInternalServerError, fmt.Errorf("cannot encode user identity %q into JSON: %v", sub, err))
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	httputil.AddCorsHeaders(w)
+	httputil.WriteCorsHeaders(w)
 	w.Write(data)
 }
 
 func (s *Server) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	typ := httputil.GetParam(r, "response_type")
+	typ := httputil.QueryParam(r, "response_type")
 	if typ != "code" {
-		httputil.HandleError(http.StatusBadRequest, fmt.Errorf("response type must be %q", "code"), w)
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Errorf("response type must be %q", "code"))
 		return
 	}
 
 	redirect, err := url.QueryUnescape(r.URL.Query().Get("redirect_uri"))
 	if err != nil {
-		httputil.HandleError(http.StatusBadRequest, fmt.Errorf("redirect_uri must be a valid URL: %v", err), w)
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Errorf("redirect_uri must be a valid URL: %v", err))
 		return
 	}
 	if redirect == "" {
-		httputil.HandleError(http.StatusBadRequest, fmt.Errorf("redirect_uri must be specified"), w)
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Errorf("redirect_uri must be specified"))
 		return
 	}
 	u, err := url.Parse(redirect)
 	if err != nil {
-		httputil.HandleError(http.StatusNotFound, fmt.Errorf("invalid redirect_uri URL format: %v", err), w)
+		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("invalid redirect_uri URL format: %v", err))
 		return
 	}
 
-	state := httputil.GetParam(r, "state")
-	nonce := httputil.GetParam(r, "nonce")
-	clientID := httputil.GetParam(r, "client_id")
-	scope := httputil.GetParam(r, "scope")
+	state := httputil.QueryParam(r, "state")
+	nonce := httputil.QueryParam(r, "nonce")
+	clientID := httputil.QueryParam(r, "client_id")
+	scope := httputil.QueryParam(r, "scope")
 
-	loginHint := httputil.GetParam(r, "login_hint")
+	loginHint := httputil.QueryParam(r, "login_hint")
 	if len(loginHint) == 0 {
 		s.sendLoginPage(u.String(), state, nonce, clientID, scope, w, r)
 		return
@@ -221,7 +223,7 @@ func (s *Server) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 	pname := loginHint
 	_, ok := s.cfg.TestPersonas[pname]
 	if !ok {
-		httputil.HandleError(http.StatusNotFound, fmt.Errorf("persona %q not found", pname), w)
+		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("persona %q not found", pname))
 		return
 	}
 
@@ -236,7 +238,7 @@ func (s *Server) oidcAuthorize(w http.ResponseWriter, r *http.Request) {
 	q.Set("state", state)
 	q.Set("nonce", nonce)
 	u.RawQuery = q.Encode()
-	httputil.SendRedirect(u.String(), r, w)
+	httputil.WriteRedirect(w, r, u.String())
 }
 
 func (s *Server) sendLoginPage(redirect, state, nonce, clientID, scope string, w http.ResponseWriter, r *http.Request) {
@@ -247,8 +249,8 @@ func (s *Server) sendLoginPage(redirect, state, nonce, clientID, scope string, w
 		if ui == nil {
 			ui = make(map[string]string)
 		}
-		if _, ok := ui[common.UILabel]; !ok {
-			ui[common.UILabel] = common.ToTitle(pname)
+		if _, ok := ui["label"]; !ok {
+			ui["label"] = strutil.ToTitle(pname)
 		}
 
 		params := url.Values{}
@@ -262,7 +264,7 @@ func (s *Server) sendLoginPage(redirect, state, nonce, clientID, scope string, w
 
 		u, err := url.Parse(r.URL.String())
 		if err != nil {
-			httputil.HandleError(http.StatusInternalServerError, err, w)
+			httputil.WriteError(w, http.StatusInternalServerError, err)
 			return
 		}
 		u.RawQuery = params.Encode()
@@ -275,7 +277,7 @@ func (s *Server) sendLoginPage(redirect, state, nonce, clientID, scope string, w
 
 	json, err := (&jsonpb.Marshaler{}).MarshalToString(list)
 	if err != nil {
-		httputil.HandleError(http.StatusServiceUnavailable, err, w)
+		httputil.WriteError(w, http.StatusServiceUnavailable, err)
 		return
 	}
 
@@ -283,7 +285,7 @@ func (s *Server) sendLoginPage(redirect, state, nonce, clientID, scope string, w
 	page = strings.Replace(page, "${ASSET_DIR}", "/static", -1)
 	page = strings.Replace(page, "${SERVICE_TITLE}", serviceTitle, -1)
 	page = strings.Replace(page, "${LOGIN_INFO_TITLE}", loginInfoTitle, -1)
-	httputil.SendHTML(page, w)
+	httputil.WriteHTMLResp(w, page)
 }
 
 func basicAuthClientID(r *http.Request) string {
@@ -304,33 +306,33 @@ func basicAuthClientID(r *http.Request) string {
 
 func (s *Server) oidcToken(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	clientID := httputil.GetParam(r, "client_id")
+	clientID := httputil.QueryParam(r, "client_id")
 	if len(clientID) == 0 {
 		clientID = basicAuthClientID(r)
 	}
 
-	code := strings.Split(httputil.GetParam(r, "code"), ",")
+	code := strings.Split(httputil.QueryParam(r, "code"), ",")
 	pname := code[0]
 	if len(code) > 1 {
 		clientID = code[1]
 	}
 	persona, ok := s.cfg.TestPersonas[pname]
 	if !ok {
-		httputil.HandleError(http.StatusNotFound, fmt.Errorf("persona %q not found", pname), w)
+		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("persona %q not found", pname))
 		return
 	}
-	acTok, _, err := NewAccessToken(pname, s.issuerURL, clientID, httputil.GetParam(r, "scope"), persona)
+	acTok, _, err := NewAccessToken(pname, s.issuerURL, clientID, httputil.QueryParam(r, "scope"), persona)
 	if err != nil {
-		httputil.HandleError(http.StatusInternalServerError, fmt.Errorf("error creating access token for persona %q: %v", pname, err), w)
+		httputil.WriteError(w, http.StatusInternalServerError, fmt.Errorf("error creating access token for persona %q: %v", pname, err))
 		return
 	}
 	resp := &cpb.OidcTokenResponse{
 		AccessToken: string(acTok),
 		TokenType:   "bearer",
 		ExpiresIn:   60 * 60 * 24 * 365,
-		Uid:         common.GenerateGUID(),
+		Uid:         uuid.New(),
 	}
-	httputil.SendResponse(resp, w)
+	httputil.WriteProtoResp(w, resp)
 }
 
 // TODO: move registeration of endpoints to main package.

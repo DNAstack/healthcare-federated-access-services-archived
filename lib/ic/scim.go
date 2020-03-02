@@ -23,11 +23,14 @@ import (
 	"strings"
 
 	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"google.golang.org/grpc/codes" /* copybara-comment */
 	"google.golang.org/grpc/status" /* copybara-comment */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/strutil" /* copybara-comment: strutil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
 
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 	spb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/scim/v2" /* copybara-comment: go_proto */
@@ -57,7 +60,7 @@ var (
 			for _, link := range acctProto(p).ConnectedAccounts {
 				list = append(list, link.GetProperties().Email)
 			}
-			return common.JoinNonEmpty(list, " ")
+			return strutil.JoinNonEmpty(list, " ")
 		},
 		"externalid": func(p proto.Message) string {
 			return acctProto(p).GetProperties().Subject
@@ -128,12 +131,12 @@ func linkProto(p proto.Message) *cpb.ConnectedAccount {
 	return link
 }
 
-func (s *Service) scimMeFactory() *httputil.HandlerFactory {
-	return &httputil.HandlerFactory{
+func (s *Service) scimMeFactory() *handlerfactory.HandlerFactory {
+	return &handlerfactory.HandlerFactory{
 		TypeName:            "user",
 		PathPrefix:          scimMePath,
 		HasNamedIdentifiers: false,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
 			return &scimMe{
 				s: s,
 				w: w,
@@ -209,12 +212,12 @@ func (h *scimMe) Save(tx storage.Tx, name string, vars map[string]string, desc, 
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) scimUserFactory() *httputil.HandlerFactory {
-	return &httputil.HandlerFactory{
+func (s *Service) scimUserFactory() *handlerfactory.HandlerFactory {
+	return &handlerfactory.HandlerFactory{
 		TypeName:            "user",
 		PathPrefix:          scimUserPath,
 		HasNamedIdentifiers: true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
 			return &scimUser{
 				s:     s,
 				w:     w,
@@ -238,9 +241,9 @@ type scimUser struct {
 
 // Setup initializes the handler
 func (h *scimUser) Setup(tx storage.Tx) (int, error) {
-	_, _, id, status, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
+	_, _, id, st, err := h.s.handlerSetup(tx, h.r, noScope, h.input)
 	if err != nil {
-		return status, err
+		return st, err
 	}
 	h.id = id
 	h.tx = tx
@@ -249,7 +252,7 @@ func (h *scimUser) Setup(tx storage.Tx) (int, error) {
 		return http.StatusOK, nil
 	}
 	if !hasScopes("account_admin", id.Scope, false) {
-		return http.StatusUnauthorized, fmt.Errorf("unauthorized")
+		return http.StatusUnauthorized, status.Errorf(codes.Unauthenticated, "unauthorized")
 	}
 	return http.StatusOK, nil
 }
@@ -283,7 +286,8 @@ func (h *scimUser) NormalizeInput(name string, vars map[string]string) error {
 
 // Get sends a GET method response
 func (h *scimUser) Get(name string) error {
-	return httputil.SendResponse(h.s.newScimUser(h.item, getRealm(h.r)), h.w)
+	httputil.WriteProtoResp(h.w, h.s.newScimUser(h.item, getRealm(h.r)))
+	return nil
 }
 
 // Post receives a POST method request
@@ -350,13 +354,13 @@ func (h *scimUser) Patch(name string) error {
 
 		case "locale":
 			dst = &h.save.Profile.Locale
-			if len(src) > 0 && !common.IsLocale(src) {
+			if len(src) > 0 && !timeutil.IsLocale(src) {
 				return fmt.Errorf("operation %d: %q is not a recognized locale", i, path)
 			}
 
 		case "timezone":
 			dst = &h.save.Profile.ZoneInfo
-			if len(src) > 0 && !common.IsTimeZone(src) {
+			if len(src) > 0 && !timeutil.IsTimeZone(src) {
 				return fmt.Errorf("operation %d: %q is not a recognized time zone", i, src)
 			}
 
@@ -412,7 +416,7 @@ func (h *scimUser) Patch(name string) error {
 
 		case "photo":
 			dst = &h.save.Profile.Picture
-			if !common.IsImageURL(src) {
+			if !strutil.IsImageURL(src) {
 				return fmt.Errorf("invalid photo URL %q", src)
 			}
 
@@ -436,7 +440,8 @@ func (h *scimUser) Patch(name string) error {
 			return fmt.Errorf("operation %d: invalid op %q", i, patch.Op)
 		}
 	}
-	return httputil.SendResponse(h.s.newScimUser(h.save, getRealm(h.r)), h.w)
+	httputil.WriteProtoResp(h.w, h.s.newScimUser(h.save, getRealm(h.r)))
+	return nil
 }
 
 // Remove receives a DELETE method request
@@ -534,12 +539,12 @@ func linkToken(r *http.Request) (string, error) {
 
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) scimUsersFactory() *httputil.HandlerFactory {
-	return &httputil.HandlerFactory{
+func (s *Service) scimUsersFactory() *handlerfactory.HandlerFactory {
+	return &handlerfactory.HandlerFactory{
 		TypeName:            "users",
 		PathPrefix:          scimUsersPath,
 		HasNamedIdentifiers: true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
 			return &scimUsers{
 				s: s,
 				w: w,
@@ -577,19 +582,19 @@ func (h *scimUsers) NormalizeInput(name string, vars map[string]string) error {
 
 // Get sends a GET method response
 func (h *scimUsers) Get(name string) error {
-	filters, err := storage.BuildFilters(httputil.GetParam(h.r, "filter"), scimUserFilterMap)
+	filters, err := storage.BuildFilters(httputil.QueryParam(h.r, "filter"), scimUserFilterMap)
 	if err != nil {
 		return err
 	}
 	// "startIndex" is a 1-based starting location, to be converted to an offset for the query.
-	start := httputil.ExtractIntParam(h.r, "startIndex")
+	start := httputil.QueryParamInt(h.r, "startIndex")
 	if start == 0 {
 		start = 1
 	}
 	offset := start - 1
 	// "count" is the number of results desired on this request's page.
-	max := httputil.ExtractIntParam(h.r, "count")
-	if len(httputil.GetParam(h.r, "count")) == 0 {
+	max := httputil.QueryParamInt(h.r, "count")
+	if len(httputil.QueryParam(h.r, "count")) == 0 {
 		max = storage.DefaultPageSize
 	}
 
@@ -664,7 +669,7 @@ func (s *Service) newScimUser(acct *cpb.Account, realm string) *spb.User {
 	var photos []*spb.Attribute
 	primaryPic := acct.GetProfile().GetPicture()
 	if len(primaryPic) > 0 {
-		photos = append(photos, &spb.Attribute{Value: primaryPic, Primary: true})
+		photos = append(photos, &spb.Attribute{Value: strutil.ToURL(primaryPic, s.getDomainURL()), Primary: true})
 	}
 	for _, ca := range acct.ConnectedAccounts {
 		if len(ca.Properties.Email) > 0 {
@@ -679,7 +684,7 @@ func (s *Service) newScimUser(acct *cpb.Account, realm string) *spb.User {
 			continue
 		}
 		if pic := ca.GetProfile().GetPicture(); len(pic) > 0 && pic != primaryPic {
-			photos = append(photos, &spb.Attribute{Value: pic})
+			photos = append(photos, &spb.Attribute{Value: strutil.ToURL(pic, s.getDomainURL())})
 		}
 	}
 
@@ -689,8 +694,8 @@ func (s *Service) newScimUser(acct *cpb.Account, realm string) *spb.User {
 		ExternalId: acct.Properties.Subject,
 		Meta: &spb.ResourceMetadata{
 			ResourceType: "User",
-			Created:      common.TimestampString(int64(acct.Properties.Created)),
-			LastModified: common.TimestampString(int64(acct.Properties.Modified)),
+			Created:      timeutil.TimestampString(int64(acct.Properties.Created)),
+			LastModified: timeutil.TimestampString(int64(acct.Properties.Modified)),
 			Location:     s.getDomainURL() + strings.ReplaceAll(scimUsersPath, "{realm}", realm) + "/" + acct.Properties.Subject,
 			Version:      strconv.FormatInt(acct.Revision, 10),
 		},
@@ -716,7 +721,7 @@ func formattedName(acct *cpb.Account) string {
 	profile := acct.GetProfile()
 	name := profile.FormattedName
 	if len(name) == 0 {
-		name = common.JoinNonEmpty([]string{profile.GivenName, profile.MiddleName, profile.FamilyName}, " ")
+		name = strutil.JoinNonEmpty([]string{profile.GivenName, profile.MiddleName, profile.FamilyName}, " ")
 	}
 	if len(name) == 0 {
 		name = profile.Name

@@ -18,18 +18,23 @@ package oathclients
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
-	glog "github.com/golang/glog" /* copybara-comment */
 	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"github.com/google/go-cmp/cmp" /* copybara-comment */
+	"github.com/google/go-cmp/cmp/cmpopts" /* copybara-comment */
 	"google.golang.org/grpc/codes" /* copybara-comment */
 	"github.com/go-openapi/strfmt" /* copybara-comment */
+	"google.golang.org/protobuf/testing/protocmp" /* copybara-comment */
+	"github.com/pborman/uuid" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/check" /* copybara-comment: check */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common" /* copybara-comment: common */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/strutil" /* copybara-comment: strutil */
 
+	glog "github.com/golang/glog" /* copybara-comment */
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 )
 
@@ -44,7 +49,7 @@ func CheckClientIntegrity(name string, c *pb.Client) error {
 		return httputil.NewInfoStatus(codes.InvalidArgument, httputil.StatusPath(cfgClients, name), fmt.Sprintf("invalid clientHandler name %q: %v", name, err)).Err()
 	}
 
-	if _, err := common.ParseGUID(c.ClientId); err != nil || len(c.ClientId) != clientIDLen {
+	if uid := uuid.Parse(c.ClientId); uid == nil || len(c.ClientId) != clientIDLen {
 		return httputil.NewInfoStatus(codes.InvalidArgument, httputil.StatusPath(cfgClients, name, "clientId"), fmt.Sprintf("missing clientHandler ID or invalid format: %q", c.ClientId)).Err()
 	}
 
@@ -61,7 +66,7 @@ func CheckClientIntegrity(name string, c *pb.Client) error {
 			continue
 		}
 
-		if !common.IsURL(uri) {
+		if !strutil.IsURL(uri) {
 			return httputil.NewInfoStatus(codes.InvalidArgument, httputil.StatusPath(cfgClients, name, "RedirectUris"), fmt.Sprintf("RedirectUris %q is not url", uri)).Err()
 		}
 	}
@@ -83,36 +88,75 @@ func CheckClientIntegrity(name string, c *pb.Client) error {
 
 // ExtractClientID from request.
 func ExtractClientID(r *http.Request) string {
-	cid := httputil.GetParam(r, "client_id")
+	cid := httputil.QueryParam(r, "client_id")
 	if len(cid) > 0 {
 		return cid
 	}
-	return httputil.GetParam(r, "clientId")
+	return httputil.QueryParam(r, "clientId")
 }
 
 // ExtractClientSecret from request.
 func ExtractClientSecret(r *http.Request) string {
-	cs := httputil.GetParam(r, "client_secret")
+	cs := httputil.QueryParam(r, "client_secret")
 	if len(cs) > 0 {
 		return cs
 	}
-	return httputil.GetParam(r, "clientSecret")
+	return httputil.QueryParam(r, "clientSecret")
 }
 
-// ResetClients resets clients in hydra with given clients and secrets.
-func ResetClients(httpClient *http.Client, hydraAdminURL string, clients map[string]*pb.Client, secrets map[string]string) error {
-	var added, updated, removed, skipped int
+// SyncClients resets clients in hydra with given clients and secrets.
+func SyncClients(httpClient *http.Client, hydraAdminURL string, clients map[string]*pb.Client, secrets map[string]string) (*pb.ClientState, error) {
+	state, err := SyncState(httpClient, hydraAdminURL, clients, secrets)
+	if err != nil {
+		return nil, err
+	}
+	for name, client := range state.Add {
+		sec := secrets[client.ClientId]
+		thc := toHydraClient(client, name, sec, strfmt.NewDateTime())
+		if _, err := hydra.CreateClient(httpClient, hydraAdminURL, thc); err != nil {
+			return nil, err
+		}
+	}
+	for name, client := range state.Update {
+		sec := secrets[client.ClientId]
+		thc := toHydraClient(client, name, sec, strfmt.NewDateTime())
+		if _, err := hydra.UpdateClient(httpClient, hydraAdminURL, thc.ClientID, thc); err != nil {
+			return nil, err
+		}
+	}
+	for _, client := range state.Remove {
+		if err := hydra.DeleteClient(httpClient, hydraAdminURL, client.ClientId); err != nil {
+			return nil, err
+		}
+	}
+	msg := fmt.Sprintf("sync hydra clients: added %d, updated %d, removed %d, unchanged %d, no_secret %d", len(state.Add), len(state.Update), len(state.Remove), len(state.Unchanged), len(state.NoSecret))
+	state.Status = httputil.NewStatus(codes.OK, msg).Proto()
+	glog.Infof(msg)
+	return state, nil
+}
+
+// SyncState calculates what client sync operations are needed between hydra and the service.
+func SyncState(httpClient *http.Client, hydraAdminURL string, clients map[string]*pb.Client, secrets map[string]string) (*pb.ClientState, error) {
+	state := &pb.ClientState{
+		Add:            make(map[string]*pb.Client),
+		Update:         make(map[string]*pb.Client),
+		UpdateDiff:     make(map[string]string),
+		Remove:         make(map[string]*pb.Client),
+		Unchanged:      make(map[string]*pb.Client),
+		NoSecret:       make(map[string]*pb.Client),
+		SecretMismatch: []string{},
+	}
 	cs, err := hydra.ListClients(httpClient, hydraAdminURL)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Populate existing Hydra clients by ClientID. As the logic handles
 	// these clients, remove them from this map. Remaining items no longer
 	// exist in the Federated Access component, so delete the from Hydra.
-	existing := make(map[string]*hydraapi.Client)
+	removable := make(map[string]*hydraapi.Client)
 	for _, c := range cs {
-		existing[c.ClientID] = c
+		removable[c.ClientID] = c
 	}
 
 	// Add clients to hydra.
@@ -123,39 +167,43 @@ func ResetClients(httpClient *http.Client, hydraAdminURL string, clients map[str
 
 		sec, ok := secrets[c.ClientId]
 		if !ok {
-			glog.Errorf("Client %s has no secret, and will not be included in Hydra client list.", n)
-			skipped++
+			glog.Errorf("sync hydra clients: client %q has no secret, and will not be included in Hydra client list.", n)
+			state.NoSecret[n] = c
 			continue
 		}
 
-		hc, ok := existing[c.ClientId]
+		hc, ok := removable[c.ClientId]
 		if !ok {
-			// Does not exist, so create.
-			thc := toHydraClient(c, n, sec, strfmt.NewDateTime())
-			if _, err := hydra.CreateClient(httpClient, hydraAdminURL, thc); err != nil {
-				return err
-			}
-			added++
+			// Does not exist in hydra, so create.
+			state.Add[n] = c
 			continue
 		}
 
-		// Update an existing client.
-		thc := toHydraClient(c, n, sec, hc.CreatedAt)
-		if _, err := hydra.UpdateClient(httpClient, hydraAdminURL, thc.ClientID, thc); err != nil {
-			return err
+		// Update an existing client if it has changed.
+		fhc, hsec := fromHydraClient(hc)
+		if cmp.Equal(fhc, c, protocmp.Transform(), cmpopts.EquateEmpty()) && hsec == sec {
+			state.Unchanged[n] = c
+		} else {
+			state.Update[n] = c
+			if sec != hsec {
+				// Add the name of the client only, do not reveal the secrets in the state.
+				state.SecretMismatch = append(state.SecretMismatch, n)
+			}
+			// Take the diff again without revealing the secrets.
+			state.UpdateDiff[n] = cmp.Diff(fhc, c, protocmp.Transform(), cmpopts.EquateEmpty())
 		}
-		delete(existing, thc.ClientID)
-		updated++
+		// Whether updated or unchanged above, remove it from the `removable` list to avoid removing the hydra client below.
+		delete(removable, hc.ClientID)
 	}
 
-	// Remove remaining existing hydra clients.
-	for _, hc := range existing {
-		if err := hydra.DeleteClient(httpClient, hydraAdminURL, hc.ClientID); err != nil {
-			return err
-		}
-		removed++
+	// Remove remaining existing hydra clients on the `removable` list.
+	for _, hc := range removable {
+		c, _ := fromHydraClient(hc)
+		state.Remove[hc.Name] = c
 	}
 
-	glog.Infof("reset hydra clients: added %d, updated %d, removed %d, skipped %d, total %d", added, updated, removed, skipped, len(clients))
-	return nil
+	sort.Strings(state.SecretMismatch)
+	msg := fmt.Sprintf("hydra clients status: add %d, update %d, remove %d, unchanged %d, no_secret %d", len(state.Add), len(state.Update), len(state.Remove), len(state.Unchanged), len(state.NoSecret))
+	state.Status = httputil.NewStatus(codes.OK, msg).Proto()
+	return state, nil
 }

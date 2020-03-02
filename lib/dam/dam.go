@@ -17,40 +17,44 @@ package dam
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter"     /* copybara-comment: adapter */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/auth"        /* copybara-comment: auth */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"      /* copybara-comment: clouds */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"      /* copybara-comment: common */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"       /* copybara-comment: ga4gh */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil"    /* copybara-comment: httputil */
+	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"cloud.google.com/go/logging" /* copybara-comment: logging */
+	"github.com/gorilla/mux" /* copybara-comment */
+	"google.golang.org/grpc/codes" /* copybara-comment */
+	"google.golang.org/grpc/status" /* copybara-comment */
+	"golang.org/x/oauth2" /* copybara-comment */
+	"bitbucket.org/creachadair/stringset" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter" /* copybara-comment: adapter */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/auth" /* copybara-comment: auth */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/permissions" /* copybara-comment: permissions */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona"     /* copybara-comment: persona */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"     /* copybara-comment: storage */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator"  /* copybara-comment: translator */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator"   /* copybara-comment: validator */
-	"github.com/golang/protobuf/jsonpb"                                                   /* copybara-comment */
-	"github.com/golang/protobuf/proto"                                                    /* copybara-comment */
-	"github.com/gorilla/mux"                                                              /* copybara-comment */
-	"golang.org/x/oauth2"                                                                 /* copybara-comment */
-	"google.golang.org/grpc/codes"                                                        /* copybara-comment */
-	"google.golang.org/grpc/status"                                                       /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator" /* copybara-comment: validator */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/verifier" /* copybara-comment: verifier */
 
+	glog "github.com/golang/glog" /* copybara-comment */
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"     /* copybara-comment: go_proto */
-	glog "github.com/golang/glog"                                                             /* copybara-comment */
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
 const (
@@ -67,31 +71,35 @@ const (
 var (
 	ttlRE = regexp.MustCompile(`^[0-9]+[smhdw]$`)
 
-	defaultTTL = 1 * time.Hour
-	maxTTL     = 90 * 24 * time.Hour // keep in sync with maxTTLStr
-	maxTTLStr  = "90 days"           // keep in sync with maxTTL
+	defaultTTL             = 1 * time.Hour
+	defaultMaxRequestedTTL = 14 * 24 * time.Hour
+	maxTTL                 = 90 * 24 * time.Hour // keep in sync with maxTTLStr
+	maxTTLStr              = "90 days"           // keep in sync with maxTTL
 
 	translators = translator.PassportTranslators()
-
-	importDefault = os.Getenv("IMPORT")
 )
 
 type Service struct {
-	adapters       *adapter.TargetAdapters
-	roleCategories map[string]*pb.RoleCategory
-	domainURL      string
-	defaultBroker  string
-	serviceName    string
-	hydraAdminURL  string
-	hydraPublicURL string
-	store          storage.Store
-	warehouse      clouds.ResourceTokenCreator
-	permissions    *permissions.Permissions
-	Handler        *ServiceHandler
-	httpClient     *http.Client
-	startTime      int64
-	translators    sync.Map
-	useHydra       bool
+	adapters         *adapter.TargetAdapters
+	roleCategories   map[string]*pb.RoleCategory
+	domainURL        string
+	defaultBroker    string
+	serviceName      string
+	hydraAdminURL    string
+	hydraPublicURL   string
+	hydraSyncFreq    time.Duration
+	store            storage.Store
+	warehouse        clouds.ResourceTokenCreator
+	logger           *logging.Client
+	permissions      *permissions.Permissions
+	Handler          *ServiceHandler
+	hidePolicyBasis  bool
+	hideRejectDetail bool
+	httpClient       *http.Client
+	startTime        int64
+	translators      sync.Map
+	useHydra         bool
+	visaVerifier     *verifier.Verifier
 }
 
 type ServiceHandler struct {
@@ -113,12 +121,20 @@ type Options struct {
 	Store storage.Store
 	// Warehouse: resource token creator service
 	Warehouse clouds.ResourceTokenCreator
+	// Logger: audit log logger
+	Logger *logging.Client
 	// UseHydra: service use hydra integrated OIDC.
 	UseHydra bool
 	// HydraAdminURL: hydra admin endpoints url
 	HydraAdminURL string
 	// HydraPublicURL: hydra public endpoints url
 	HydraPublicURL string
+	// HydraSyncFreq: how often to allow clients:sync to be called
+	HydraSyncFreq time.Duration
+	// HidePolicyBasis: do not send policy basis to client
+	HidePolicyBasis bool
+	// HideRejectDetail: do not send rejected visas details
+	HideRejectDetail bool
 }
 
 // NewService create DAM service
@@ -132,47 +148,56 @@ func NewService(params *Options) *Service {
 	if err != nil {
 		glog.Fatalf("cannot load permissions: %v", err)
 	}
+	syncFreq := time.Minute
+	if params.HydraSyncFreq > 0 {
+		syncFreq = params.HydraSyncFreq
+	}
 
 	sh := &ServiceHandler{}
 	s := &Service{
-		roleCategories: roleCat.DamRoleCategories,
-		domainURL:      params.Domain,
-		defaultBroker:  params.DefaultBroker,
-		serviceName:    params.ServiceName,
-		store:          params.Store,
-		warehouse:      params.Warehouse,
-		permissions:    perms,
-		Handler:        sh,
-		httpClient:     params.HTTPClient,
-		startTime:      time.Now().Unix(),
-		useHydra:       params.UseHydra,
-		hydraAdminURL:  params.HydraAdminURL,
-		hydraPublicURL: params.HydraPublicURL,
+		roleCategories:   roleCat.DamRoleCategories,
+		domainURL:        params.Domain,
+		defaultBroker:    params.DefaultBroker,
+		serviceName:      params.ServiceName,
+		store:            params.Store,
+		warehouse:        params.Warehouse,
+		logger:           params.Logger,
+		permissions:      perms,
+		Handler:          sh,
+		hidePolicyBasis:  params.HidePolicyBasis,
+		hideRejectDetail: params.HideRejectDetail,
+		httpClient:       params.HTTPClient,
+		startTime:        time.Now().Unix(),
+		useHydra:         params.UseHydra,
+		hydraAdminURL:    params.HydraAdminURL,
+		hydraPublicURL:   params.HydraPublicURL,
+		hydraSyncFreq:    syncFreq,
+		visaVerifier:     verifier.New(""),
 	}
 
 	if s.httpClient == nil {
 		s.httpClient = http.DefaultClient
 	}
 
+	exists, err := configExists(params.Store)
+	if err != nil {
+		glog.Fatalf("cannot use storage layer: %v", err)
+	}
+	if !exists {
+		if err = ImportConfig(params.Store, params.ServiceName, params.Warehouse, nil); err != nil {
+			glog.Fatalf("cannot import configs to service %q: %v", params.ServiceName, err)
+		}
+	}
 	secrets, err := s.loadSecrets(nil)
 	if err != nil {
-		if isAutoReset() || storage.ErrNotFound(err) {
-			if impErr := s.ImportFiles(importDefault); impErr == nil {
-				secrets, err = s.loadSecrets(nil)
-			}
-		}
-		if err != nil {
-			glog.Fatalf("cannot load client secrets: %v", err)
-		}
+		glog.Fatalf("cannot load client secrets: %v", err)
 	}
 	adapters, err := adapter.CreateAdapters(fs, params.Warehouse, secrets)
 	if err != nil {
 		glog.Fatalf("cannot load adapters: %v", err)
 	}
 	s.adapters = adapters
-	if err := s.ImportFiles(importDefault); err != nil {
-		glog.Fatalf("cannot initialize storage: %v", err)
-	}
+
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
 		glog.Fatalf("cannot load config: %v", err)
@@ -180,9 +205,15 @@ func NewService(params *Options) *Service {
 	if stat := s.CheckIntegrity(cfg); stat != nil {
 		glog.Fatalf("config integrity error: %+v", stat.Proto())
 	}
+	if err = s.updateWarehouseOptions(cfg.Options, storage.DefaultRealm, nil); err != nil {
+		glog.Fatalf("setting service account config options failed (cannot enforce access management policies): %v", err)
+	}
+	if err = s.registerAllProjects(nil); err != nil {
+		glog.Fatalf("registation of one or more service account projects failed (cannot enforce access management policies): %v", err)
+	}
 
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, s.httpClient)
-	if tests := s.runTests(ctx, cfg, nil); hasTestError(tests) {
+	if tests := runTests(ctx, cfg, nil, s.ValidateCfgOpts()); hasTestError(tests) {
 		glog.Fatalf("run tests error: %v; results: %v; modification: <%v>", tests.Error, tests.TestResults, tests.Modification)
 	}
 
@@ -192,6 +223,8 @@ func NewService(params *Options) *Service {
 			glog.Infof("failed to create translator for issuer %q: %v", name, err)
 		}
 	}
+
+	s.syncToHydra(cfg.Clients, secrets.ClientSecrets, 30*time.Second, nil)
 
 	sh.s = s
 	sh.Handler = mux.NewRouter()
@@ -229,15 +262,24 @@ func getName(r *http.Request) string {
 	return ""
 }
 
-func (s *Service) handlerSetup(tx storage.Tx, r *http.Request, scope string, item proto.Message) (*pb.DamConfig, *ga4gh.Identity, int, error) {
+func (s *Service) handlerSetupNoAuth(tx storage.Tx, r *http.Request, item proto.Message) (*pb.DamConfig, int, error) {
+	r.ParseForm()
 	if item != nil {
 		if err := jsonpb.Unmarshal(r.Body, item); err != nil && err != io.EOF {
-			return nil, nil, http.StatusBadRequest, err
+			return nil, http.StatusBadRequest, err
 		}
 	}
 	cfg, err := s.loadConfig(tx, getRealm(r))
 	if err != nil {
-		return nil, nil, http.StatusServiceUnavailable, err
+		return nil, http.StatusServiceUnavailable, err
+	}
+	return cfg, http.StatusOK, nil
+}
+
+func (s *Service) handlerSetup(tx storage.Tx, r *http.Request, scope string, item proto.Message) (*pb.DamConfig, *ga4gh.Identity, int, error) {
+	cfg, status, err := s.handlerSetupNoAuth(tx, r, item)
+	if err != nil {
+		return nil, nil, status, err
 	}
 	id, status, err := s.getBearerTokenIdentity(cfg, r)
 	if err != nil {
@@ -248,7 +290,7 @@ func (s *Service) handlerSetup(tx storage.Tx, r *http.Request, scope string, ite
 
 func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
-		httputil.AddCorsHeaders(w)
+		httputil.WriteCorsHeaders(w)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -272,12 +314,12 @@ func (s *Service) getIssuerString() string {
 }
 
 func (s *Service) damSignedBearerTokenToPassportIdentity(ctx context.Context, cfg *pb.DamConfig, tok, clientID string) (*ga4gh.Identity, error) {
-	id, err := common.ConvertTokenToIdentityUnsafe(tok)
+	id, err := ga4gh.ConvertTokenToIdentityUnsafe(tok)
 	if err != nil {
 		return nil, status.Errorf(codes.Unauthenticated, fmt.Sprintf("inspecting token: %v", err))
 	}
 
-	v, err := common.GetOIDCTokenVerifier(ctx, clientID, id.Issuer)
+	v, err := ga4gh.GetOIDCTokenVerifier(ctx, clientID, id.Issuer)
 	if err != nil {
 		return nil, status.Errorf(codes.Unavailable, fmt.Sprintf("GetOIDCTokenVerifier failed: %v", err))
 	}
@@ -294,7 +336,7 @@ func (s *Service) damSignedBearerTokenToPassportIdentity(ctx context.Context, cf
 	if id.Issuer != iss {
 		return nil, status.Errorf(codes.Unauthenticated, fmt.Sprintf("bearer token unauthorized for issuer %q", id.Issuer))
 	}
-	if !common.IsAudience(id, clientID, iss) {
+	if !ga4gh.IsAudience(id, clientID, iss) {
 		return nil, status.Errorf(codes.Unauthenticated, "bearer token unauthorized party")
 	}
 
@@ -329,7 +371,7 @@ func (s *Service) damSignedBearerTokenToPassportIdentity(ctx context.Context, cf
 }
 
 func (s *Service) upstreamTokenToPassportIdentity(ctx context.Context, cfg *pb.DamConfig, tx storage.Tx, tok, clientID string) (*ga4gh.Identity, error) {
-	id, err := common.ConvertTokenToIdentityUnsafe(tok)
+	id, err := ga4gh.ConvertTokenToIdentityUnsafe(tok)
 	if err != nil {
 		return nil, fmt.Errorf("inspecting token: %v", err)
 	}
@@ -344,7 +386,7 @@ func (s *Service) upstreamTokenToPassportIdentity(ctx context.Context, cfg *pb.D
 	if err != nil {
 		return nil, fmt.Errorf("translating token from issuer %q: %v", iss, err)
 	}
-	if common.HasUserinfoClaims(id) {
+	if ga4gh.HasUserinfoClaims(id) {
 		id, err = translator.FetchUserinfoClaims(ctx, id, tok, t)
 		if err != nil {
 			return nil, fmt.Errorf("fetching user info from issuer %q: %v", iss, err)
@@ -355,13 +397,41 @@ func (s *Service) upstreamTokenToPassportIdentity(ctx context.Context, cfg *pb.D
 		return nil, err
 	}
 
+	return s.populateIdentityVisas(ctx, id, cfg)
+}
+
+func (s *Service) populateIdentityVisas(ctx context.Context, id *ga4gh.Identity, cfg *pb.DamConfig) (*ga4gh.Identity, error) {
+	// Filter visas by trusted issuers.
+	trusted := trustedIssuers(cfg.TrustedPassportIssuers)
 	vs := []ga4gh.VisaJWT{}
-	for _, v := range id.VisaJWTs {
-		vs = append(vs, ga4gh.VisaJWT(v))
+	for i, v := range id.VisaJWTs {
+		jwt := ga4gh.VisaJWT(v)
+		v, err := ga4gh.NewVisaFromJWT(jwt)
+		if err != nil {
+			id.RejectVisa(nil, ga4gh.UnspecifiedVisaFormat, "invalid_visa", "", fmt.Sprintf("cannot unpack visa %d", i))
+		}
+		d := v.Data()
+		if _, ok := trusted[d.Issuer]; !ok {
+			id.RejectVisa(d, v.Format(), "untrusted_issuer", "iss", fmt.Sprintf("issuer %q is not a trusted author of visas by the DAM", d.Issuer))
+			continue
+		}
+		vs = append(vs, jwt)
 	}
-	id.GA4GH = ga4gh.VisasToOldClaims(vs)
+	claims, _, err := ga4gh.VisasToOldClaims(ctx, vs, s.visaVerifier.Verify)
+	if err != nil {
+		return nil, err
+	}
+	id.GA4GH = claims
 
 	return id, nil
+}
+
+func trustedIssuers(trustedIssuers map[string]*pb.TrustedPassportIssuer) map[string]bool {
+	trusted := make(map[string]bool)
+	for _, tpi := range trustedIssuers {
+		trusted[tpi.Issuer] = true
+	}
+	return trusted
 }
 
 func (s *Service) getBearerTokenIdentity(cfg *pb.DamConfig, r *http.Request) (*ga4gh.Identity, int, error) {
@@ -390,13 +460,13 @@ func (s *Service) getPassportIdentity(cfg *pb.DamConfig, tx storage.Tx, r *http.
 	return id, http.StatusOK, nil
 }
 
-func (s *Service) testPersona(ctx context.Context, personaName string, resources []string, cfg *pb.DamConfig) (string, []string, error) {
+func testPersona(ctx context.Context, personaName string, resources []string, cfg *pb.DamConfig, vopts ValidateCfgOpts) (string, []string, error) {
 	p := cfg.TestPersonas[personaName]
 	id, err := persona.ToIdentity(personaName, p, defaultPersonaScope, "")
 	if err != nil {
 		return "INVALID", nil, err
 	}
-	state, got, err := s.resolveAccessList(ctx, id, resources, nil, nil, cfg)
+	state, got, err := resolveAccessList(ctx, id, resources, nil, nil, cfg, vopts)
 	if err != nil {
 		return state, got, err
 	}
@@ -411,12 +481,27 @@ func (s *Service) testPersona(ctx context.Context, personaName string, resources
 // the last one (if it doesn't time out), or non-zero to indicate that a recent sync
 // is good enough. Note there are some race conditions with several client changes
 // overlapping in flight that could still have the two services be out of sync.
-func (s *Service) syncToHydra(clients map[string]*cpb.Client, secrets map[string]string, minFrequency time.Duration) error {
-	glog.Infoln("skipping hydra sync until logic fixed")
-	return nil
+func (s *Service) syncToHydra(clients map[string]*cpb.Client, secrets map[string]string, minFrequency time.Duration, tx storage.Tx) (*cpb.ClientState, error) {
+	if !s.useHydra {
+		return nil, nil
+	}
+	ltx := s.store.LockTx("hydra_"+s.serviceName, minFrequency, tx)
+	if ltx == nil {
+		return nil, fmt.Errorf("hydra sync has completed recently or is active")
+	}
+	if tx == nil {
+		// Is a new tx (i.e. ltx didn't override tx)
+		defer ltx.Finish()
+	}
+	state, err := oathclients.SyncClients(s.httpClient, s.hydraAdminURL, clients, secrets)
+	if err != nil {
+		glog.Errorf("failed to sync hydra clients: %v", err)
+		return nil, err
+	}
+	return state, nil
 }
 
-func (s *Service) resolveAccessList(ctx context.Context, id *ga4gh.Identity, resources, views, roles []string, cfg *pb.DamConfig) (string, []string, error) {
+func resolveAccessList(ctx context.Context, id *ga4gh.Identity, resources, views, roles []string, cfg *pb.DamConfig, vopts ValidateCfgOpts) (string, []string, error) {
 	var got []string
 	for _, rn := range resources {
 		r, ok := cfg.Resources[rn]
@@ -425,17 +510,17 @@ func (s *Service) resolveAccessList(ctx context.Context, id *ga4gh.Identity, res
 			return "FAILED", got, fmt.Errorf("resource %q not found", rn)
 		}
 		for vn, v := range r.Views {
-			if len(views) > 0 && !common.ListContains(views, vn) {
+			if len(views) > 0 && !stringset.Contains(views, vn) {
 				continue
 			}
 			if len(v.AccessRoles) == 0 {
 				return "INVALID", nil, fmt.Errorf("resource %q view %q has no roles defined", rn, vn)
 			}
 			for rname := range v.AccessRoles {
-				if len(roles) > 0 && !common.ListContains(roles, rname) {
+				if len(roles) > 0 && !stringset.Contains(roles, rname) {
 					continue
 				}
-				if _, err := s.checkAuthorization(ctx, id, 0, rn, vn, rname, cfg, noClientID); err != nil {
+				if _, err := checkAuthorization(ctx, id, 0, rn, vn, rname, cfg, noClientID, vopts); err != nil {
 					continue
 				}
 				got = append(got, rn+"/"+vn+"/"+rname)
@@ -456,15 +541,15 @@ func (s *Service) makeAccessList(id *ga4gh.Identity, resources, views, roles []s
 			return nil
 		}
 	}
-	_, got, err := s.resolveAccessList(r.Context(), id, resources, views, roles, cfg)
+	_, got, err := resolveAccessList(r.Context(), id, resources, views, roles, cfg, s.ValidateCfgOpts())
 	if err != nil {
 		return nil
 	}
 	return got
 }
 
-func (s *Service) checkAuthorization(ctx context.Context, id *ga4gh.Identity, ttl time.Duration, resourceName, viewName, roleName string, cfg *pb.DamConfig, client string) (int, error) {
-	if stat := s.checkTrustedIssuer(id.Issuer, cfg); stat != nil {
+func checkAuthorization(ctx context.Context, id *ga4gh.Identity, ttl time.Duration, resourceName, viewName, roleName string, cfg *pb.DamConfig, client string, vopts ValidateCfgOpts) (int, error) {
+	if stat := checkTrustedIssuer(id.Issuer, cfg, vopts); stat != nil {
 		return httputil.HTTPStatus(stat.Code()), stat.Err()
 	}
 	srcRes, ok := cfg.Resources[resourceName]
@@ -475,7 +560,7 @@ func (s *Service) checkAuthorization(ctx context.Context, id *ga4gh.Identity, tt
 	if !ok {
 		return http.StatusNotFound, fmt.Errorf("resource %q view %q not found", resourceName, viewName)
 	}
-	entries, err := s.resolveAggregates(srcRes, srcView, cfg)
+	entries, err := resolveAggregates(srcRes, srcView, cfg, vopts.Adapters)
 	if err != nil {
 		return http.StatusForbidden, err
 	}
@@ -496,7 +581,7 @@ func (s *Service) checkAuthorization(ctx context.Context, id *ga4gh.Identity, tt
 		}
 		ctxWithTTL := context.WithValue(ctx, validator.RequestTTLInNanoFloat64, float64(ttl.Nanoseconds())/1e9)
 		for _, p := range vRole.Policies {
-			v, err := s.buildValidator(ctxWithTTL, p, vRole, cfg)
+			v, err := buildValidator(ctxWithTTL, p, vRole, cfg)
 			if err != nil {
 				return http.StatusInternalServerError, fmt.Errorf("cannot enforce policies for resource %q view %q role %q: %v", resourceName, viewName, roleName, err)
 			}
@@ -506,7 +591,8 @@ func (s *Service) checkAuthorization(ctx context.Context, id *ga4gh.Identity, tt
 				return http.StatusInternalServerError, fmt.Errorf("cannot validate identity (subject %q, issuer %q): internal error", id.Subject, id.Issuer)
 			}
 			if !ok {
-				return http.StatusForbidden, fmt.Errorf("unauthorized for resource %q view %q role %q (policy requirements failed)", resourceName, viewName, roleName)
+				rejected := rejectedPolicyString(id.RejectedVisas, makePolicyBasis(roleName, view, res, cfg, vopts.HidePolicyBasis, vopts.Adapters), vopts)
+				return http.StatusForbidden, fmt.Errorf("unauthorized for resource %q view %q role %q (policy requirements failed)\n\n%s", resourceName, viewName, roleName, rejected)
 			}
 			active = true
 		}
@@ -517,13 +603,13 @@ func (s *Service) checkAuthorization(ctx context.Context, id *ga4gh.Identity, tt
 	return http.StatusOK, nil
 }
 
-func (s *Service) resolveAggregates(srcRes *pb.Resource, srcView *pb.View, cfg *pb.DamConfig) ([]*adapter.AggregateView, error) {
+func resolveAggregates(srcRes *pb.Resource, srcView *pb.View, cfg *pb.DamConfig, tas *adapter.TargetAdapters) ([]*adapter.AggregateView, error) {
 	out := []*adapter.AggregateView{}
 	st, ok := cfg.ServiceTemplates[srcView.ServiceTemplate]
 	if !ok {
 		return nil, fmt.Errorf("service template %q not found", srcView.ServiceTemplate)
 	}
-	if !s.isAggregate(st.TargetAdapter) {
+	if !isAggregate(st.TargetAdapter, tas) {
 		out = append(out, &adapter.AggregateView{
 			Index: 0,
 			Res:   srcRes,
@@ -533,7 +619,7 @@ func (s *Service) resolveAggregates(srcRes *pb.Resource, srcView *pb.View, cfg *
 	}
 	targetAdapter := ""
 	for index, item := range srcView.Items {
-		vars, _, err := adapter.GetItemVariables(s.adapters, st.TargetAdapter, st.ItemFormat, item)
+		vars, _, err := adapter.GetItemVariables(tas, st.TargetAdapter, st.ItemFormat, item)
 		if err != nil {
 			return nil, fmt.Errorf("item %d: %v", index+1, err)
 		}
@@ -551,7 +637,7 @@ func (s *Service) resolveAggregates(srcRes *pb.Resource, srcView *pb.View, cfg *
 		if !ok {
 			return nil, fmt.Errorf("item %d: service template %q on the view is undefined", index+1, view.ServiceTemplate)
 		}
-		if s.isAggregate(vst.TargetAdapter) {
+		if isAggregate(vst.TargetAdapter, tas) {
 			return nil, fmt.Errorf("item %d: view uses aggregate service template %q and nesting aggregates is not permitted", index+1, vst.TargetAdapter)
 		}
 		if targetAdapter == "" {
@@ -568,8 +654,8 @@ func (s *Service) resolveAggregates(srcRes *pb.Resource, srcView *pb.View, cfg *
 	return out, nil
 }
 
-func (s *Service) isAggregate(targetAdapter string) bool {
-	desc, ok := s.adapters.Descriptors[targetAdapter]
+func isAggregate(targetAdapter string, tas *adapter.TargetAdapters) bool {
+	desc, ok := tas.Descriptors[targetAdapter]
 	if !ok {
 		return false
 	}
@@ -662,15 +748,15 @@ func (s *Service) GetStore() storage.Store {
 
 /////////////////////////////////////////////////////////
 
-func (s *Service) makeViews(r *pb.Resource, cfg *pb.DamConfig) map[string]*pb.View {
+func makeViews(r *pb.Resource, cfg *pb.DamConfig, hidePolicyBasis bool, tas *adapter.TargetAdapters) map[string]*pb.View {
 	out := make(map[string]*pb.View)
 	for n, v := range r.Views {
-		out[n] = s.makeView(n, v, r, cfg)
+		out[n] = makeView(n, v, r, cfg, hidePolicyBasis, tas)
 	}
 	return out
 }
 
-func (s *Service) makeView(viewName string, v *pb.View, r *pb.Resource, cfg *pb.DamConfig) *pb.View {
+func makeView(viewName string, v *pb.View, r *pb.Resource, cfg *pb.DamConfig, hidePolicyBasis bool, tas *adapter.TargetAdapters) *pb.View {
 	return &pb.View{
 		ServiceTemplate:    v.ServiceTemplate,
 		Version:            v.Version,
@@ -679,15 +765,15 @@ func (s *Service) makeView(viewName string, v *pb.View, r *pb.Resource, cfg *pb.
 		Fidelity:           v.Fidelity,
 		GeoLocation:        v.GeoLocation,
 		ContentTypes:       v.ContentTypes,
-		ComputedInterfaces: s.makeViewInterfaces(v, r, cfg),
-		AccessRoles:        s.makeViewRoles(v, r, cfg),
+		ComputedInterfaces: makeViewInterfaces(v, r, cfg, tas),
+		AccessRoles:        makeViewRoles(v, r, cfg, hidePolicyBasis, tas),
 		Ui:                 v.Ui,
 	}
 }
 
-func (s *Service) makeViewInterfaces(srcView *pb.View, srcRes *pb.Resource, cfg *pb.DamConfig) map[string]*pb.Interface {
+func makeViewInterfaces(srcView *pb.View, srcRes *pb.Resource, cfg *pb.DamConfig, tas *adapter.TargetAdapters) map[string]*pb.Interface {
 	out := make(map[string]*pb.Interface)
-	entries, err := s.resolveAggregates(srcRes, srcView, cfg)
+	entries, err := resolveAggregates(srcRes, srcView, cfg, tas)
 	if err != nil {
 		return out
 	}
@@ -698,7 +784,7 @@ func (s *Service) makeViewInterfaces(srcView *pb.View, srcRes *pb.Resource, cfg 
 			return out
 		}
 		for _, item := range entry.View.Items {
-			vars, _, err := adapter.GetItemVariables(s.adapters, st.TargetAdapter, st.ItemFormat, item)
+			vars, _, err := adapter.GetItemVariables(tas, st.TargetAdapter, st.ItemFormat, item)
 			if err != nil {
 				return out
 			}
@@ -731,7 +817,7 @@ func (s *Service) makeViewInterfaces(srcView *pb.View, srcRes *pb.Resource, cfg 
 	return out
 }
 
-func (s *Service) makeRoleCategories(view *pb.View, role string, cfg *pb.DamConfig) []string {
+func makeRoleCategories(view *pb.View, role string, cfg *pb.DamConfig) []string {
 	st, ok := cfg.ServiceTemplates[view.ServiceTemplate]
 	if !ok {
 		return nil
@@ -752,9 +838,42 @@ func isItemVariable(str string) bool {
 	return strings.HasPrefix(str, "${") && strings.HasSuffix(str, "}")
 }
 
-func (s *Service) makePolicyBasis(roleName string, srcView *pb.View, srcRes *pb.Resource, cfg *pb.DamConfig) map[string]bool {
+type rejectedPolicy struct {
+	Rejections    int                   `json:"rejections"`
+	RejectedVisas []*ga4gh.RejectedVisa `json:"rejectedVisas,omitempty"`
+	PolicyBasis   []string              `json:"policyBasis,omitempty"`
+}
+
+func rejectedPolicyString(rejected []*ga4gh.RejectedVisa, policyBasis map[string]bool, vopts ValidateCfgOpts) string {
+	rejections := len(rejected)
+	if vopts.HideRejectDetail {
+		rejected = nil
+	}
+	var basis []string
+	if !vopts.HidePolicyBasis {
+		for k := range policyBasis {
+			basis = append(basis, k)
+		}
+	}
+	detail := &rejectedPolicy{
+		Rejections:    rejections,
+		RejectedVisas: rejected,
+		PolicyBasis:   basis,
+	}
+	b, err := json.Marshal(detail)
+	if err != nil {
+		// Already in the error state and this is optional detail, just return something.
+		return fmt.Sprintf(`{"rejections":%d}`, rejections)
+	}
+	return string(b)
+}
+
+func makePolicyBasis(roleName string, srcView *pb.View, srcRes *pb.Resource, cfg *pb.DamConfig, hidePolicyBasis bool, tas *adapter.TargetAdapters) map[string]bool {
+	if hidePolicyBasis {
+		return nil
+	}
 	policies := make(map[string]bool)
-	entries, err := s.resolveAggregates(srcRes, srcView, cfg)
+	entries, err := resolveAggregates(srcRes, srcView, cfg, tas)
 	if err != nil {
 		return nil
 	}
@@ -786,28 +905,15 @@ func addPolicyBasis(p *pb.Policy, basis map[string]bool) {
 	}
 }
 
-func (s *Service) makeViewRoles(view *pb.View, res *pb.Resource, cfg *pb.DamConfig) map[string]*pb.AccessRole {
+func makeViewRoles(view *pb.View, res *pb.Resource, cfg *pb.DamConfig, hidePolicyBasis bool, tas *adapter.TargetAdapters) map[string]*pb.AccessRole {
 	out := make(map[string]*pb.AccessRole)
 	for rname := range view.AccessRoles {
 		out[rname] = &pb.AccessRole{
-			ComputedPolicyBasis: s.makePolicyBasis(rname, view, res, cfg),
+			ComputedRoleCategories: makeRoleCategories(view, rname, cfg),
+			ComputedPolicyBasis:    makePolicyBasis(rname, view, res, cfg, hidePolicyBasis, tas),
 		}
 	}
 	return out
-}
-
-func toTitle(str string) string {
-	out := ""
-	for i, ch := range str {
-		if unicode.IsUpper(ch) && i > 0 && str[i-1] != ' ' {
-			out += " "
-		} else if ch == '_' {
-			out += " "
-			continue
-		}
-		out += string(ch)
-	}
-	return strings.Title(out)
 }
 
 func makeConfig(cfg *pb.DamConfig) *pb.DamConfig {
@@ -825,10 +931,10 @@ func receiveConfig(cfg, origCfg *pb.DamConfig) *pb.DamConfig {
 	return cfg
 }
 
-func (s *Service) makeResource(name string, in *pb.Resource, cfg *pb.DamConfig) *pb.Resource {
+func makeResource(name string, in *pb.Resource, cfg *pb.DamConfig, hidePolicyBasis bool, tas *adapter.TargetAdapters) *pb.Resource {
 	return &pb.Resource{
 		Umbrella:    in.Umbrella,
-		Views:       s.makeViews(in, cfg),
+		Views:       makeViews(in, cfg, hidePolicyBasis, tas),
 		Clients:     in.Clients,
 		MaxTokenTtl: in.MaxTokenTtl,
 		Ui:          in.Ui,
@@ -877,19 +983,21 @@ func makeConfigOptions(opts *pb.ConfigOptions) *pb.ConfigOptions {
 			Regexp:      "^[\\w\\-\\.]+$",
 		},
 		"gcpManagedKeysMaxRequestedTtl": {
-			Label:       "GCP Managed Keys Maximum Requested TTL",
-			Description: "The maximum TTL of a requested access token on GCP and this setting is used in conjunction with managedKeysPerAccount to set up managed access key rotation policies within DAM (disabled by default)",
-			Type:        "string:duration",
-			Regexp:      common.DurationRegexpString,
-			Min:         "2h",
-			Max:         "180d",
+			Label:        "GCP Managed Keys Maximum Requested TTL",
+			Description:  "The maximum TTL of a requested access token on GCP and this setting is used in conjunction with managedKeysPerAccount to set up managed access key rotation policies within DAM (disabled by default)",
+			Type:         "string:duration",
+			Regexp:       timeutil.DurationREStr,
+			Min:          "2h",
+			Max:          "180d",
+			DefaultValue: timeutil.TTLString(defaultMaxRequestedTTL),
 		},
 		"gcpManagedKeysPerAccount": {
-			Label:       "GCP Managed Keys Per Account",
-			Description: "GCP allows up to 10 access keys of more than 1h to be active per account and this option allows DAM to manage a subset of these keys",
-			Type:        "int",
-			Min:         "0",
-			Max:         "10",
+			Label:        "GCP Managed Keys Per Account",
+			Description:  "GCP allows up to 10 access keys of more than 1h to be active per account and this option allows DAM to manage a subset of these keys",
+			Type:         "int",
+			Min:          "0",
+			Max:          "10",
+			DefaultValue: "10",
 		},
 		"gcpServiceAccountProject": {
 			Label:       "GCP Service Account Project",
@@ -946,7 +1054,7 @@ func (s *Service) loadConfig(tx storage.Tx, realm string) (*pb.DamConfig, error)
 	return cfg, nil
 }
 
-func (s *Service) buildValidator(ctx context.Context, ap *pb.AccessRole_AccessPolicy, accessRole *pb.AccessRole, cfg *pb.DamConfig) (*validator.Policy, error) {
+func buildValidator(ctx context.Context, ap *pb.AccessRole_AccessPolicy, accessRole *pb.AccessRole, cfg *pb.DamConfig) (*validator.Policy, error) {
 	policy, ok := cfg.Policies[ap.Name]
 	if !ok {
 		return nil, fmt.Errorf("access policy name %q does not match any policy names", ap.Name)
@@ -1007,54 +1115,70 @@ func (s *Service) realmReadTx(datatype, realm, user, id string, rev int64, item 
 	return http.StatusServiceUnavailable, fmt.Errorf("service storage unavailable: %v, retry later", err)
 }
 
-func (s *Service) registerProject(cfg *pb.DamConfig, realm string) error {
+func (s *Service) registerAllProjects(tx storage.Tx) error {
 	if s.warehouse == nil {
 		return nil
 	}
-	ttl, _ := common.ParseDuration(cfg.Options.GcpManagedKeysMaxRequestedTtl, maxTTL)
-	return s.warehouse.RegisterAccountProject(realm, cfg.Options.GcpServiceAccountProject, int(ttl.Seconds()), int(cfg.Options.GcpManagedKeysPerAccount))
-}
-
-func (s *Service) unregisterRealm(cfg *pb.DamConfig, realm string) error {
-	if s.warehouse == nil {
-		return nil
-	}
-	return s.warehouse.RegisterAccountProject(realm, "", 0, 0)
-}
-
-// ImportFiles ingests bootstrap configuration files to the DAM's storage sytem.
-func (s *Service) ImportFiles(importType string) error {
-	wipe := false
-	switch importType {
-	case "AUTO_RESET":
-		cfg, err := s.loadConfig(nil, storage.DefaultRealm)
+	projects := make(map[string]bool)
+	offset := 0
+	pageSize := 50
+	for {
+		content := make(map[string]map[string]proto.Message)
+		count, err := s.store.MultiReadTx(storage.ConfigDatatype, storage.AllRealms, storage.DefaultUser, nil, offset, pageSize, content, &pb.DamConfig{}, tx)
 		if err != nil {
-			if !storage.ErrNotFound(err) {
-				wipe = true
-			}
-		} else if err := s.CheckIntegrity(cfg); err != nil {
-			wipe = true
+			return err
 		}
-	case "FORCE_WIPE":
-		wipe = true
+		if count == 0 || len(content) == 0 {
+			break
+		}
+		offset += count
+		for _, userVal := range content {
+			for _, v := range userVal {
+				if cfg, ok := v.(*pb.DamConfig); ok && len(cfg.Options.GcpServiceAccountProject) > 0 {
+					projects[cfg.Options.GcpServiceAccountProject] = true
+				}
+			}
+		}
+		if count < pageSize {
+			break
+		}
 	}
-	if wipe {
-		glog.Infof("prepare for DAM config import: wipe data store for all realms")
-		if err := s.store.Wipe(storage.WipeAllRealms); err != nil {
+	for p := range projects {
+		if err := s.registerProject(p, tx); err != nil {
 			return err
 		}
 	}
+	return nil
+}
 
-	ok, err := s.store.Exists(storage.SecretsDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev)
-	if err != nil {
-		return err
-	}
-	if ok {
+func (s *Service) registerProject(project string, tx storage.Tx) error {
+	if s.warehouse == nil {
 		return nil
 	}
-	fs := getFileStore(s.store, os.Getenv("IMPORT_SERVICE"))
+	return s.warehouse.RegisterAccountProject(project, tx)
+}
+
+func (s *Service) unregisterProject(project string, tx storage.Tx) error {
+	if s.warehouse == nil {
+		return nil
+	}
+	return s.warehouse.UnregisterAccountProject(project, tx)
+}
+
+func (s *Service) updateWarehouseOptions(opts *pb.ConfigOptions, realm string, tx storage.Tx) error {
+	if s.warehouse == nil || realm != storage.DefaultRealm {
+		return nil
+	}
+	ttl := timeutil.ParseDurationWithDefault(opts.GcpManagedKeysMaxRequestedTtl, defaultMaxRequestedTTL)
+	keys := int(opts.GcpManagedKeysPerAccount)
+	return s.warehouse.UpdateSettings(ttl, keys, tx)
+}
+
+// ImportConfig ingests bootstrap configuration files to the DAM's storage sytem.
+func ImportConfig(store storage.Store, service string, warehouse clouds.ResourceTokenCreator, cfgVars map[string]string) error {
+	fs := getFileStore(store, service)
 	glog.Infof("import DAM config %q into data store", fs.Info()["service"])
-	tx, err := s.store.Tx(true)
+	tx, err := store.Tx(true)
 	if err != nil {
 		return err
 	}
@@ -1072,7 +1196,10 @@ func (s *Service) ImportFiles(importType string) error {
 		return err
 	}
 	history.Revision = cfg.Revision
-	if err = s.store.WriteTx(storage.ConfigDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, cfg.Revision, cfg, history, tx); err != nil {
+	if err = storage.ReplaceContentVariables(cfg, cfgVars); err != nil {
+		return fmt.Errorf("replacing variables on config file: %v", err)
+	}
+	if err = store.WriteTx(storage.ConfigDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, cfg.Revision, cfg, history, tx); err != nil {
 		return err
 	}
 	secrets := &pb.DamSecrets{}
@@ -1080,14 +1207,20 @@ func (s *Service) ImportFiles(importType string) error {
 		return err
 	}
 	history.Revision = secrets.Revision
-	if err = s.store.WriteTx(storage.SecretsDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, secrets.Revision, secrets, history, tx); err != nil {
+	if err = storage.ReplaceContentVariables(secrets, cfgVars); err != nil {
+		return fmt.Errorf("replacing variables on secrets file: %v", err)
+	}
+	if err = store.WriteTx(storage.SecretsDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, secrets.Revision, secrets, history, tx); err != nil {
 		return err
 	}
-	return s.registerProject(cfg, storage.DefaultRealm)
+	if warehouse == nil {
+		return nil
+	}
+	return warehouse.RegisterAccountProject(cfg.Options.GcpServiceAccountProject, tx)
 }
 
-func isAutoReset() bool {
-	return importDefault == "AUTO_RESET"
+func configExists(store storage.Store) (bool, error) {
+	return store.Exists(storage.SecretsDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev)
 }
 
 func getFileStore(store storage.Store, service string) storage.Store {
@@ -1104,6 +1237,7 @@ func getFileStore(store storage.Store, service string) storage.Store {
 func registerHandlers(r *mux.Router, s *Service) {
 	a := &authChecker{s: s}
 	checker := &auth.Checker{
+		Logger:             s.logger,
 		Issuer:             s.getIssuerString(),
 		FetchClientSecrets: a.fetchClientSecrets,
 		IsAdmin:            a.isAdmin,
@@ -1114,7 +1248,7 @@ func registerHandlers(r *mux.Router, s *Service) {
 	r.HandleFunc(infoPath, auth.MustWithAuth(s.GetInfo, checker, auth.RequireNone)).Methods(http.MethodGet)
 
 	// readonly config endpoints
-	r.HandleFunc(clientPath, auth.MustWithAuth(httputil.MakeHandler(s, s.clientFactory()), checker, auth.RequireClientIDAndSecret))
+	r.HandleFunc(clientPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.clientFactory()), checker, auth.RequireClientIDAndSecret))
 	r.HandleFunc(resourcesPath, auth.MustWithAuth(s.GetResources, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
 	r.HandleFunc(resourcePath, auth.MustWithAuth(s.GetResource, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
 	r.HandleFunc(viewsPath, auth.MustWithAuth(s.GetViews, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
@@ -1126,26 +1260,30 @@ func registerHandlers(r *mux.Router, s *Service) {
 	r.HandleFunc(translatorsPath, auth.MustWithAuth(s.GetPassportTranslators, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
 	r.HandleFunc(damRoleCategoriesPath, auth.MustWithAuth(s.GetDamRoleCategories, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
 	r.HandleFunc(testPersonasPath, auth.MustWithAuth(s.GetTestPersonas, checker, auth.RequireClientIDAndSecret)).Methods(http.MethodGet)
-	r.HandleFunc(processesPath, auth.MustWithAuth(httputil.MakeHandler(s, s.processesFactory()), checker, auth.RequireClientIDAndSecret))
-	r.HandleFunc(processPath, auth.MustWithAuth(httputil.MakeHandler(s, s.processFactory()), checker, auth.RequireClientIDAndSecret))
+
+	// light-weight admin functions using client_id, client_secret and client scope to limit use
+	r.HandleFunc(syncClientsPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.syncClientsFactory()), checker, auth.RequireClientIDAndSecret))
 
 	// administration endpoints
-	r.HandleFunc(realmPath, auth.MustWithAuth(httputil.MakeHandler(s, s.realmFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(realmPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.realmFactory()), checker, auth.RequireAdminToken))
 	r.HandleFunc(configHistoryPath, auth.MustWithAuth(s.ConfigHistory, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
 	r.HandleFunc(configHistoryRevisionPath, auth.MustWithAuth(s.ConfigHistoryRevision, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
 	r.HandleFunc(configResetPath, auth.MustWithAuth(s.ConfigReset, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
 	r.HandleFunc(configTestPersonasPath, auth.MustWithAuth(s.ConfigTestPersonas, checker, auth.RequireAdminToken)).Methods(http.MethodGet)
-	r.HandleFunc(configPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configOptionsPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configOptionsFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configResourcePath, auth.MustWithAuth(httputil.MakeHandler(s, s.configResourceFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configViewPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configViewFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configTrustedPassportIssuerPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configIssuerFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configTrustedSourcePath, auth.MustWithAuth(httputil.MakeHandler(s, s.configSourceFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configPolicyPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configPolicyFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configClaimDefPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configClaimDefinitionFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configServiceTemplatePath, auth.MustWithAuth(httputil.MakeHandler(s, s.configServiceTemplateFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configTestPersonaPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configPersonaFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configClientPath, auth.MustWithAuth(httputil.MakeHandler(s, s.configClientFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configOptionsPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configOptionsFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configResourcePath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configResourceFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configViewPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configViewFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configTrustedPassportIssuerPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configIssuerFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configTrustedSourcePath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configSourceFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configPolicyPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configPolicyFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configClaimDefPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configClaimDefinitionFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configServiceTemplatePath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configServiceTemplateFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configTestPersonaPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configPersonaFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configClientPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configClientFactory()), checker, auth.RequireAdminToken))
+
+	r.HandleFunc(processesPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.processesFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(processPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.processFactory()), checker, auth.RequireAdminToken))
 
 	// hydra related oidc endpoints
 	r.HandleFunc(hydraLoginPath, auth.MustWithAuth(s.HydraLogin, checker, auth.RequireNone)).Methods(http.MethodGet)

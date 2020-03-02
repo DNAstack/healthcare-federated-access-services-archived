@@ -19,24 +19,25 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/check"           /* copybara-comment: check */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh"           /* copybara-comment: ga4gh */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil"        /* copybara-comment: httputil */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"         /* copybara-comment: storage */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"google.golang.org/grpc/codes" /* copybara-comment */
+	"google.golang.org/grpc/status" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/check" /* copybara-comment: check */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
-	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1"      /* copybara-comment: go_proto */
-	"github.com/golang/protobuf/proto"                                                        /* copybara-comment */
-	"google.golang.org/grpc/codes"                                                            /* copybara-comment */
-	"google.golang.org/grpc/status"                                                           /* copybara-comment */
+	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1" /* copybara-comment: go_proto */
 )
 
 // HTTP handler for ".../config"
-func (s *Service) configFactory() *httputil.HandlerFactory {
-	return &httputil.HandlerFactory{
+func (s *Service) configFactory() *handlerfactory.HandlerFactory {
+	return &handlerfactory.HandlerFactory{
 		TypeName:            "config",
 		PathPrefix:          configPath,
 		HasNamedIdentifiers: false,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
 			return &config{
 				s:     s,
 				w:     w,
@@ -67,7 +68,7 @@ func (c *config) LookupItem(name string, vars map[string]string) bool {
 	return true
 }
 func (c *config) NormalizeInput(name string, vars map[string]string) error {
-	if err := httputil.GetRequest(c.input, c.r); err != nil {
+	if err := httputil.DecodeProtoReq(c.input, c.r); err != nil {
 		return err
 	}
 	if c.input.Item == nil {
@@ -89,7 +90,7 @@ func (c *config) NormalizeInput(name string, vars map[string]string) error {
 	return nil
 }
 func (c *config) Get(name string) error {
-	httputil.SendResponse(makeConfig(c.cfg), c.w)
+	httputil.WriteProtoResp(c.w, makeConfig(c.cfg))
 	return nil
 }
 func (c *config) Post(name string) error {
@@ -139,7 +140,7 @@ func (c *config) Save(tx storage.Tx, name string, vars map[string]string, desc, 
 	}
 	// Assumes that secrets don't change within this handler.
 	if c.s.useHydra && !check.ClientsEqual(c.input.Item.Clients, c.cfg.Clients) {
-		if err = c.s.syncToHydra(c.input.Item.Clients, secrets.ClientSecrets, 0); err != nil {
+		if _, err = c.s.syncToHydra(c.input.Item.Clients, secrets.ClientSecrets, 0, tx); err != nil {
 			return err
 		}
 	}
@@ -147,12 +148,12 @@ func (c *config) Save(tx storage.Tx, name string, vars map[string]string, desc, 
 }
 
 // HTTP handler for ".../config/identityProviders/{name}"
-func (s *Service) configIdpFactory() *httputil.HandlerFactory {
-	return &httputil.HandlerFactory{
+func (s *Service) configIdpFactory() *handlerfactory.HandlerFactory {
+	return &handlerfactory.HandlerFactory{
 		TypeName:            "configIDP",
 		PathPrefix:          configIdentityProvidersPath,
 		HasNamedIdentifiers: true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
 			return &configIDP{
 				s:     s,
 				w:     w,
@@ -190,7 +191,7 @@ func (c *configIDP) LookupItem(name string, vars map[string]string) bool {
 	return false
 }
 func (c *configIDP) NormalizeInput(name string, vars map[string]string) error {
-	if err := httputil.GetRequest(c.input, c.r); err != nil {
+	if err := httputil.DecodeProtoReq(c.input, c.r); err != nil {
 		return err
 	}
 	if c.input.Item == nil {
@@ -205,7 +206,7 @@ func (c *configIDP) NormalizeInput(name string, vars map[string]string) error {
 	return nil
 }
 func (c *configIDP) Get(name string) error {
-	httputil.SendResponse(c.item, c.w)
+	httputil.WriteProtoResp(c.w, c.item)
 	return nil
 }
 func (c *configIDP) Post(name string) error {
@@ -256,12 +257,12 @@ func (c *configIDP) Save(tx storage.Tx, name string, vars map[string]string, des
 }
 
 // HTTP handler for ".../config/options"
-func (s *Service) configOptionsFactory() *httputil.HandlerFactory {
-	return &httputil.HandlerFactory{
+func (s *Service) configOptionsFactory() *handlerfactory.HandlerFactory {
+	return &handlerfactory.HandlerFactory{
 		TypeName:            "configOptions",
 		PathPrefix:          configOptionsPath,
 		HasNamedIdentifiers: false,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
 			return &configOptions{
 				s:     s,
 				w:     w,
@@ -298,7 +299,7 @@ func (c *configOptions) LookupItem(name string, vars map[string]string) bool {
 }
 
 func (c *configOptions) NormalizeInput(name string, vars map[string]string) error {
-	if err := httputil.GetRequest(c.input, c.r); err != nil {
+	if err := httputil.DecodeProtoReq(c.input, c.r); err != nil {
 		return err
 	}
 	if c.input.Item == nil {
@@ -309,7 +310,7 @@ func (c *configOptions) NormalizeInput(name string, vars map[string]string) erro
 }
 
 func (c *configOptions) Get(name string) error {
-	httputil.SendResponse(makeConfigOptions(c.item), c.w)
+	httputil.WriteProtoResp(c.w, makeConfigOptions(c.item))
 	return nil
 }
 
@@ -365,19 +366,21 @@ func (c *configOptions) Save(tx storage.Tx, name string, vars map[string]string,
 // HTTP handler for ".../config/clients/{name}"
 // ....
 
+// HTTP handler for ".../config/options"
+
 // ConfigHistory implements the HistoryConfig RPC method.
 func (s *Service) ConfigHistory(w http.ResponseWriter, r *http.Request) {
 	// TODO: consider requiring an "admin" scope (modify all admin handlerSetup calls).
 	_, _, _, status, err := s.handlerSetup(nil, r, noScope, nil)
 	if err != nil {
-		httputil.HandleError(status, err, w)
+		httputil.WriteError(w, status, err)
 		return
 	}
 	h, status, err := storage.GetHistory(s.store, storage.ConfigDatatype, getRealm(r), storage.DefaultUser, storage.DefaultID, r)
 	if err != nil {
-		httputil.HandleError(status, err, w)
+		httputil.WriteError(w, status, err)
 	}
-	httputil.SendResponse(h, w)
+	httputil.WriteProtoResp(w, h)
 }
 
 // ConfigHistoryRevision implements the HistoryRevisionConfig RPC method.
@@ -385,35 +388,55 @@ func (s *Service) ConfigHistoryRevision(w http.ResponseWriter, r *http.Request) 
 	name := getName(r)
 	rev, err := strconv.ParseInt(name, 10, 64)
 	if err != nil {
-		httputil.HandleError(http.StatusBadRequest, fmt.Errorf("invalid history revision: %q (must be a positive integer)", name), w)
+		httputil.WriteError(w, http.StatusBadRequest, fmt.Errorf("invalid history revision: %q (must be a positive integer)", name))
 		return
 	}
 	_, _, _, status, err := s.handlerSetup(nil, r, noScope, nil)
 	if err != nil {
-		httputil.HandleError(status, err, w)
+		httputil.WriteError(w, status, err)
 		return
 	}
 	cfg := &pb.IcConfig{}
 	if status, err := s.realmReadTx(storage.ConfigDatatype, getRealm(r), storage.DefaultUser, storage.DefaultID, rev, cfg, nil); err != nil {
-		httputil.HandleError(status, err, w)
+		httputil.WriteError(w, status, err)
 		return
 	}
-	httputil.SendResponse(cfg, w)
+	httputil.WriteProtoResp(w, cfg)
 }
 
 // ConfigReset implements the corresponding method in the IC API.
 func (s *Service) ConfigReset(w http.ResponseWriter, r *http.Request) {
 	_, _, _, status, err := s.handlerSetup(nil, r, noScope, nil)
 	if err != nil {
-		httputil.HandleError(status, err, w)
+		httputil.WriteError(w, status, err)
 		return
 	}
-	if err = s.store.Wipe(storage.WipeAllRealms); err != nil {
-		httputil.HandleError(http.StatusInternalServerError, err, w)
+	if err = s.store.Wipe(storage.AllRealms); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err)
 		return
 	}
-	if err = s.ImportFiles(importDefault); err != nil {
-		httputil.HandleError(http.StatusInternalServerError, err, w)
+	if err = ImportConfig(s.store, s.serviceName, nil); err != nil {
+		httputil.WriteError(w, http.StatusInternalServerError, err)
 		return
+	}
+
+	// Reset clients in Hyrdra
+	if s.useHydra {
+		conf, err := s.loadConfig(nil, storage.DefaultRealm)
+		if err != nil {
+			httputil.WriteError(w, http.StatusServiceUnavailable, err)
+			return
+		}
+
+		secrets, err := s.loadSecrets(nil)
+		if err != nil {
+			httputil.WriteError(w, http.StatusServiceUnavailable, err)
+			return
+		}
+
+		if _, err := s.syncToHydra(conf.Clients, secrets.ClientSecrets, 0, nil); err != nil {
+			httputil.WriteError(w, http.StatusServiceUnavailable, err)
+			return
+		}
 	}
 }

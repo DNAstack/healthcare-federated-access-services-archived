@@ -20,15 +20,20 @@ package main
 import (
 	"context"
 	"flag"
-	"net/http"
 	"os"
+	"os/signal"
+	"strings"
+
+	"cloud.google.com/go/logging" /* copybara-comment: logging */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dam" /* copybara-comment: dam */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dsstore" /* copybara-comment: dsstore */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/osenv" /* copybara-comment: osenv */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/saw" /* copybara-comment: saw */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/server" /* copybara-comment: server */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/serviceinfo" /* copybara-comment: serviceinfo */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
 	glog "github.com/golang/glog" /* copybara-comment */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/internal/appengine" /* copybara-comment: appengine */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/storage" /* copybara-comment: gcp_storage */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dam" /* copybara-comment: dam */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/osenv" /* copybara-comment: osenv */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 )
 
 var (
@@ -45,6 +50,10 @@ var (
 	storageType = osenv.MustVar("STORAGE")
 	// defaultBroker is the default Identity Broker.
 	defaultBroker = osenv.MustVar("DEFAULT_BROKER")
+	// hidePolicyBasis when set to true will not send policy basis via non-admin endpoints.
+	hidePolicyBasis = os.Getenv("HIDE_POLICY_BASIS") != ""
+	// hideRejectDetail when set to true will not send visa rejection detail to clients.
+	hideRejectDetail = os.Getenv("HIDE_REJECTION_DETAILS") != ""
 
 	useHydra = os.Getenv("USE_HYDRA") != ""
 	// hydraAdminAddr is the address for the Hydra admin endpoints.
@@ -52,39 +61,79 @@ var (
 	// hydraPublicAddr is the address for the Hydra public endpoints.
 	hydraPublicAddr = ""
 	port            = osenv.VarWithDefault("DAM_PORT", "8081")
+
+	cfgVars = map[string]string{
+		"${YOUR_PROJECT_ID}":  project,
+		"${YOUR_ENVIRONMENT}": envPrefix(srvName),
+	}
 )
 
 func main() {
 	flag.Parse()
 	ctx := context.Background()
 
+	serviceinfo.Project = project
+	serviceinfo.Type = "dam"
+	serviceinfo.Name = srvName
+
 	var store storage.Store
 	switch storageType {
 	case "datastore":
-		store = gcp_storage.NewDatastoreStorage(ctx, project, srvName, cfgPath)
+		store = dsstore.NewDatastoreStorage(ctx, project, srvName, cfgPath)
 	case "memory":
 		store = storage.NewMemoryStorage(srvName, cfgPath)
+		// Import and resolve template variables, if any.
+		if err := dam.ImportConfig(store, srvName, nil, cfgVars); err != nil {
+			glog.Exitf("dam.ImportConfig(_, %q, _) failed: %v", srvName, err)
+		}
 	default:
-		glog.Fatalf("Unknown storage type %q", storageType)
+		glog.Exitf("Unknown storage type %q", storageType)
 	}
 
-	wh := appengine.MustBuildAccountWarehouse(ctx, store)
+	wh := saw.MustNew(ctx, store)
 
+	logger, err := logging.NewClient(ctx, project)
+	if err != nil {
+		glog.Fatalf("logging.NewClient() failed: %v", err)
+	}
+	logger.OnError = func(err error) {
+		glog.Warningf("StackdriverLogging.Client.OnError: %v", err)
+	}
 	if useHydra {
 		hydraAdminAddr = osenv.MustVar("HYDRA_ADMIN_URL")
 		hydraPublicAddr = osenv.MustVar("HYDRA_PUBLIC_URL")
 	}
 	s := dam.NewService(&dam.Options{
-		Domain:         srvAddr,
-		ServiceName:    srvName,
-		DefaultBroker:  defaultBroker,
-		Store:          store,
-		Warehouse:      wh,
-		UseHydra:       true,
-		HydraAdminURL:  hydraAdminAddr,
-		HydraPublicURL: hydraPublicAddr,
+		Domain:           srvAddr,
+		ServiceName:      srvName,
+		DefaultBroker:    defaultBroker,
+		Store:            store,
+		Warehouse:        wh,
+		Logger:           logger,
+		HidePolicyBasis:  hidePolicyBasis,
+		HideRejectDetail: hideRejectDetail,
+		UseHydra:         true,
+		HydraAdminURL:    hydraAdminAddr,
+		HydraPublicURL:   hydraPublicAddr,
 	})
 
-	glog.Infof("DAM listening on port %v", port)
-	glog.Fatal(http.ListenAndServe(":"+port, s.Handler))
+	srv := server.New("dam", port, s.Handler)
+	srv.ServeUnblock()
+
+	c := make(chan os.Signal, 1)
+	// We'll accept graceful shutdowns when quit via SIGINT (Ctrl+C)
+	// SIGKILL, SIGQUIT or SIGTERM (Ctrl+/) will not be caught.
+	signal.Notify(c, os.Interrupt)
+
+	// Block until we receive our signal.
+	<-c
+
+	srv.Shutdown()
+}
+
+func envPrefix(name string) string {
+	if strings.Contains(name, "-") {
+		return "-" + strings.SplitN(name, "-", 2)[1]
+	}
+	return ""
 }

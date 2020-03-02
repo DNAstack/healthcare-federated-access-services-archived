@@ -19,19 +19,20 @@ import (
 
 	"google.golang.org/grpc/status" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/ic/v1" /* copybara-comment: go_proto */
 )
 
-func (s *Service) realmFactory() *httputil.HandlerFactory {
-	return &httputil.HandlerFactory{
+func (s *Service) realmFactory() *handlerfactory.HandlerFactory {
+	return &handlerfactory.HandlerFactory{
 		TypeName:            "realm",
 		NameField:           "realm",
 		PathPrefix:          realmPath,
 		HasNamedIdentifiers: true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) httputil.HandlerInterface {
+		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
 			return &realm{
 				s:     s,
 				w:     w,
@@ -58,13 +59,15 @@ func (c *realm) Setup(tx storage.Tx) (int, error) {
 	c.id = id
 	return status, err
 }
+
 func (c *realm) LookupItem(name string, vars map[string]string) bool {
 	// Accept any name that passes the name check.
 	c.item = &pb.Realm{}
 	return true
 }
+
 func (c *realm) NormalizeInput(name string, vars map[string]string) error {
-	if err := httputil.GetRequest(c.input, c.r); err != nil {
+	if err := httputil.DecodeProtoReq(c.input, c.r); err != nil {
 		return err
 	}
 	if c.input == nil {
@@ -75,36 +78,43 @@ func (c *realm) NormalizeInput(name string, vars map[string]string) error {
 	}
 	return nil
 }
+
 func (c *realm) Get(name string) error {
 	if c.item != nil {
-		httputil.SendResponse(c.item, c.w)
+		httputil.WriteProtoResp(c.w, c.item)
 	}
 	return nil
 }
+
 func (c *realm) Post(name string) error {
 	// Accept, but do nothing.
 	return nil
 }
+
 func (c *realm) Put(name string) error {
 	// Accept, but do nothing.
 	return nil
 }
+
 func (c *realm) Patch(name string) error {
 	// Accept, but do nothing.
 	return nil
 }
+
 func (c *realm) Remove(name string) error {
 	if err := c.s.store.Wipe(name); err != nil {
 		return err
 	}
 	if name == storage.DefaultRealm {
-		return c.s.ImportFiles(importDefault)
+		return ImportConfig(c.s.store, c.s.serviceName, nil)
 	}
 	return nil
 }
+
 func (c *realm) CheckIntegrity() *status.Status {
 	return nil
 }
+
 func (c *realm) Save(tx storage.Tx, name string, vars map[string]string, desc, typeName string) error {
 	// Accept, but do nothing.
 	return nil

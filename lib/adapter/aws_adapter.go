@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/aws"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/common"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
 )
 
@@ -60,7 +61,7 @@ func (a *AwsAdapter) MintToken(ctx context.Context, input *Action) (*MintTokenRe
 	if a.warehouse == nil {
 		return nil, fmt.Errorf("SAW minting token: DAM service account warehouse not configured")
 	}
-	userID := common.TokenUserID(input.Identity, SawMaxUserIDLength)
+	userID := ga4gh.TokenUserID(input.Identity, SawMaxUserIDLength)
 	params, err := createAwsResourceTokenCreationParams(userID, input)
 	if err != nil {
 		return nil, fmt.Errorf("SAW minting token: %v", err)
@@ -95,15 +96,12 @@ func createAwsResourceTokenCreationParams(userID string, input *Action) (*aws.Re
 	} else {
 		return nil, fmt.Errorf("too many items declared")
 	}
-	maxKeyTtl, err := common.ParseDuration(input.Config.Options.GcpManagedKeysMaxRequestedTtl, input.MaxTTL)
-	if err != nil {
-		return nil, fmt.Errorf("invalid max TTL %v: %v", input.MaxTTL, err)
-	}
+	maxKeyTTL := timeutil.ParseDurationWithDefault(input.Config.Options.GcpManagedKeysMaxRequestedTtl, input.MaxTTL)
 
 	return &aws.ResourceParams{
 		UserId:                userID,
 		Ttl:                   input.TTL,
-		MaxKeyTtl:             maxKeyTtl,
+		MaxKeyTtl:             maxKeyTTL,
 		ManagedKeysPerAccount: int(input.Config.Options.GcpManagedKeysPerAccount),
 		Vars:                  vars,
 		TargetRoles:           roles,

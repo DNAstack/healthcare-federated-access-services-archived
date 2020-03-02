@@ -20,16 +20,21 @@ package main
 import (
 	"context"
 	"flag"
-	"net/http"
 	"os"
+	"os/signal"
+	"strings"
 
-	glog "github.com/golang/glog" /* copybara-comment */
 	"cloud.google.com/go/kms/apiv1" /* copybara-comment: kms */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/gcp/storage" /* copybara-comment: gcp_storage */
+	"cloud.google.com/go/logging" /* copybara-comment: logging */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dsstore" /* copybara-comment: dsstore */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ic" /* copybara-comment: ic */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms/gcpcrypt" /* copybara-comment: gcpcrypt */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/osenv" /* copybara-comment: osenv */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/server" /* copybara-comment: server */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/serviceinfo" /* copybara-comment: serviceinfo */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
+
+	glog "github.com/golang/glog" /* copybara-comment */
 )
 
 var (
@@ -55,29 +60,50 @@ var (
 	hydraAdminAddr = ""
 	// hydraPublicAddr is the address for the Hydra public endpoint.
 	hydraPublicAddr = ""
+
+	cfgVars = map[string]string{
+		"${YOUR_PROJECT_ID}":  project,
+		"${YOUR_ENVIRONMENT}": envPrefix(srvName),
+	}
 )
 
 func main() {
 	flag.Parse()
 	ctx := context.Background()
 
+	serviceinfo.Project = project
+	serviceinfo.Type = "ic"
+	serviceinfo.Name = srvName
+
 	var store storage.Store
 	switch storageType {
 	case "datastore":
-		store = gcp_storage.NewDatastoreStorage(ctx, project, srvName, cfgPath)
+		store = dsstore.NewDatastoreStorage(ctx, project, srvName, cfgPath)
 	case "memory":
 		store = storage.NewMemoryStorage(srvName, cfgPath)
+		// Import and resolve template variables, if any.
+		if err := ic.ImportConfig(store, srvName, cfgVars); err != nil {
+			glog.Exitf("ic.ImportConfig(_, %q, _) failed: %v", srvName, err)
+		}
 	default:
 		glog.Exitf("Unknown storage type: %q", storageType)
 	}
 
 	client, err := kms.NewKeyManagementClient(ctx)
 	if err != nil {
-		glog.Fatalf("kms.NewKeyManagementClient(ctx) failed: %v", err)
+		glog.Exitf("kms.NewKeyManagementClient(ctx) failed: %v", err)
 	}
 	gcpkms, err := gcpcrypt.New(ctx, project, "global", srvName+"_ring", srvName+"_key", client)
 	if err != nil {
-		glog.Fatalf("gcpcrypt.New(ctx, %q, %q, %q, %q, client) failed: %v", project, "global", srvName+"_ring", srvName+"_key", err)
+		glog.Exitf("gcpcrypt.New(ctx, %q, %q, %q, %q, client) failed: %v", project, "global", srvName+"_ring", srvName+"_key", err)
+	}
+
+	logger, err := logging.NewClient(ctx, project)
+	if err != nil {
+		glog.Exitf("logging.NewClient() failed: %v", err)
+	}
+	logger.OnError = func(err error) {
+		glog.Warningf("StackdriverLogging.Client.OnError: %v", err)
 	}
 
 	if useHydra {
@@ -91,11 +117,29 @@ func main() {
 		AccountDomain:  acctDomain,
 		Store:          store,
 		Encryption:     gcpkms,
+		Logger:         logger,
 		UseHydra:       useHydra,
 		HydraAdminURL:  hydraAdminAddr,
 		HydraPublicURL: hydraPublicAddr,
 	})
 
-	glog.Infof("IC listening on port %v", port)
-	glog.Exit(http.ListenAndServe(":"+port, s.Handler))
+	srv := server.New("ic", port, s.Handler)
+	srv.ServeUnblock()
+
+	c := make(chan os.Signal, 1)
+	// We'll accept graceful shutdowns when quit via SIGINT (Ctrl+C)
+	// SIGKILL, SIGQUIT or SIGTERM (Ctrl+/) will not be caught.
+	signal.Notify(c, os.Interrupt)
+
+	// Block until we receive our signal.
+	<-c
+
+	srv.Shutdown()
+}
+
+func envPrefix(name string) string {
+	if strings.Contains(name, "-") {
+		return "-" + strings.SplitN(name, "-", 2)[1]
+	}
+	return ""
 }
