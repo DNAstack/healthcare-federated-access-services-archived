@@ -18,6 +18,7 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/osenv"
 	"regexp"
 	"strings"
 	"time"
@@ -63,46 +64,53 @@ type Action struct {
 
 // MintTokenResult is returned by the MintToken() method.
 type MintTokenResult struct {
-	Account     string
-	Token       string
+	// A set of credential information like "account" and "access_token", or whatever
+	// may apply for the given target service.
+	Credentials map[string]string
+	// A set of metadata labels about the result to provide context to the client application.
+	Labels map[string]string
+	// The type of token, if applicable, that was able to be generated, which may vary from
+	// the TokenFormat requested in the Action depending on service requirements.
 	TokenFormat string
 }
 
-// Adapter defines the interface for all DAM adapters that take access actions.
-type Adapter interface {
+// ServiceAdapter defines the interface for all DAM adapters that take access actions.
+type ServiceAdapter interface {
 	// Name returns the name identifier of the adapter as used in configurations.
 	Name() string
 
 	// Platform returns the name identifier of the platform on which this adapter operates.
 	Platform() string
 
-	// Descriptor returns a TargetAdapter descriptor.
-	Descriptor() *pb.TargetAdapter
+	// Descriptors returns a map of service descriptors.
+	Descriptors() map[string]*pb.ServiceDescriptor
 
 	// IsAggregator returns true if this adapter requires TokenAction.Aggregates.
 	IsAggregator() bool
 
 	// CheckConfig validates that a new configuration is compatible with this adapter.
-	CheckConfig(templateName string, template *pb.ServiceTemplate, resName, viewName string, view *pb.View, cfg *pb.DamConfig, adapters *TargetAdapters) (string, error)
+	CheckConfig(templateName string, template *pb.ServiceTemplate, resName, viewName string, view *pb.View, cfg *pb.DamConfig, adapters *ServiceAdapters) (string, error)
 
 	// MintToken has the adapter mint a token.
 	MintToken(ctx context.Context, input *Action) (*MintTokenResult, error)
 }
 
-// TargetAdapters includes all adapters that are registered with the system.
-type TargetAdapters struct {
-	ByName      map[string]Adapter
-	Descriptors map[string]*pb.TargetAdapter
-	VariableREs map[string]map[string]map[string]*regexp.Regexp // adapterName.itemFormat.variableName.regexp
-	errors      []error
+// ServiceAdapters includes all adapters that are registered with the system.
+type ServiceAdapters struct {
+	ByAdapterName map[string]ServiceAdapter
+	ByServiceName map[string]ServiceAdapter
+	Descriptors   map[string]*pb.ServiceDescriptor
+	VariableREs   map[string]map[string]*regexp.Regexp // serviceName.variableName.regexp
+	errors        []error
 }
 
 // CreateAdapters registers and collects all adapters with the system.
-func CreateAdapters(store storage.Store, warehouse clouds.ResourceTokenCreator, secrets *pb.DamSecrets) (*TargetAdapters, error) {
-	adapters := &TargetAdapters{
-		ByName:      make(map[string]Adapter),
-		Descriptors: make(map[string]*pb.TargetAdapter),
-		errors:      []error{},
+func CreateAdapters(store storage.Store, warehouse clouds.ResourceTokenCreator, secrets *pb.DamSecrets) (*ServiceAdapters, error) {
+	adapters := &ServiceAdapters{
+		ByAdapterName: make(map[string]ServiceAdapter),
+		ByServiceName: make(map[string]ServiceAdapter),
+		Descriptors:   make(map[string]*pb.ServiceDescriptor),
+		errors:        []error{},
 	}
 	registerAdapter(adapters, store, warehouse, secrets, NewSawAdapter)
 	registerAdapter(adapters, store, warehouse, secrets, NewGatekeeperAdapter)
@@ -119,37 +127,33 @@ func CreateAdapters(store storage.Store, warehouse clouds.ResourceTokenCreator, 
 }
 
 // GetItemVariables returns a map of variables and their values for a given view item.
-func GetItemVariables(adapters *TargetAdapters, targetAdapter, itemFormat string, item *pb.View_Item) (map[string]string, string, error) {
-	adapter, ok := adapters.Descriptors[targetAdapter]
+func GetItemVariables(adapters *ServiceAdapters, adapterName string, item *pb.View_Item) (map[string]string, string, error) {
+	desc, ok := adapters.Descriptors[adapterName]
 	if !ok {
-		return nil, httputil.StatusPath("targetAdapter"), fmt.Errorf("target adapter %q is undefined", targetAdapter)
+		return nil, httputil.StatusPath("ServiceAdapter"), fmt.Errorf("target adapter %q is undefined", adapterName)
 	}
-	format, ok := adapter.ItemFormats[itemFormat]
-	if !ok {
-		return nil, httputil.StatusPath("itemFormats", itemFormat), fmt.Errorf("target adapter %q item format %q is undefined", targetAdapter, itemFormat)
-	}
-	for varname, val := range item.Vars {
-		v, ok := format.Variables[varname]
+	for varname, val := range item.Args {
+		v, ok := desc.ItemVariables[varname]
 		if !ok {
-			return nil, httputil.StatusPath("vars", varname), fmt.Errorf("target adapter %q item format %q variable %q is undefined", targetAdapter, itemFormat, varname)
+			return nil, httputil.StatusPath("vars", varname), fmt.Errorf("target service %q variable %q is undefined", adapterName, varname)
 		}
 		if !globalflags.Experimental && v.Experimental {
-			return nil, httputil.StatusPath("vars", varname), fmt.Errorf("target adapter %q item format %q variable %q is for experimental use only, not for use in this environment", targetAdapter, itemFormat, varname)
+			return nil, httputil.StatusPath("vars", varname), fmt.Errorf("target service %q variable %q is for experimental use only, not for use in this environment", adapterName, varname)
 		}
 		if len(val) == 0 {
 			// Treat empty input the same as not provided so long as the variable name is valid.
-			delete(item.Vars, varname)
+			delete(item.Args, varname)
 			continue
 		}
-		re, ok := adapters.VariableREs[targetAdapter][itemFormat][varname]
+		re, ok := adapters.VariableREs[adapterName][varname]
 		if !ok {
 			continue
 		}
 		if !re.Match([]byte(val)) {
-			return nil, httputil.StatusPath("vars", varname), fmt.Errorf("target adapter %q item format %q variable %q value %q does not match expected regexp", targetAdapter, itemFormat, varname, val)
+			return nil, httputil.StatusPath("vars", varname), fmt.Errorf("target adapter %q variable %q value %q does not match expected regexp", adapterName, varname, val)
 		}
 	}
-	return item.Vars, "", nil
+	return item.Args, "", nil
 }
 
 // ResolveServiceRole is a helper function that returns a ServiceRole structure from a role name on a view.
@@ -165,38 +169,34 @@ func ResolveServiceRole(roleName string, view *pb.View, res *pb.Resource, cfg *p
 	return sRole, nil
 }
 
-func registerAdapter(adapters *TargetAdapters, store storage.Store, warehouse clouds.ResourceTokenCreator, secrets *pb.DamSecrets, init func(storage.Store, clouds.ResourceTokenCreator, *pb.DamSecrets, *TargetAdapters) (Adapter, error)) {
-	adapter, err := init(store, warehouse, secrets, adapters)
+func registerAdapter(adapters *ServiceAdapters, store storage.Store, warehouse clouds.ResourceTokenCreator, secrets *pb.DamSecrets, init func(storage.Store, clouds.ResourceTokenCreator, *pb.DamSecrets, *ServiceAdapters) (ServiceAdapter, error)) {
+	adapt, err := init(store, warehouse, secrets, adapters)
 	if err != nil {
 		adapters.errors = append(adapters.errors, err)
 		return
 	}
-	name := adapter.Name()
-	adapters.ByName[name] = adapter
-	adapters.Descriptors[name] = adapter.Descriptor()
+	adapters.ByAdapterName[adapt.Name()] = adapt
+	for k, v := range adapt.Descriptors() {
+		adapters.ByServiceName[k] = adapt
+		adapters.Descriptors[k] = v
+	}
 }
 
-func createVariableREs(descriptors map[string]*pb.TargetAdapter) map[string]map[string]map[string]*regexp.Regexp {
-	// Create a compiled set of regular expressions for adapter variable formats
-	// of the form: map[<adapterName>]map[<itemFormat>]map[<variableName>]*regexp.Regexp.
-	varRE := make(map[string]map[string]map[string]*regexp.Regexp)
+func createVariableREs(descriptors map[string]*pb.ServiceDescriptor) map[string]map[string]*regexp.Regexp {
+	// Create a compiled set of regular expressions for service variable formats
+	// of the form: map[<serviceName>]map[<variableName>]*regexp.Regexp.
+	varRE := make(map[string]map[string]*regexp.Regexp)
 	for k, v := range descriptors {
-		if len(v.ItemFormats) > 0 {
-			fEntry := make(map[string]map[string]*regexp.Regexp)
-			varRE[k] = fEntry
-			for fk, fv := range v.ItemFormats {
-				vEntry := make(map[string]*regexp.Regexp)
-				fEntry[fk] = vEntry
-				for vk, vv := range fv.Variables {
-					if len(vv.Regexp) > 0 {
-						restr := vv.Regexp
-						if vv.Type == "split_pattern" {
-							frag := stripAnchors(restr)
-							restr = "^" + frag + "(;" + frag + ")*$"
-						}
-						vEntry[vk] = regexp.MustCompile(restr)
-					}
+		vEntry := make(map[string]*regexp.Regexp)
+		varRE[k] = vEntry
+		for vk, vv := range v.ItemVariables {
+			if len(vv.Regexp) > 0 {
+				restr := vv.Regexp
+				if vv.Type == "split_pattern" {
+					frag := stripAnchors(restr)
+					restr = "^" + frag + "(;" + frag + ")*$"
 				}
+				vEntry[vk] = regexp.MustCompile(restr)
 			}
 		}
 	}
@@ -211,4 +211,9 @@ func stripAnchors(restr string) string {
 		restr = restr[0 : len(restr)-1]
 	}
 	return restr
+}
+
+func adapterFilePath(name string) string {
+	root := osenv.VarWithDefault("METADATA_PATH", "deploy/metadata")
+	return strings.ReplaceAll(root + "/adapter_" + name + ".json", "//", "/")
 }

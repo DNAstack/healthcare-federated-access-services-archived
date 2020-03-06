@@ -36,23 +36,30 @@ func TestAggregatorAdapter(t *testing.T) {
 	if err := secretStore.Read(storage.SecretsDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev, secrets); err != nil {
 		t.Fatalf("reading secrets file: %v", err)
 	}
-	adapters := &adapter.TargetAdapters{
-		ByName:      make(map[string]adapter.Adapter),
-		Descriptors: make(map[string]*pb.TargetAdapter),
+	adapters := &adapter.ServiceAdapters{
+		ByAdapterName: make(map[string]adapter.ServiceAdapter),
+		ByServiceName: make(map[string]adapter.ServiceAdapter),
+		Descriptors:   make(map[string]*pb.ServiceDescriptor),
 	}
-	sawAdapt, err := adapter.NewSawAdapter(store, warehouse, secrets, adapters)
+	saws, err := adapter.NewSawAdapter(store, warehouse, secrets, adapters)
 	if err != nil {
 		t.Fatalf("error creating SAW adapter: %v", err)
 	}
-	adapters.ByName[sawAdapt.Name()] = sawAdapt
-	adapters.Descriptors[sawAdapt.Name()] = sawAdapt.Descriptor()
+	adapters.ByAdapterName[adapter.SawAdapterName] = saws
+	for k, v := range saws.Descriptors() {
+		adapters.ByServiceName[k] = saws
+		adapters.Descriptors[k] = v
+	}
 
 	adapt, err := adapter.NewAggregatorAdapter(store, warehouse, secrets, adapters)
 	if err != nil {
 		t.Fatalf("new aggregator adapter: %v", err)
 	}
-	adapters.ByName[adapt.Name()] = adapt
-	adapters.Descriptors[adapt.Name()] = adapt.Descriptor()
+	adapters.ByAdapterName[adapter.SawAdapterName] = adapt
+	for k, v := range adapt.Descriptors() {
+		adapters.ByServiceName[k] = adapt
+		adapters.Descriptors[k] = v
+	}
 	var cfg pb.DamConfig
 	cfgStore := storage.NewMemoryStorage("dam", "testdata/config")
 	if err = cfgStore.Read(storage.ConfigDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev, &cfg); err != nil {

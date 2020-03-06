@@ -52,18 +52,18 @@ const (
 	// The following are used to manage configuration of DAM.
 	// Required permission: admin
 	// TODO: remove the sub-paths and use filter and update mask parameters instead.
-	configPath                      = "/dam/v1alpha/{realm}/config"
-	configResourcePath              = "/dam/v1alpha/{realm}/config/resources/{name}"
-	configViewPath                  = "/dam/v1alpha/{realm}/config/resources/{resource}/views/{name}"
-	configTrustedPassportIssuerPath = "/dam/v1alpha/{realm}/config/trustedPassportIssuers/{name}"
-	configTrustedSourcePath         = "/dam/v1alpha/{realm}/config/trustedSources/{name}"
-	configPolicyPath                = "/dam/v1alpha/{realm}/config/policies/{name}"
-	configOptionsPath               = "/dam/v1alpha/{realm}/config/options"
-	configClaimDefPath              = "/dam/v1alpha/{realm}/config/claimDefinitions/{name}"
-	configServiceTemplatePath       = "/dam/v1alpha/{realm}/config/serviceTemplates/{name}"
-	configClientPath                = "/dam/v1alpha/{realm}/config/clients/{name}"
-	configTestPersonasPath          = "/dam/v1alpha/{realm}/config/testPersonas"
-	configTestPersonaPath           = "/dam/v1alpha/{realm}/config/testPersonas/{name}"
+	configPath                = "/dam/v1alpha/{realm}/config"
+	configResourcePath        = "/dam/v1alpha/{realm}/config/resources/{name}"
+	configViewPath            = "/dam/v1alpha/{realm}/config/resources/{resource}/views/{name}"
+	configTrustedIssuerPath   = "/dam/v1alpha/{realm}/config/trustedIssuers/{name}"
+	configTrustedSourcePath   = "/dam/v1alpha/{realm}/config/trustedSources/{name}"
+	configPolicyPath          = "/dam/v1alpha/{realm}/config/policies/{name}"
+	configOptionsPath         = "/dam/v1alpha/{realm}/config/options"
+	configClaimDefPath        = "/dam/v1alpha/{realm}/config/claimDefinitions/{name}"
+	configServiceTemplatePath = "/dam/v1alpha/{realm}/config/serviceTemplates/{name}"
+	configClientPath          = "/dam/v1alpha/{realm}/config/clients/{name}"
+	configTestPersonasPath    = "/dam/v1alpha/{realm}/config/testPersonas"
+	configTestPersonaPath     = "/dam/v1alpha/{realm}/config/testPersonas/{name}"
 
 	// ConfigReset: resets the config to its initial state read from configuration file.
 	// Required permission: admin
@@ -99,7 +99,7 @@ const (
 	viewPath              = "/dam/v1alpha/{realm}/resources/{name}/views/{view}"
 	rolesPath             = "/dam/v1alpha/{realm}/resources/{name}/views/{view}/roles"
 	rolePath              = "/dam/v1alpha/{realm}/resources/{name}/views/{view}/roles/{role}"
-	adaptersPath          = "/dam/v1alpha/{realm}/targetAdapters"
+	servicesPath          = "/dam/v1alpha/{realm}/services"
 	translatorsPath       = "/dam/v1alpha/{realm}/passportTranslators"
 	damRoleCategoriesPath = "/dam/v1alpha/{realm}/damRoleCategories"
 	testPersonasPath      = "/dam/v1alpha/{realm}/testPersonas"

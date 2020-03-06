@@ -35,9 +35,10 @@ func TestGatekeeperAdapter(t *testing.T) {
 	if err := secretStore.Read(storage.SecretsDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev, secrets); err != nil {
 		t.Fatalf("reading secrets file: %v", err)
 	}
-	adapters := &adapter.TargetAdapters{
-		ByName:      make(map[string]adapter.Adapter),
-		Descriptors: make(map[string]*pb.TargetAdapter),
+	adapters := &adapter.ServiceAdapters{
+		ByAdapterName: make(map[string]adapter.ServiceAdapter),
+		ByServiceName: make(map[string]adapter.ServiceAdapter),
+		Descriptors:   make(map[string]*pb.ServiceDescriptor),
 	}
 	adapt, err := adapter.NewGatekeeperAdapter(store, warehouse, secrets, adapters)
 	if err != nil {
@@ -114,7 +115,7 @@ func TestGatekeeperAdapter(t *testing.T) {
 		if test.fail != (err != nil) {
 			t.Fatalf("test %q error mismatch: want error %v, got error %v", test.name, test.fail, err)
 		}
-		if err == nil && len(result.Token) == 0 {
+		if err == nil && (len(result.Credentials) == 0 || len(result.Credentials["access_token"]) == 0) {
 			t.Errorf("test %q token mismatch: want non-empty, got empty", test.name)
 		}
 	}

@@ -25,6 +25,7 @@ import (
 	"github.com/pborman/uuid" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/srcutil" /* copybara-comment: srcutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
 
@@ -49,15 +50,16 @@ type GatekeeperToken struct {
 
 // GatekeeperAdapter generates downstream access tokens.
 type GatekeeperAdapter struct {
-	desc       *pb.TargetAdapter
+	desc       map[string]*pb.ServiceDescriptor
 	privateKey string
 }
 
 // NewGatekeeperAdapter creates a GatekeeperAdapter.
-func NewGatekeeperAdapter(store storage.Store, warehouse clouds.ResourceTokenCreator, secrets *pb.DamSecrets, adapters *TargetAdapters) (Adapter, error) {
-	var desc pb.TargetAdapter
-	if err := store.Read(AdapterDataType, storage.DefaultRealm, storage.DefaultUser, gatekeeperName, storage.LatestRev, &desc); err != nil {
-		return nil, fmt.Errorf("reading %q descriptor: %v", gatekeeperName, err)
+func NewGatekeeperAdapter(store storage.Store, warehouse clouds.ResourceTokenCreator, secrets *pb.DamSecrets, adapters *ServiceAdapters) (ServiceAdapter, error) {
+	var msg pb.ServicesResponse
+	path := adapterFilePath(gatekeeperName)
+	if err := srcutil.LoadProto(path, &msg); err != nil {
+		return nil, fmt.Errorf("reading %q service descriptors from path %q: %v", aggregatorName, path, err)
 	}
 	keys := secrets.GetGatekeeperTokenKeys()
 	if keys == nil {
@@ -65,7 +67,7 @@ func NewGatekeeperAdapter(store storage.Store, warehouse clouds.ResourceTokenCre
 	}
 
 	return &GatekeeperAdapter{
-		desc:       &desc,
+		desc:       msg.Services,
 		privateKey: keys.PrivateKey,
 	}, nil
 }
@@ -80,8 +82,8 @@ func (a *GatekeeperAdapter) Platform() string {
 	return gatekeeperPlatform
 }
 
-// Descriptor returns a TargetAdapter descriptor.
-func (a *GatekeeperAdapter) Descriptor() *pb.TargetAdapter {
+// Descriptors returns a map of ServiceAdapter descriptors.
+func (a *GatekeeperAdapter) Descriptors() map[string]*pb.ServiceDescriptor {
 	return a.desc
 }
 
@@ -91,7 +93,7 @@ func (a *GatekeeperAdapter) IsAggregator() bool {
 }
 
 // CheckConfig validates that a new configuration is compatible with this adapter.
-func (a *GatekeeperAdapter) CheckConfig(templateName string, template *pb.ServiceTemplate, resName, viewName string, view *pb.View, cfg *pb.DamConfig, adapters *TargetAdapters) (string, error) {
+func (a *GatekeeperAdapter) CheckConfig(templateName string, template *pb.ServiceTemplate, resName, viewName string, view *pb.View, cfg *pb.DamConfig, adapters *ServiceAdapters) (string, error) {
 	if view != nil && len(view.Items) > 1 {
 		return httputil.StatusPath("resources", resName, "views", viewName, "items"), fmt.Errorf("view %q has more than one target item defined", viewName)
 	}
@@ -109,18 +111,36 @@ func (a *GatekeeperAdapter) MintToken(ctx context.Context, input *Action) (*Mint
 		return nil, fmt.Errorf("parsing private key: %v", err)
 	}
 	now := time.Now()
+	aud := ""
+	// TODO: support standard audience formats instead of space-delimited.
+	for _, item := range input.View.Items {
+		if item.Args == nil {
+			continue
+		}
+		if a, ok := item.Args["aud"]; ok {
+			if aud == "" {
+				aud += " "
+			}
+			aud += a
+		}
+	}
+	scopes := []string{}
+	arg, ok := input.ServiceRole.ServiceArgs["scopes"]
+	if ok {
+		scopes = arg.Values
+	}
 
 	claims := &GatekeeperToken{
 		StandardClaims: &jwt.StandardClaims{
 			Issuer:    input.Issuer,
 			Subject:   input.Identity.Subject,
-			Audience:  input.View.Aud,
+			Audience:  aud,
 			ExpiresAt: now.Add(input.TTL).Unix(),
 			NotBefore: now.Add(-1 * time.Minute).Unix(),
 			IssuedAt:  now.Unix(),
 			Id:        uuid.New(),
 		},
-		Scopes: input.ServiceRole.TargetScopes,
+		Scopes: scopes,
 	}
 
 	jot := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
@@ -132,8 +152,10 @@ func (a *GatekeeperAdapter) MintToken(ctx context.Context, input *Action) (*Mint
 		return nil, err
 	}
 	return &MintTokenResult{
-		Account:     input.Identity.Subject,
-		Token:       token,
+		Credentials: map[string]string{
+			"account":      input.Identity.Subject,
+			"access_token": token,
+		},
 		TokenFormat: "base64",
 	}, nil
 }

@@ -179,8 +179,7 @@ func (wh *AccountWarehouse) MintTokenWithTTL(ctx context.Context, params *Resour
 	}
 
 	var polSpec *policySpec
-	// FIXME need to handle redshift case
-	switch params.ServiceTemplate.ItemFormat {
+	switch params.ServiceTemplate.ServiceName {
 	case S3ItemFormat:
 		bucket, ok := params.Vars["bucket"]
 		if !ok {
@@ -234,7 +233,7 @@ func (wh *AccountWarehouse) MintTokenWithTTL(ctx context.Context, params *Resour
 			params:    params,
 		}
 	default:
-		return nil, fmt.Errorf("unrecognized item format [%s] for AWS target adapter", params.ServiceTemplate.ItemFormat)
+		return nil, fmt.Errorf("unrecognized item format [%s] for AWS target adapter", params.ServiceTemplate.ServiceName)
 	}
 
 	principalArn, err := ensurePrincipal(sess, princSpec)

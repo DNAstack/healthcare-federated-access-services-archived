@@ -21,6 +21,7 @@ import (
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/srcutil" /* copybara-comment: srcutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
 
@@ -29,8 +30,7 @@ import (
 
 const (
 	// SawAdapterName is the name identifier exposed in config files.
-	SawAdapterName = "token:gcp:sa"
-	sawName        = "saw"
+	SawAdapterName = "saw"
 	sawPlatform    = "gcp"
 	// SawMaxUserIDLength is the service account desc max length.
 	SawMaxUserIDLength = 100
@@ -40,18 +40,19 @@ const (
 
 // SawAdapter is a Service Account Warehouse (SAW) adapter.
 type SawAdapter struct {
-	desc      *pb.TargetAdapter
+	desc      map[string]*pb.ServiceDescriptor
 	warehouse clouds.ResourceTokenCreator
 }
 
 // NewSawAdapter creates a Service Account Warehouse (SAW) adapter.
-func NewSawAdapter(store storage.Store, warehouse clouds.ResourceTokenCreator, secrets *pb.DamSecrets, adapters *TargetAdapters) (Adapter, error) {
-	var desc pb.TargetAdapter
-	if err := store.Read(AdapterDataType, storage.DefaultRealm, storage.DefaultUser, sawName, storage.LatestRev, &desc); err != nil {
-		return nil, fmt.Errorf("reading %q descriptor: %v", sawName, err)
+func NewSawAdapter(store storage.Store, warehouse clouds.ResourceTokenCreator, secrets *pb.DamSecrets, adapters *ServiceAdapters) (ServiceAdapter, error) {
+	var msg pb.ServicesResponse
+	path := adapterFilePath(SawAdapterName)
+	if err := srcutil.LoadProto(path, &msg); err != nil {
+		return nil, fmt.Errorf("reading %q service descriptors from path %q: %v", aggregatorName, path, err)
 	}
 	return &SawAdapter{
-		desc:      &desc,
+		desc:      msg.Services,
 		warehouse: warehouse,
 	}, nil
 }
@@ -66,8 +67,8 @@ func (a *SawAdapter) Platform() string {
 	return sawPlatform
 }
 
-// Descriptor returns a TargetAdapter descriptor.
-func (a *SawAdapter) Descriptor() *pb.TargetAdapter {
+// Descriptors returns a map of ServiceDescriptor descriptor.
+func (a *SawAdapter) Descriptors() map[string]*pb.ServiceDescriptor {
 	return a.desc
 }
 
@@ -77,9 +78,9 @@ func (a *SawAdapter) IsAggregator() bool {
 }
 
 // CheckConfig validates that a new configuration is compatible with this adapter.
-func (a *SawAdapter) CheckConfig(templateName string, template *pb.ServiceTemplate, resName, viewName string, view *pb.View, cfg *pb.DamConfig, adapters *TargetAdapters) (string, error) {
+func (a *SawAdapter) CheckConfig(templateName string, template *pb.ServiceTemplate, resName, viewName string, view *pb.View, cfg *pb.DamConfig, adapters *ServiceAdapters) (string, error) {
 	if cfg.Options == nil || len(cfg.Options.GcpServiceAccountProject) == 0 {
-		return httputil.StatusPath("serviceTemplates", templateName, "targetAdapter"), fmt.Errorf("target adapter uses service accounts but options.gcpServiceAccountProject is not defined")
+		return httputil.StatusPath("serviceTemplates", templateName, "targetAdapter"), fmt.Errorf("service adapter uses service accounts but options.gcpServiceAccountProject is not defined")
 	}
 	return "", nil
 }
@@ -100,26 +101,28 @@ func (a *SawAdapter) MintToken(ctx context.Context, input *Action) (*MintTokenRe
 		return nil, fmt.Errorf("SAW minting token: %v", err)
 	}
 	return &MintTokenResult{
-		Account:     result.Account,
-		Token:       result.Token,
+		Credentials: map[string]string{
+			"account":      result.Account,
+			"access_token": result.Token,
+		},
 		TokenFormat: result.Format,
 	}, nil
 }
 
 func resourceTokenCreationParams(role string, template *pb.ServiceTemplate, sRole *pb.ServiceRole, view *pb.View, cfg *pb.DamConfig, format string) (*clouds.ResourceTokenCreationParams, error) {
 	roles := []string{}
-	scopes := []string{}
+	scopes := []string{"https://www.googleapis.com/auth/cloud-platform"}
 	if sRole != nil {
-		if len(sRole.TargetRoles) > 0 {
-			roles = append(roles, sRole.TargetRoles...)
+		if arg, ok := sRole.ServiceArgs["roles"]; ok {
+			roles = arg.Values
 		}
-		if len(sRole.TargetScopes) > 0 {
-			scopes = append(scopes, sRole.TargetScopes...)
+		if arg, ok := sRole.ServiceArgs["scopes"]; ok {
+			scopes = arg.Values
 		}
 	}
 	items := make([]map[string]string, len(view.Items))
 	for index, item := range view.Items {
-		items[index] = scrubVars(item.Vars)
+		items[index] = scrubVars(item.Args)
 	}
 	billingProject := cfg.Options.GcpIamBillingProject
 	if len(billingProject) == 0 {

@@ -105,7 +105,7 @@ func responseKeyFile(r *http.Request) bool {
 	return httputil.QueryParam(r, "response_type") == "key-file-type"
 }
 
-func (s *Service) generateResourceToken(ctx context.Context, clientID, resourceName, viewName, role string, ttl time.Duration, useKeyFile bool, id *ga4gh.Identity, cfg *pb.DamConfig, res *pb.Resource, view *pb.View) (*pb.ResourceTokens_ResourceToken, int, error) {
+func (s *Service) generateResourceToken(ctx context.Context, clientID, resourceName, viewName, role string, ttl time.Duration, useKeyFile bool, id *ga4gh.Identity, cfg *pb.DamConfig, res *pb.Resource, view *pb.View) (*pb.ResourceResults_ResourceAccess, int, error) {
 	sRole, err := adapter.ResolveServiceRole(role, view, res, cfg)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
@@ -117,7 +117,7 @@ func (s *Service) generateResourceToken(ctx context.Context, clientID, resourceN
 	if !ok {
 		return nil, http.StatusInternalServerError, fmt.Errorf("view %q service template %q is not defined", viewName, view.ServiceTemplate)
 	}
-	adapt := s.adapters.ByName[st.TargetAdapter]
+	adapt := s.adapters.ByServiceName[st.ServiceName]
 	var aggregates []*adapter.AggregateView
 	if adapt.IsAggregator() {
 		aggregates, err = resolveAggregates(res, view, cfg, s.adapters)
@@ -151,26 +151,23 @@ func (s *Service) generateResourceToken(ctx context.Context, clientID, resourceN
 		return nil, http.StatusServiceUnavailable, err
 	}
 
-	if !useKeyFile {
-		return &pb.ResourceTokens_ResourceToken{
-			Account:     result.Account,
-			AccessToken: result.Token,
-			ExpiresIn:   uint32(ttl.Seconds()),
-			Platform:    adapt.Platform(),
-			// TODO: remove these older fields
-			Name: resourceName,
-			View: makeView(viewName, view, res, cfg, s.hidePolicyBasis, s.adapters),
-			Ttl:  timeutil.TTLString(ttl),
+	if httputil.IsJSON(result.TokenFormat) && result.Credentials != nil {
+		return &pb.ResourceResults_ResourceAccess{
+			Credentials: map[string]string{"key_file": result.Credentials["json"]},
 		}, http.StatusOK, nil
 	}
-
-	if httputil.IsJSON(result.TokenFormat) {
-		return &pb.ResourceTokens_ResourceToken{KeyFile: result.Token}, http.StatusOK, nil
+	if useKeyFile {
+		return nil, http.StatusBadRequest, fmt.Errorf("adapter cannot create key file format")
 	}
-	return nil, http.StatusBadRequest, fmt.Errorf("adapter cannot create key file format")
+
+	return &pb.ResourceResults_ResourceAccess{
+		Credentials: result.Credentials,
+		Labels:      result.Labels,
+		ExpiresIn:   uint32(ttl.Seconds()),
+	}, http.StatusOK, nil
 }
 
-func (s *Service) oauthConf(brokerName string, broker *pb.TrustedPassportIssuer, clientSecret string, scopes []string) *oauth2.Config {
+func (s *Service) oauthConf(brokerName string, broker *pb.TrustedIssuer, clientSecret string, scopes []string) *oauth2.Config {
 	return &oauth2.Config{
 		ClientID:     broker.ClientId,
 		ClientSecret: clientSecret,
@@ -266,7 +263,7 @@ func (s *Service) auth(ctx context.Context, in authHandlerIn) (*authHandlerOut, 
 		return nil, http.StatusServiceUnavailable, err
 	}
 
-	broker, ok := cfg.TrustedPassportIssuers[s.defaultBroker]
+	broker, ok := cfg.TrustedIssuers[s.defaultBroker]
 	if !ok {
 		return nil, http.StatusBadRequest, fmt.Errorf("broker %q is not defined", s.defaultBroker)
 	}
@@ -404,7 +401,7 @@ func (s *Service) loggedIn(ctx context.Context, in loggedInHandlerIn) (*loggedIn
 		return nil, http.StatusServiceUnavailable, err
 	}
 
-	broker, ok := cfg.TrustedPassportIssuers[state.Broker]
+	broker, ok := cfg.TrustedIssuers[state.Broker]
 	if !ok {
 		return nil, http.StatusBadRequest, fmt.Errorf("unknown identity broker %q", state.Broker)
 	}
@@ -522,9 +519,9 @@ func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	keyFile := false
-	out := &pb.ResourceTokens{
-		Resources:    make(map[string]*pb.ResourceTokens_Descriptor),
-		Access:       make(map[string]*pb.ResourceTokens_ResourceToken),
+	out := &pb.ResourceResults{
+		Resources:    make(map[string]*pb.ResourceResults_ResourceDescriptor),
+		Access:       make(map[string]*pb.ResourceResults_ResourceAccess),
 		EpochSeconds: uint32(time.Now().Unix()),
 	}
 	for i, r := range state.Resources {
@@ -540,25 +537,33 @@ func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		tok, status, err := s.generateResourceToken(ctx, state.ClientId, r.Resource, r.View, r.Role, time.Duration(state.Ttl), keyFile, id, cfg, res, view)
+		result, status, err := s.generateResourceToken(ctx, state.ClientId, r.Resource, r.View, r.Role, time.Duration(state.Ttl), keyFile, id, cfg, res, view)
 		if err != nil {
 			httputil.WriteError(w, status, err)
 			return
 		}
 		access := strconv.Itoa(i)
 
-		out.Resources[r.Url] = &pb.ResourceTokens_Descriptor{
-			Interfaces:  makeViewInterfaces(view, res, cfg, s.adapters),
+		interMap := map[string]*pb.ResourceResults_InterfaceEntry{}
+		for k, v := range makeViewInterfaces(view, res, cfg, s.adapters) {
+			entry := &pb.ResourceResults_InterfaceEntry{}
+			interMap[k] = entry
+			for _, uri := range v.Uri {
+				entry.Items = append(entry.Items, &pb.ResourceResults_ResourceInterface{Uri: uri, Labels: v.Labels})
+			}
+		}
+
+		out.Resources[r.Url] = &pb.ResourceResults_ResourceDescriptor{
+			Interfaces:  interMap,
 			Permissions: makeRoleCategories(view, r.Role, cfg),
 			Access:      access,
 		}
-		// TODO: remove these fields when no longer needed for the older interface
-		tok.Name = ""
-		tok.View = nil
-		tok.Ttl = ""
-		out.Access[access] = tok
+		out.Access[access] = &pb.ResourceResults_ResourceAccess{
+			Credentials: result.Credentials,
+			Labels:      result.Labels,
+		}
 	}
-	httputil.WriteProtoResp(w, out)
+	httputil.WriteRPCResp(w, out, nil)
 }
 
 func (s *Service) resourceTokenState(stateID string, tx storage.Tx) (*pb.ResourceTokenRequestState, *ga4gh.Identity, error) {

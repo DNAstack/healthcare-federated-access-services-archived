@@ -21,6 +21,7 @@ import (
 
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/srcutil" /* copybara-comment: srcutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
@@ -32,22 +33,23 @@ const (
 
 // AggregatorAdapter combines views from other adapters.
 type AggregatorAdapter struct {
-	desc       *pb.TargetAdapter
-	sawAdapter Adapter
+	desc       map[string]*pb.ServiceDescriptor
+	sawAdapter ServiceAdapter
 }
 
 // NewAggregatorAdapter creates a AggregatorAdapter.
-func NewAggregatorAdapter(store storage.Store, warehouse clouds.ResourceTokenCreator, secrets *pb.DamSecrets, adapters *TargetAdapters) (Adapter, error) {
-	var desc pb.TargetAdapter
-	if err := store.Read(AdapterDataType, storage.DefaultRealm, storage.DefaultUser, aggregatorName, storage.LatestRev, &desc); err != nil {
-		return nil, fmt.Errorf("reading %q descriptor: %v", aggregatorName, err)
+func NewAggregatorAdapter(store storage.Store, warehouse clouds.ResourceTokenCreator, secrets *pb.DamSecrets, adapters *ServiceAdapters) (ServiceAdapter, error) {
+	var msg pb.ServicesResponse
+	path := adapterFilePath(aggregatorName)
+	if err := srcutil.LoadProto(path, &msg); err != nil {
+		return nil, fmt.Errorf("reading %q service descriptors from path %q: %v", aggregatorName, path, err)
 	}
-	sawAdapter, ok := adapters.ByName[SawAdapterName]
+	sawAdapter, ok := adapters.ByAdapterName[SawAdapterName]
 	if !ok {
 		return nil, fmt.Errorf("SAW adapter %q not available at time of view aggregator adapter initialization", SawAdapterName)
 	}
 	return &AggregatorAdapter{
-		desc:       &desc,
+		desc:       msg.Services,
 		sawAdapter: sawAdapter,
 	}, nil
 }
@@ -62,8 +64,8 @@ func (a *AggregatorAdapter) Platform() string {
 	return a.sawAdapter.Platform()
 }
 
-// Descriptor returns a TargetAdapter descriptor.
-func (a *AggregatorAdapter) Descriptor() *pb.TargetAdapter {
+// Descriptors returns a map of Service descriptors.
+func (a *AggregatorAdapter) Descriptors() map[string]*pb.ServiceDescriptor {
 	return a.desc
 }
 
@@ -73,7 +75,7 @@ func (a *AggregatorAdapter) IsAggregator() bool {
 }
 
 // CheckConfig validates that a new configuration is compatible with this adapter.
-func (a *AggregatorAdapter) CheckConfig(templateName string, template *pb.ServiceTemplate, resName, viewName string, view *pb.View, cfg *pb.DamConfig, adapters *TargetAdapters) (string, error) {
+func (a *AggregatorAdapter) CheckConfig(templateName string, template *pb.ServiceTemplate, resName, viewName string, view *pb.View, cfg *pb.DamConfig, adapters *ServiceAdapters) (string, error) {
 	if view == nil {
 		return "", nil
 	}
@@ -83,7 +85,7 @@ func (a *AggregatorAdapter) CheckConfig(templateName string, template *pb.Servic
 	adapterName := ""
 	adapterST := ""
 	for iIdx, item := range view.Items {
-		vars, path, err := GetItemVariables(adapters, template.TargetAdapter, template.ItemFormat, item)
+		vars, path, err := GetItemVariables(adapters, template.ServiceName, item)
 		if err != nil {
 			return httputil.StatusPath("resources", resName, "views", viewName, "items", strconv.Itoa(iIdx), path), err
 		}
@@ -101,22 +103,26 @@ func (a *AggregatorAdapter) CheckConfig(templateName string, template *pb.Servic
 		if !ok {
 			return httputil.StatusPath("resources", refResName, "views", refViewName, "serviceTemplate"), fmt.Errorf("view service template %q not found", refView.ServiceTemplate)
 		}
+		adapt, ok := adapters.ByServiceName[refSt.ServiceName]
+		if !ok {
+			return httputil.StatusPath("resources", refResName, "views", refViewName, "serviceTemplate"), fmt.Errorf("view service name %q not defined", refSt.ServiceName)
+		}
 		if len(adapterName) == 0 {
-			adapterName = refSt.TargetAdapter
+			adapterName = adapt.Name()
 			adapterST = refView.ServiceTemplate
-		} else if adapterName != refSt.TargetAdapter {
-			return httputil.StatusPath("resources", resName, "views", viewName, "items", strconv.Itoa(iIdx), "vars", "view"), fmt.Errorf("view service template %q target adapter %q does not match other items using target adapter %q", refView.ServiceTemplate, refSt.TargetAdapter, adapterName)
+		} else if adapterName != adapt.Name() {
+			return httputil.StatusPath("resources", resName, "views", viewName, "items", strconv.Itoa(iIdx), "vars", "view"), fmt.Errorf("view service template %q service adapter %q does not match other items using service adapter %q", refView.ServiceTemplate, refSt.ServiceName, adapterName)
+		}
+		desc, ok := adapters.Descriptors[refSt.ServiceName]
+		if !ok || desc == nil || desc.Properties == nil {
+			return httputil.StatusPath("serviceTemplates", adapterST, "serviceName", refSt.ServiceName), fmt.Errorf("lookup of descriptor properties for %q on adapter %q failed: desc:\n%+v", refSt.ServiceName, adapterName, desc)
+		}
+		if !desc.Properties.CanBeAggregated {
+			return httputil.StatusPath("serviceTemplates", adapterST, "targetService", "properties", "canBeAggregated"), fmt.Errorf("aggregation on service adapter %q not supported", adapterName)
 		}
 	}
 	if adapterName == "" {
 		return httputil.StatusPath("resources", resName, "views", viewName, "items"), fmt.Errorf("included views offer no items to aggregate")
-	}
-	destAdapter, ok := adapters.Descriptors[adapterName]
-	if !ok {
-		return httputil.StatusPath("serviceTemplates", adapterST, "targetAdapter"), fmt.Errorf("target adapter %q not found", adapterName)
-	}
-	if !destAdapter.Properties.CanBeAggregated {
-		return httputil.StatusPath("serviceTemplates", adapterST, "targetAdapter", "properties", "canBeAggregated"), fmt.Errorf("aggregation on target adapter %q not supported", adapterName)
 	}
 	return "", nil
 }
