@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/osenv"
 	"io"
 	"net/http"
 	"net/url"
@@ -147,8 +148,9 @@ func NewService(params *Options) *Service {
 // New creates a DAM and registers it on r.
 func New(r *mux.Router, params *Options) *Service {
 	var roleCat pb.DamRoleCategoriesResponse
-	if err := srcutil.LoadProto("deploy/metadata/dam_roles.json", &roleCat); err != nil {
-		glog.Fatalf("cannot load role categories file %q: %v", "deploy/metadata/dam_roles.json", err)
+	path := damRolesJsonPath()
+	if err := srcutil.LoadProto(path, &roleCat); err != nil {
+		glog.Fatalf("cannot load role categories file %q: %v", path, err)
 	}
 	perms, err := permissions.LoadPermissions(params.Store)
 	if err != nil {
@@ -236,6 +238,12 @@ func New(r *mux.Router, params *Options) *Service {
 	sh.Handler = r
 	registerHandlers(r, s)
 	return s
+}
+
+func damRolesJsonPath() string {
+	root := osenv.VarWithDefault("METADATA_PATH", "deploy/metadata")
+	path := strings.ReplaceAll(root+"/dam_roles.json", "//", "/")
+	return path
 }
 
 func getClientID(r *http.Request) string {
