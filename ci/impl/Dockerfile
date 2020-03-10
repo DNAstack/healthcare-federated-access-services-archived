@@ -35,7 +35,6 @@ COPY --from=0 /build/gcp/ic/main /go/ic-main
 COPY --from=0 /build/gcp/personas/main /go/playground-idp-main
 # Config must be mounted into these folders at runtime
 RUN mkdir -p /go/config/dam /go/config/ic
-COPY --from=0 /build/deploy/config/dam-static /go/config/dam-static
 COPY --from=0 /build/deploy/metadata /go/deploy/metadata
 COPY --from=0 /build/assets /go/assets/
 COPY --from=0 /build/pages /go/pages/
