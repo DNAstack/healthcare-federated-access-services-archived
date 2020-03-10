@@ -18,7 +18,6 @@ ADD target/ ./
 RUN CGO_ENABLED=0 GOOS=linux GOPATH=$(pwd)/gcp go build -a -o gcp/dam/main gcp/dam/main.go
 RUN CGO_ENABLED=0 GOOS=linux GOPATH=$(pwd)/gcp go build -a -o gcp/ic/main gcp/ic/main.go
 RUN CGO_ENABLED=0 GOOS=linux GOPATH=$(pwd)/gcp go build -a -o gcp/personas/main gcp/personas/main.go
-RUN CGO_ENABLED=0 GOOS=linux GOPATH=$(pwd)/gcp go build -a -o gcp/hydra_reset/main gcp/hydra_reset/main.go
 
 ##
 ## Stage 2: Package the runnable image
@@ -31,7 +30,6 @@ ARG APP_VERSION
 COPY --from=0 /build/gcp/dam/main /go/dam-main
 COPY --from=0 /build/gcp/ic/main /go/ic-main
 COPY --from=0 /build/gcp/personas/main /go/playground-idp-main
-COPY --from=0 /build/gcp/hydra_reset/main /go/hydra-reset
 # Config must be mounted into these folders at runtime
 RUN mkdir -p /go/config/dam /go/config/ic
 COPY --from=0 /build/deploy/config/dam-static /go/config/dam-static
