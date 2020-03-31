@@ -33,13 +33,12 @@ const (
 	// resources.
 	resourceTokensPath = "/dam/checkout"
 
+	// Proxy hydra token endpoint.
+	oauthTokenPath = "/oauth2/token"
+
 	// ---------------------------------------------------------------------------
 	// The following are administration endpoints for managing DAM.
 	// ---------------------------------------------------------------------------
-
-	// infoPath: metadata about the service, like versions of various services.
-	// Required permission: admin
-	infoPath = "/dam"
 
 	// realms: for managing realms.
 	realmPath = "/dam/v1alpha/{realm}"
@@ -59,7 +58,7 @@ const (
 	configTrustedSourcePath   = "/dam/v1alpha/{realm}/config/trustedSources/{name}"
 	configPolicyPath          = "/dam/v1alpha/{realm}/config/policies/{name}"
 	configOptionsPath         = "/dam/v1alpha/{realm}/config/options"
-	configClaimDefPath        = "/dam/v1alpha/{realm}/config/visaTypes/{name}"
+	configVisaTypePath        = "/dam/v1alpha/{realm}/config/visaTypes/{name}"
 	configServiceTemplatePath = "/dam/v1alpha/{realm}/config/serviceTemplates/{name}"
 	configClientPath          = "/dam/v1alpha/{realm}/config/clients/{name}"
 	configTestPersonasPath    = "/dam/v1alpha/{realm}/config/testPersonas"
@@ -78,10 +77,22 @@ const (
 	configHistoryPath         = "/dam/v1alpha/{realm}/config/history"
 	configHistoryRevisionPath = "/dam/v1alpha/{realm}/config/history/{name}"
 
+	// Part of SCIM V2 for managing groups. See "proto/scim/v2/groups.proto"
+	scimGroupsPath = "/identity/scim/v2/{realm}/Groups"
+	scimGroupPath  = "/identity/scim/v2/{realm}/Groups/{name}"
+
 	// testPath: performs a set of tests for validity of the current configuration.
 	// TODO: remove and perform tests at the time of config update and reject
 	// update if it would put the configuration in an invalid state.
 	testPath = "/dam/v1alpha/{realm}/tests"
+
+	// End-point for managing tokens. See "proto/tokens/v1/consents.proto"
+	tokensPath = "/tokens"
+	tokenPath  = "/tokens/"
+
+	// End-point for managing consents. See "proto/tokens/v1/tokens.proto"
+	consentsPath = "/consents"
+	consentPath  = "/consents/"
 
 	// ---------------------------------------------------------------------------
 	// The following are read-only non-admin access to configurations of DAM.
@@ -103,4 +114,12 @@ const (
 	translatorsPath       = "/dam/v1alpha/{realm}/passportTranslators"
 	damRoleCategoriesPath = "/dam/v1alpha/{realm}/damRoleCategories"
 	testPersonasPath      = "/dam/v1alpha/{realm}/testPersonas"
+
+	// ---------------------------------------------------------------------------
+	// The following are read-only and public.
+	// ---------------------------------------------------------------------------
+
+	// infoPath: metadata about the service, like versions of various services.
+	// Required permission: none
+	infoPath = "/dam"
 )

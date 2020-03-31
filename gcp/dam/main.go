@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -28,7 +29,8 @@ import (
 	"github.com/gorilla/mux" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dam" /* copybara-comment: dam */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dsstore" /* copybara-comment: dsstore */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydraproxy" /* copybara-comment: hydraproxy */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/osenv" /* copybara-comment: osenv */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/saw" /* copybara-comment: saw */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/server" /* copybara-comment: server */
@@ -62,7 +64,9 @@ var (
 	hydraAdminAddr = ""
 	// hydraPublicAddr is the address for the Hydra public endpoints.
 	hydraPublicAddr = ""
-	port            = osenv.VarWithDefault("DAM_PORT", "8081")
+	// hydraPublicAddrInternal is the address for the Hydra public endpoint in the internal traffic.
+	hydraPublicAddrInternal = ""
+	port                    = osenv.VarWithDefault("DAM_PORT", "8081")
 
 	cfgVars = map[string]string{
 		"${YOUR_PROJECT_ID}":  project,
@@ -81,7 +85,7 @@ func main() {
 	var store storage.Store
 	switch storageType {
 	case "datastore":
-		store = dsstore.NewDatastoreStorage(ctx, project, srvName, cfgPath)
+		store = dsstore.NewStore(ctx, project, srvName, cfgPath)
 	case "memory":
 		store = storage.NewMemoryStorage(srvName, cfgPath)
 		// Import and resolve template variables, if any.
@@ -101,28 +105,38 @@ func main() {
 	logger.OnError = func(err error) {
 		glog.Warningf("StackdriverLogging.Client.OnError: %v", err)
 	}
+
+	var hyproxy *hydraproxy.Service
 	if useHydra {
 		hydraAdminAddr = osenv.MustVar("HYDRA_ADMIN_URL")
 		hydraPublicAddr = osenv.MustVar("HYDRA_PUBLIC_URL")
+		hydraPublicAddrInternal := osenv.MustVar("HYDRA_PUBLIC_URL_INTERNAL")
+
+		hyproxy, err = hydraproxy.New(http.DefaultClient, hydraAdminAddr, hydraPublicAddrInternal, store)
+		if err != nil {
+			glog.Exitf("hydraproxy.New failed: %v", err)
+		}
 	}
 
 	r := mux.NewRouter()
 
 	s := dam.New(r, &dam.Options{
-		Domain:           srvAddr,
-		ServiceName:      srvName,
-		DefaultBroker:    defaultBroker,
-		Store:            store,
-		Warehouse:        wh,
-		Logger:           logger,
-		HidePolicyBasis:  hidePolicyBasis,
-		HideRejectDetail: hideRejectDetail,
-		UseHydra:         true,
-		HydraAdminURL:    hydraAdminAddr,
-		HydraPublicURL:   hydraPublicAddr,
+		Domain:                srvAddr,
+		ServiceName:           srvName,
+		DefaultBroker:         defaultBroker,
+		Store:                 store,
+		Warehouse:             wh,
+		ServiceAccountManager: wh,
+		Logger:                logger,
+		HidePolicyBasis:       hidePolicyBasis,
+		HideRejectDetail:      hideRejectDetail,
+		UseHydra:              true,
+		HydraAdminURL:         hydraAdminAddr,
+		HydraPublicURL:        hydraPublicAddr,
+		HydraPublicProxy:      hyproxy,
 	})
 
-	r.HandleFunc("/liveness_check", httputil.LivenessCheckHandler)
+	r.HandleFunc("/liveness_check", httputils.LivenessCheckHandler)
 
 	srv := server.New("dam", port, s.Handler)
 	srv.ServeUnblock()

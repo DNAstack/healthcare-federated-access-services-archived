@@ -21,9 +21,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"github.com/gorilla/mux" /* copybara-comment */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"google.golang.org/grpc/codes" /* copybara-comment */
+	"google.golang.org/grpc/status" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
@@ -35,7 +37,7 @@ import (
 func (s *Service) GetResources(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 	resMap := make(map[string]*pb.Resource, 0)
@@ -46,38 +48,38 @@ func (s *Service) GetResources(w http.ResponseWriter, r *http.Request) {
 	resp := pb.GetResourcesResponse{
 		Resources: resMap,
 	}
-	httputil.WriteProtoResp(w, proto.Message(&resp))
+	httputils.WriteResp(w, proto.Message(&resp))
 }
 
 // GetResource implements the corresponding endpoint in the REST API.
 func (s *Service) GetResource(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 	name := getName(r)
 	if err := checkName(name); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "%v", err))
 		return
 	}
 	res, ok := cfg.Resources[name]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource %q not found", name))
+		httputils.WriteError(w, status.Errorf(codes.NotFound, "resource %q not found", name))
 		return
 	}
 	resp := pb.GetResourceResponse{
 		Resource: makeResource(name, res, cfg, s.hidePolicyBasis, s.adapters),
-		Access:   s.makeAccessList(nil, []string{name}, nil, nil, cfg, r),
+		Access:   s.makeAccessList(nil, []string{name}, nil, nil, cfg, r, s.ValidateCfgOpts(getRealm(r), nil)),
 	}
-	httputil.WriteProtoResp(w, proto.Message(&resp))
+	httputils.WriteResp(w, proto.Message(&resp))
 }
 
 // GetFlatViews implements the corresponding REST API endpoint.
 func (s *Service) GetFlatViews(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 	viewMap := make(map[string]*pb.GetFlatViewsResponse_FlatView, 0)
@@ -86,12 +88,12 @@ func (s *Service) GetFlatViews(w http.ResponseWriter, r *http.Request) {
 			v := makeView(vname, view, res, cfg, s.hidePolicyBasis, s.adapters)
 			st, ok := cfg.ServiceTemplates[v.ServiceTemplate]
 			if !ok {
-				httputil.WriteError(w, http.StatusInternalServerError, fmt.Errorf("resource %q view %q service template %q is undefined", resname, vname, v.ServiceTemplate))
+				httputils.WriteError(w, status.Errorf(codes.Internal, "resource %q view %q service template %q is undefined", resname, vname, v.ServiceTemplate))
 				return
 			}
 			desc, ok := s.adapters.Descriptors[st.ServiceName]
 			if !ok {
-				httputil.WriteError(w, http.StatusInternalServerError, fmt.Errorf("resource %q view %q service template %q service name %q is undefined", resname, vname, v.ServiceTemplate, st.ServiceName))
+				httputils.WriteError(w, status.Errorf(codes.Internal, "resource %q view %q service template %q service name %q is undefined", resname, vname, v.ServiceTemplate, st.ServiceName))
 				return
 			}
 			labels := v.Labels
@@ -141,24 +143,24 @@ func (s *Service) GetFlatViews(w http.ResponseWriter, r *http.Request) {
 	resp := pb.GetFlatViewsResponse{
 		Views: viewMap,
 	}
-	httputil.WriteProtoResp(w, proto.Message(&resp))
+	httputils.WriteResp(w, proto.Message(&resp))
 }
 
 // GetViews implements the corresponding endpoint in the REST API.
 func (s *Service) GetViews(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 	name := getName(r)
 	if err := checkName(name); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "%v", err))
 		return
 	}
 	res, ok := cfg.Resources[name]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource %q not found", name))
+		httputils.WriteError(w, status.Errorf(codes.NotFound, "resource %q not found", name))
 		return
 	}
 	out := make(map[string]*pb.View, 0)
@@ -167,124 +169,124 @@ func (s *Service) GetViews(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := pb.GetViewsResponse{
 		Views:  out,
-		Access: s.makeAccessList(nil, []string{name}, nil, nil, cfg, r),
+		Access: s.makeAccessList(nil, []string{name}, nil, nil, cfg, r, s.ValidateCfgOpts(getRealm(r), nil)),
 	}
-	httputil.WriteProtoResp(w, proto.Message(&resp))
+	httputils.WriteResp(w, proto.Message(&resp))
 }
 
 // GetView implements the corresponding endpoint in the REST API.
 func (s *Service) GetView(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 	name := getName(r)
 	if err := checkName(name); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "%v", err))
 		return
 	}
 	res, ok := cfg.Resources[name]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource %q not found", name))
+		httputils.WriteError(w, status.Errorf(codes.NotFound, "resource %q not found", name))
 		return
 	}
 	viewName := mux.Vars(r)["view"]
 	if err := checkName(viewName); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "%v", err))
 		return
 	}
 	view, ok := res.Views[viewName]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource %q view %q not found", name, viewName))
+		httputils.WriteError(w, status.Errorf(codes.NotFound, "resource %q view %q not found", name, viewName))
 		return
 	}
 	resp := pb.GetViewResponse{
 		View:   makeView(viewName, view, res, cfg, s.hidePolicyBasis, s.adapters),
-		Access: s.makeAccessList(nil, []string{name}, []string{viewName}, nil, cfg, r),
+		Access: s.makeAccessList(nil, []string{name}, []string{viewName}, nil, cfg, r, s.ValidateCfgOpts(getRealm(r), nil)),
 	}
-	httputil.WriteProtoResp(w, proto.Message(&resp))
+	httputils.WriteResp(w, proto.Message(&resp))
 }
 
 // GetViewRoles implements the corresponding endpoint in the REST API.
 func (s *Service) GetViewRoles(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 	name := getName(r)
 	if err := checkName(name); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "%v", err))
 		return
 	}
 	res, ok := cfg.Resources[name]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource %q not found", name))
+		httputils.WriteError(w, status.Errorf(codes.NotFound, "resource %q not found", name))
 		return
 	}
 	viewName := mux.Vars(r)["view"]
 	if err := checkName(viewName); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "%v", err))
 		return
 	}
 	view, ok := res.Views[viewName]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource %q view %q not found", name, viewName))
+		httputils.WriteError(w, status.Errorf(codes.NotFound, "resource %q view %q not found", name, viewName))
 		return
 	}
 	out := makeViewRoles(view, res, cfg, s.hidePolicyBasis, s.adapters)
 	resp := pb.GetViewRolesResponse{
 		Roles:  out,
-		Access: s.makeAccessList(nil, []string{name}, []string{viewName}, nil, cfg, r),
+		Access: s.makeAccessList(nil, []string{name}, []string{viewName}, nil, cfg, r, s.ValidateCfgOpts(getRealm(r), nil)),
 	}
-	httputil.WriteProtoResp(w, proto.Message(&resp))
+	httputils.WriteResp(w, proto.Message(&resp))
 }
 
 // GetViewRole implements the corresponding endpoint in the REST API.
 func (s *Service) GetViewRole(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 	name := getName(r)
 	if err := checkName(name); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "%v", err))
 		return
 	}
 	res, ok := cfg.Resources[name]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource %q not found", name))
+		httputils.WriteError(w, status.Errorf(codes.NotFound, "resource %q not found", name))
 		return
 	}
 	vars := mux.Vars(r)
 	viewName := vars["view"]
 	if err := checkName(viewName); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "%v", err))
 		return
 	}
 	view, ok := res.Views[viewName]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource %q view %q not found", name, viewName))
+		httputils.WriteError(w, status.Errorf(codes.NotFound, "resource %q view %q not found", name, viewName))
 		return
 	}
 	roleName := vars["role"]
 	if err := checkName(roleName); err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "%v", err))
 		return
 	}
 	roles := makeViewRoles(view, res, cfg, s.hidePolicyBasis, s.adapters)
 	role, ok := roles[roleName]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource %q view %q role %q not found", name, viewName, roleName))
+		httputils.WriteError(w, status.Errorf(codes.NotFound, "resource %q view %q role %q not found", name, viewName, roleName))
 		return
 	}
 	resp := pb.GetViewRoleResponse{
 		Role:   role,
-		Access: s.makeAccessList(nil, []string{name}, []string{viewName}, []string{roleName}, cfg, r),
+		Access: s.makeAccessList(nil, []string{name}, []string{viewName}, []string{roleName}, cfg, r, s.ValidateCfgOpts(getRealm(r), nil)),
 	}
-	httputil.WriteProtoResp(w, proto.Message(&resp))
+	httputils.WriteResp(w, proto.Message(&resp))
 }
 
 // GetServiceDescriptors implements the corresponding REST API endpoint.
@@ -292,7 +294,7 @@ func (s *Service) GetServiceDescriptors(w http.ResponseWriter, r *http.Request) 
 	out := &pb.ServicesResponse{
 		Services: s.adapters.Descriptors,
 	}
-	httputil.WriteProtoResp(w, out)
+	httputils.WriteResp(w, out)
 }
 
 func (s *Service) getIssuerTranslator(ctx context.Context, issuer string, cfg *pb.DamConfig, secrets *pb.DamSecrets, tx storage.Tx) (translator.Translator, error) {
@@ -339,7 +341,7 @@ func (s *Service) createIssuerTranslator(ctx context.Context, cfgTpi *pb.Trusted
 // GetPassportTranslators implements the corresponding REST API endpoint.
 func (s *Service) GetPassportTranslators(w http.ResponseWriter, r *http.Request) {
 	out := translator.GetPassportTranslators()
-	httputil.WriteProtoResp(w, out)
+	httputils.WriteResp(w, out)
 }
 
 // GetDamRoleCategories implements the corresponding REST API method.
@@ -347,19 +349,19 @@ func (s *Service) GetDamRoleCategories(w http.ResponseWriter, r *http.Request) {
 	out := &pb.DamRoleCategoriesResponse{
 		DamRoleCategories: s.roleCategories,
 	}
-	httputil.WriteProtoResp(w, out)
+	httputils.WriteResp(w, out)
 }
 
 // GetTestPersonas implements the corresponding REST API method.
 func (s *Service) GetTestPersonas(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 	out := &pb.GetTestPersonasResponse{
 		Personas:       cfg.TestPersonas,
 		StandardClaims: persona.StandardClaims,
 	}
-	httputil.WriteProtoResp(w, out)
+	httputils.WriteResp(w, out)
 }

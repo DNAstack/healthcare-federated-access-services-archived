@@ -1,8 +1,8 @@
-# Productionization Considerations
+# Productionization Best Practices
 
 ## Production Concepts
 
-The following projects are used for the cross project and environment scenarios:
+The following projects are used for the cross-project and environment scenarios:
 
 *   Data hosting project: the GCP project hosting datasets.
 
@@ -17,8 +17,9 @@ The following projects are used for the cross project and environment scenarios:
 
 ## Productionization
 
-1.  You will need to generate your own private and public keys. For example,
-    this can be done by running the following setup script:
+To create a production environment, complete the following steps:
+
+1.  Run the following setup script to generate your own private and public keys:
 
     ```
     openssl genrsa -out private.pem 2048
@@ -27,13 +28,13 @@ The following projects are used for the cross project and environment scenarios:
     cat public.pem
     ```
 
-1.  Edit `deploy.bash` and ensure the following is configured correctly:
+1.  Edit `deploy.bash` or `deploy-gke.bash` and ensure the following is configured correctly:
 
     *  The CloudSQL `username` and `password`.
     *  [DAM's permissions.json](https://github.com/GoogleCloudPlatform/healthcare-federated-access-services/blob/master/deploy/config/dam-template/permissions_master_main_latest.json) file. This file contains a list of DAM administrators.
 
-1.  Edit configuration files to provide the security and options you will need
-    and are required for production:
+1.  Edit the following configuration files to provide the security and options
+    for your production environment:
 
     *  [IC's permissions.json](https://github.com/GoogleCloudPlatform/healthcare-federated-access-services/blob/master/deploy/config/ic-template/permissions_master_main_latest.json) file. This file contains a list of IC administrators.
     *  [DAM's secrets.json](https://github.com/GoogleCloudPlatform/healthcare-federated-access-services/blob/master/deploy/config/dam-template/secrets_master_main_latest.json)
@@ -56,14 +57,14 @@ The following projects are used for the cross project and environment scenarios:
     admin endpoints outside the VM (nginx is configured to guard this in the
     sample setup).
 
-1.  When running the `deploy.bash` script, make sure you rebuild your images
+1.  Run the `deploy(_gke).bash` script and make sure you rebuild your images
     and do not install the "personas" playground component.
 
-    *  The `prepare_project.bash` and `deploy.bash` are not designed for
+    *  The `prepare_project(_gke).bash` and `deploy(_gke).bash` are not designed for
        production use. You will need to develop your own version of these
        scripts that meets your deployment needs.
-    *  Make sure your run or re-run `project_init.bash` or a similar script
-       whenever important service-dependency changes may have occurred. This
+    *  Make sure that you run or re-run `project_init.bash` or a similar script
+       whenever important service-dependency changes  have occurred. This
        must be run before redeploying federated access components like DAM and
        IC.
     *  Do not use `deploy.bash -b` as the `-b` flag skips rebuilding the
@@ -73,7 +74,7 @@ The following projects are used for the cross project and environment scenarios:
        both the DAM and IC configuration files. This component is for demoing
        a system, but it allows anyone to act as an administrator and is not
        appropriate for production use.
-    *  Lock down or disable "icdemo" and "damdemo" to not expose the
+    *  Lock down or disable "icdemo" and "damdemo" to prevent exposing the
        `client_secret` to others who could use it to gain unwanted access to
        your systems.
     *  See `deploy.bash -h` for options on how to not build and deploy unneeded
@@ -93,7 +94,7 @@ The following projects are used for the cross project and environment scenarios:
 1.  Review other [Security](#security) considerations during the planning phase
     of your deployment.
 
-1.  DAM and IC support having multiple instances which can be made use of via
+1.  DAM and IC support have multiple instances which can be made use of via
     `deploy.bash -e <environment>`, for example. If there are multiple instances
     of DAM making use of the same IAM project for accounts and permissions,
     problems related to cleanup can occur. Environments are not aware of
@@ -129,8 +130,8 @@ The following projects are used for the cross project and environment scenarios:
        this option is not set, the project DAM is deployed in will be billed for
        such usage.
 
-1.  DAM has the ability to share a resource's Policy Basis as well as provide
-    Visa Rejection Details to aid non-administrator users with collecting
+1.  DAM has the ability to share a resource's Policy Basis and provide
+    Visa Rejection Details to help non-administrator users to collect
     visas that meet the requirements and troubleshooting rejected requests for
     resources.
 
@@ -167,19 +168,37 @@ The following projects are used for the cross project and environment scenarios:
 
 1.  Docker container entrypoint scripts includes a weak secret: SECRETS_SYSTEM
 
-    See files:
+    For more information, see the following files:
 
-    *  deploy/build/dam/entrypoint.bash
-    *  deploy/build/ic/entrypoint.bash
+    *  deploy/build/dam/entrypoint.bash for GAE Flex
+    *  deploy/build/ic/entrypoint.bash for GAE Flex
+    *  deploy/build-gke/dam/entrypoint.bash for GKE
+    *  deploy/build-gke/ic/entrypoint.bash for GKE
 
-    SECRETS_SYSTEM is the secret that hydra used to encrypt the sensitive
-    information in SQL database. This variable should not store as plain text
-    in file. Consider using [secrets-management](https://cloud.google.com/solutions/secrets-management)
+    `SECRETS_SYSTEM` is the secret that hydra used to encrypt the sensitive
+    information in SQL database. This variable should not be stored as plain text
+    in a file. Consider using [secrets-management](https://cloud.google.com/solutions/secrets-management)
     in production.
 
 1.  Make sure that the `FEDERATED_ACCESS_ENABLE_EXPERIMENTAL` option is turned
     off and not later turned on. It can be turned off by removing the `export`
     from the configuration.
+
+1.  Manage which clients are able to allocate the `account_admin`, `link`, and
+    `sync` scopes. These scopes are not needed by most clients.
+
+    *  Having no more than one or two clients that can allow users to change
+       their profile or link their accounts is recommended.
+    *  Clients that are permitted to use these scopes should keep `link` scoped
+       access tokens as short-lived and revoke or discard them immediately after
+       they serve their purpose.
+    *  It is recommended to not use `account_admin` nor `link` scopes with
+       refresh tokens. Generally it is better if the user modifies their account
+       within a short window of time, then re-authenticates if more edits are
+       desired later.
+    *  The `sync` scope should be provided to only "admin tool" type clients
+       as a Hydra client sync can be performed using just a `client_id` and
+       `client_secret`.
 
 ## Security
 
@@ -202,7 +221,7 @@ policies allow.
       ("gcp_key_gc" AND
       ("\"Completed\"" OR "\"Incomplete\"" OR "\"Aborted\"" OR "\"Conflict\"" OR "errors during execution"))
       ```
-   Once you see logs, remove the `"Completed"` option to filter only error
+   Once you see logs, remove the `Completed` option to filter only error
    states. Tune the query according to your setup and requirements. When ready,
    set up a Stackdriver metric that can be used to create an alert.
 
@@ -233,7 +252,7 @@ properly clean up existing state.
 *  There may be other side effects of `reset` tools that are not appropriate for
    production use, and these side effects may vary from time to time.
 
-### Malicious Token
+### Malicious Tokens
 
 Checks are performed in `lib/auth` component to detect if the token is
 potentially malicious. Currently, Federated Access components will reject such

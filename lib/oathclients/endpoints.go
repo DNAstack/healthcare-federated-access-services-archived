@@ -18,14 +18,15 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/golang/protobuf/proto" /* copybara-comment */
+	"github.com/gorilla/mux" /* copybara-comment */
+	"google.golang.org/grpc/codes" /* copybara-comment */
 	"google.golang.org/grpc/status" /* copybara-comment */
 	"github.com/go-openapi/strfmt" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"github.com/pborman/uuid" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
@@ -56,8 +57,6 @@ type ClientService interface {
 //////////////////////////////////////////////////////////////////
 
 type clientHandler struct {
-	w        http.ResponseWriter
-	r        *http.Request
 	s        ClientService
 	clientID string
 	item     *pb.Client
@@ -65,25 +64,29 @@ type clientHandler struct {
 }
 
 // NewClientHandler returns clientHandler.
-func NewClientHandler(w http.ResponseWriter, r *http.Request, s ClientService) handlerfactory.HandlerInterface {
-	return &clientHandler{w: w, r: r, s: s}
+func NewClientHandler(s ClientService) *clientHandler {
+	return &clientHandler{s: s}
 }
 
-func (c *clientHandler) Setup(tx storage.Tx) (int, error) {
-	clientID := ExtractClientID(c.r)
+func (c *clientHandler) Setup(r *http.Request, tx storage.Tx) (int, error) {
+	if realm(r) != storage.DefaultRealm {
+		return http.StatusForbidden, status.Errorf(codes.PermissionDenied, "client api only allow on master realm")
+	}
+
+	clientID := ExtractClientID(r)
 	if len(clientID) == 0 {
 		return http.StatusBadRequest, fmt.Errorf("request requires clientID")
 	}
 
-	id, status, err := c.s.HandlerSetup(tx, c.r)
+	id, status, err := c.s.HandlerSetup(tx, r)
 	c.id = id
 	c.clientID = clientID
 
 	return status, err
 }
 
-func (c *clientHandler) LookupItem(name string, vars map[string]string) bool {
-	clientID := ExtractClientID(c.r)
+func (c *clientHandler) LookupItem(r *http.Request, name string, vars map[string]string) bool {
+	clientID := ExtractClientID(r)
 	cli := c.s.ClientByName(name)
 	if cli != nil && cli.ClientId == clientID {
 		c.item = cli
@@ -92,36 +95,35 @@ func (c *clientHandler) LookupItem(name string, vars map[string]string) bool {
 	return false
 }
 
-func (c *clientHandler) NormalizeInput(name string, vars map[string]string) error {
+func (c *clientHandler) NormalizeInput(r *http.Request, name string, vars map[string]string) error {
 	return nil
 }
 
-func (c *clientHandler) Get(name string) error {
-	httputil.WriteProtoResp(c.w, &pb.ClientResponse{Client: c.item})
+func (c *clientHandler) Get(r *http.Request, name string) (proto.Message, error) {
+	return &pb.ClientResponse{Client: c.item}, nil
+}
+
+func (c *clientHandler) Post(r *http.Request, name string) (proto.Message, error) {
+	return nil, fmt.Errorf("POST not allowed")
+}
+
+func (c *clientHandler) Put(r *http.Request, name string) (proto.Message, error) {
+	return nil, fmt.Errorf("PUT not allowed")
+}
+
+func (c *clientHandler) Patch(r *http.Request, name string) (proto.Message, error) {
+	return nil, fmt.Errorf("PATCH not allowed")
+}
+
+func (c *clientHandler) Remove(r *http.Request, name string) (proto.Message, error) {
+	return nil, fmt.Errorf("REMOVE not allowed")
+}
+
+func (c *clientHandler) CheckIntegrity(*http.Request) *status.Status {
 	return nil
 }
 
-func (c *clientHandler) Post(name string) error {
-	return fmt.Errorf("POST not allowed")
-}
-
-func (c *clientHandler) Put(name string) error {
-	return fmt.Errorf("PUT not allowed")
-}
-
-func (c *clientHandler) Patch(name string) error {
-	return fmt.Errorf("PATCH not allowed")
-}
-
-func (c *clientHandler) Remove(name string) error {
-	return fmt.Errorf("REMOVE not allowed")
-}
-
-func (c *clientHandler) CheckIntegrity() *status.Status {
-	return nil
-}
-
-func (c *clientHandler) Save(tx storage.Tx, name string, vars map[string]string, desc, typeName string) error {
+func (c *clientHandler) Save(r *http.Request, tx storage.Tx, name string, vars map[string]string, desc, typeName string) error {
 	// Accept, but do nothing.
 	return nil
 }
@@ -152,8 +154,6 @@ func (c *clientHandler) Save(tx storage.Tx, name string, vars map[string]string,
 //////////////////////////////////////////////////////////////////
 
 type adminClientHandler struct {
-	w             http.ResponseWriter
-	r             *http.Request
 	s             ClientService
 	useHydra      bool
 	httpClient    *http.Client
@@ -165,25 +165,28 @@ type adminClientHandler struct {
 }
 
 // NewAdminClientHandler returns adminClientHandler
-func NewAdminClientHandler(w http.ResponseWriter, r *http.Request, s ClientService, useHydra bool, httpClient *http.Client, hydraAdminURL string) handlerfactory.HandlerInterface {
-	return &adminClientHandler{w: w, r: r, s: s, useHydra: useHydra, httpClient: httpClient, hydraAdminURL: hydraAdminURL}
+func NewAdminClientHandler(s ClientService, useHydra bool, httpClient *http.Client, hydraAdminURL string) *adminClientHandler {
+	return &adminClientHandler{s: s, useHydra: useHydra, httpClient: httpClient, hydraAdminURL: hydraAdminURL}
 }
 
-func (c *adminClientHandler) Setup(tx storage.Tx) (int, error) {
-	id, status, err := c.s.HandlerSetup(tx, c.r)
+func (c *adminClientHandler) Setup(r *http.Request, tx storage.Tx) (int, error) {
+	if realm(r) != storage.DefaultRealm {
+		return http.StatusForbidden, status.Errorf(codes.PermissionDenied, "client api only allow on master realm")
+	}
+	id, status, err := c.s.HandlerSetup(tx, r)
 	c.id = id
 	c.tx = tx
 	return status, err
 }
 
-func (c *adminClientHandler) LookupItem(name string, vars map[string]string) bool {
+func (c *adminClientHandler) LookupItem(r *http.Request, name string, vars map[string]string) bool {
 	c.item = c.s.ClientByName(name)
 	return c.item != nil
 }
 
-func (c *adminClientHandler) NormalizeInput(name string, vars map[string]string) error {
+func (c *adminClientHandler) NormalizeInput(r *http.Request, name string, vars map[string]string) error {
 	c.input = &pb.ConfigClientRequest{}
-	if err := httputil.DecodeProtoReq(c.input, c.r); err != nil {
+	if err := httputils.DecodeProtoReq(c.input, r); err != nil {
 		return err
 	}
 	if c.input.Item == nil {
@@ -199,12 +202,11 @@ func (c *adminClientHandler) NormalizeInput(name string, vars map[string]string)
 	return nil
 }
 
-func (c *adminClientHandler) Get(name string) error {
-	httputil.WriteProtoResp(c.w, &pb.ConfigClientResponse{Client: c.item})
-	return nil
+func (c *adminClientHandler) Get(r *http.Request, name string) (proto.Message, error) {
+	return &pb.ConfigClientResponse{Client: c.item}, nil
 }
 
-func (c *adminClientHandler) Post(name string) error {
+func (c *adminClientHandler) Post(r *http.Request, name string) (proto.Message, error) {
 	input := c.input.Item
 
 	if len(input.ClientId) == 0 {
@@ -221,7 +223,7 @@ func (c *adminClientHandler) Post(name string) error {
 	}
 
 	if err := CheckClientIntegrity(name, input); err != nil {
-		return err
+		return nil, err
 	}
 
 	out := proto.Clone(input).(*pb.Client)
@@ -232,7 +234,7 @@ func (c *adminClientHandler) Post(name string) error {
 		hyCli := toHydraClient(c.input.Item, name, sec, strfmt.NewDateTime())
 		resp, err := hydra.CreateClient(c.httpClient, c.hydraAdminURL, hyCli)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		out, sec = fromHydraClient(resp)
 		out.Ui = input.Ui
@@ -241,18 +243,17 @@ func (c *adminClientHandler) Post(name string) error {
 	c.s.SaveClient(name, sec, out)
 
 	// Return the created client.
-	httputil.WriteProtoResp(c.w, &pb.ConfigClientResponse{
+	return &pb.ConfigClientResponse{
 		Client:       out,
 		ClientSecret: sec,
-	})
-	return nil
+	}, nil
 }
 
-func (c *adminClientHandler) Put(name string) error {
-	return fmt.Errorf("PUT not allowed")
+func (c *adminClientHandler) Put(r *http.Request, name string) (proto.Message, error) {
+	return nil, fmt.Errorf("PUT not allowed")
 }
 
-func (c *adminClientHandler) Patch(name string) error {
+func (c *adminClientHandler) Patch(r *http.Request, name string) (proto.Message, error) {
 	// TODO should use field mask for update.
 
 	input := c.input.Item
@@ -260,7 +261,7 @@ func (c *adminClientHandler) Patch(name string) error {
 		input.ClientId = c.item.ClientId
 	}
 	if input.ClientId != c.item.ClientId {
-		return fmt.Errorf("invalid client_id")
+		return nil, fmt.Errorf("invalid client_id")
 	}
 	if len(input.Scope) == 0 {
 		input.Scope = c.item.Scope
@@ -279,7 +280,7 @@ func (c *adminClientHandler) Patch(name string) error {
 	}
 
 	if err := CheckClientIntegrity(name, input); err != nil {
-		return err
+		return nil, err
 	}
 
 	out := proto.Clone(input).(*pb.Client)
@@ -289,7 +290,7 @@ func (c *adminClientHandler) Patch(name string) error {
 		hyCli := toHydraClient(input, name, sec, strfmt.NewDateTime())
 		resp, err := hydra.UpdateClient(c.httpClient, c.hydraAdminURL, hyCli.ClientID, hyCli)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		out, sec = fromHydraClient(resp)
 		out.Ui = input.Ui
@@ -298,32 +299,31 @@ func (c *adminClientHandler) Patch(name string) error {
 	c.s.SaveClient(name, sec, out)
 
 	// Return the updated client.
-	httputil.WriteProtoResp(c.w, &pb.ConfigClientResponse{
+	return &pb.ConfigClientResponse{
 		Client:       out,
 		ClientSecret: sec,
-	})
-	return nil
+	}, nil
 }
 
-func (c *adminClientHandler) Remove(name string) error {
+func (c *adminClientHandler) Remove(r *http.Request, name string) (proto.Message, error) {
 	if c.useHydra {
 		err := hydra.DeleteClient(c.httpClient, c.hydraAdminURL, c.item.ClientId)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	c.s.RemoveClient(name, c.item)
 
-	return nil
+	return nil, nil
 }
 
-func (c *adminClientHandler) CheckIntegrity() *status.Status {
-	return c.s.CheckIntegrity(c.r, extractConfigModification(c.input))
+func (c *adminClientHandler) CheckIntegrity(r *http.Request) *status.Status {
+	return c.s.CheckIntegrity(r, extractConfigModification(c.input))
 }
 
-func (c *adminClientHandler) Save(tx storage.Tx, name string, vars map[string]string, desc, typeName string) error {
-	return c.s.Save(c.tx, desc, typeName, c.r, c.id, extractConfigModification(c.input))
+func (c *adminClientHandler) Save(r *http.Request, tx storage.Tx, name string, vars map[string]string, desc, typeName string) error {
+	return c.s.Save(c.tx, desc, typeName, r, c.id, extractConfigModification(c.input))
 }
 
 func extractConfigModification(input *pb.ConfigClientRequest) *pb.ConfigModification {
@@ -342,8 +342,8 @@ func toHydraClient(c *pb.Client, name, secret string, createdAt strfmt.DateTime)
 		GrantTypes:    c.GrantTypes,
 		ResponseTypes: c.ResponseTypes,
 		RedirectURIs:  c.RedirectUris,
-		Audience: []string { c.ClientId },
 		CreatedAt:     createdAt,
+		Audience:      []string{c.ClientId},
 	}
 }
 
@@ -355,4 +355,8 @@ func fromHydraClient(c *hydraapi.Client) (*pb.Client, string) {
 		ResponseTypes: c.ResponseTypes,
 		RedirectUris:  c.RedirectURIs,
 	}, c.Secret
+}
+
+func realm(r *http.Request) string {
+	return mux.Vars(r)["realm"]
 }

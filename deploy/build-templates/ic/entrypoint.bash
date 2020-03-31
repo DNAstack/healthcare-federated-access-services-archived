@@ -29,6 +29,7 @@ function start_ic() {
   # HYDRA_PUBLIC_URL sets the hydra public url for start login.
   # TODO need to update after we deploy hydra on GCP.
   export HYDRA_PUBLIC_URL="${URL?}"
+  export HYDRA_PUBLIC_URL_INTERNAL="http://127.0.0.1:4444"
   # HYDRA_ADMIN_URL sets the hydra admin url for callback.
   # TODO need to update after we deploy hydra on GCP.
   export HYDRA_ADMIN_URL="http://127.0.0.1:4445"
@@ -37,6 +38,9 @@ function start_ic() {
   export CONFIG_PATH="deploy/config"
   # STORAGE is one of: "memory", "datastore".
   export STORAGE="datastore"
+  # FEDERATED_ACCESS_ENABLE_EXPERIMENTAL turns on experimental features if set to 'true'.
+  # Not for use with production systems.
+  export FEDERATED_ACCESS_ENABLE_EXPERIMENTAL="${EXPERIMENTAL?}"
 
   export IC_PORT="8000"
   # SERVICE_DOMAIN determines the URL domain for identity provider redirects and issuer strings.

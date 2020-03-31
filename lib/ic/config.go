@@ -17,8 +17,10 @@ package ic
 import (
 	"net/http"
 
+	"google.golang.org/grpc/codes" /* copybara-comment */
+	"google.golang.org/grpc/status" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
 
@@ -30,7 +32,7 @@ import (
 func (s *Service) IdentityProviders(w http.ResponseWriter, r *http.Request) {
 	cfg, err := s.loadConfig(nil, getRealm(r))
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 	resp := &pb.GetIdentityProvidersResponse{
@@ -39,26 +41,24 @@ func (s *Service) IdentityProviders(w http.ResponseWriter, r *http.Request) {
 	for name, idp := range cfg.IdentityProviders {
 		resp.IdentityProviders[name] = makeIdentityProvider(idp)
 	}
-	httputil.WriteProtoResp(w, resp)
+	httputils.WriteResp(w, resp)
 }
 
 // PassportTranslators returns part of config: Passport Translators
 func (s *Service) PassportTranslators(w http.ResponseWriter, r *http.Request) {
 	out := translator.GetPassportTranslators()
-	httputil.WriteProtoResp(w, out)
+	httputils.WriteResp(w, out)
 }
 
 // HTTP handler for ".../clients/{name}"
 // Return self client information.
-func (s *Service) clientFactory() *handlerfactory.HandlerFactory {
+func (s *Service) clientFactory() *handlerfactory.Options {
 	c := &clientService{s: s}
 
-	return &handlerfactory.HandlerFactory{
+	return &handlerfactory.Options{
 		TypeName:            "client",
 		PathPrefix:          clientPath,
 		HasNamedIdentifiers: true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
-			return oathclients.NewClientHandler(w, r, c)
-		},
+		Service:             oathclients.NewClientHandler(c),
 	}
 }

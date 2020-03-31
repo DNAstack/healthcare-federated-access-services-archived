@@ -37,7 +37,7 @@ function populateProviderHtml(id, items) {
 function getProviderHeaderHtml(id) {
   if (id === 'idps') {
     $('#main-container').removeClass('persona');
-    return '<h4>Log in / Create an account</h4><p>Verify your identity to discover and access data.</p>';
+    return '<h4>Log in or Create an account</h4><p>Verify your identity to discover and access data.</p>';
   } else if (id === 'personas') {
     $('#main-container').addClass('persona');
     return '<h4 class="playground">Testing personas</h4><p class="playground">Log in using one of these existing testing personas.</p>';

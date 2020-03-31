@@ -29,27 +29,33 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
-	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"github.com/google/go-cmp/cmp" /* copybara-comment */
 	"github.com/google/go-cmp/cmp/cmpopts" /* copybara-comment */
 	"google.golang.org/grpc/codes" /* copybara-comment */
+	"google.golang.org/grpc/status" /* copybara-comment */
 	"github.com/go-openapi/strfmt" /* copybara-comment */
+	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"google.golang.org/protobuf/testing/protocmp" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/errutil" /* copybara-comment: errutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/serviceinfo" /* copybara-comment: serviceinfo */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakehydra" /* copybara-comment: fakehydra */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakeoidcissuer" /* copybara-comment: fakeoidcissuer */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/fakesdl" /* copybara-comment: fakesdl */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/httptestclient" /* copybara-comment: httptestclient */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test" /* copybara-comment: test */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/test/testhttp" /* copybara-comment: testhttp */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/testkeys" /* copybara-comment: testkeys */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator" /* copybara-comment: validator */
 
+	lspb "google.golang.org/genproto/googleapis/logging/type" /* copybara-comment: log_severity_go_proto */
+	lepb "google.golang.org/genproto/googleapis/logging/v2" /* copybara-comment: log_entry_go_proto */
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
@@ -58,6 +64,7 @@ const (
 	damURL           = "https://dam.example.com"
 	hydraAdminURL    = "https://admin.hydra.example.com"
 	hydraPublicURL   = "https://hydra.example.com/"
+	hydraURLInternal = "https://hydra.internal.example.com/"
 	testBroker       = "testBroker"
 	useHydra         = true
 	loginChallenge   = "lc-1234"
@@ -560,15 +567,22 @@ func TestHandlers(t *testing.T) {
 			Status:  http.StatusOK,
 		},
 		{
+			Method:  "DELETE",
+			Path:    "/dam/v1alpha/test/config/policies/whitelist",
+			Persona: "admin",
+			Output:  `*built-in policy*`,
+			Status:  http.StatusBadRequest,
+		},
+		{
 			Method:  "GET",
-			Path:    "/dam/v1alpha/test/config/claimDefinitions/ResearcherStatus",
+			Path:    "/dam/v1alpha/test/config/visaTypes/ResearcherStatus",
 			Persona: "admin",
 			Output:  `^.*"ui"`,
 			Status:  http.StatusOK,
 		},
 		{
 			Method:  "POST",
-			Path:    "/dam/v1alpha/test/config/claimDefinitions/new.claim",
+			Path:    "/dam/v1alpha/test/config/visaTypes/new.claim",
 			Persona: "admin",
 			Input:   `{"item":{"ui":{"label":"new.Claim","description":"bar"}}}`,
 			Output:  ``,
@@ -576,21 +590,21 @@ func TestHandlers(t *testing.T) {
 		},
 		{
 			Method:  "PUT",
-			Path:    "/dam/v1alpha/test/config/claimDefinitions/new.claim",
+			Path:    "/dam/v1alpha/test/config/visaTypes/new.claim",
 			Persona: "admin",
 			Input:   `{"item":{"ui":{"label":"new.Claim2","description":"bar"}}}`,
 			Status:  http.StatusOK,
 		},
 		{
 			Method:  "PATCH",
-			Path:    "/dam/v1alpha/test/config/claimDefinitions/new.claim",
+			Path:    "/dam/v1alpha/test/config/visaTypes/new.claim",
 			Persona: "admin",
 			Input:   `{"item":{"ui":{"label":"new.Claim3","description":"bar"}}}`,
 			Status:  http.StatusOK,
 		},
 		{
 			Method:  "DELETE",
-			Path:    "/dam/v1alpha/test/config/claimDefinitions/new.claim",
+			Path:    "/dam/v1alpha/test/config/visaTypes/new.claim",
 			Persona: "admin",
 			Output:  ``,
 			Status:  http.StatusOK,
@@ -836,14 +850,14 @@ func TestHandlers(t *testing.T) {
 		},
 		{
 			Method:  "PUT",
-			Path:    "/dam/v1alpha/test/clients:sync",
+			Path:    "/dam/v1alpha/master/clients:sync",
 			Persona: "non-admin",
 			Output:  `^.*not allowed`,
 			Status:  http.StatusBadRequest,
 		},
 		{
 			Method:       "PUT",
-			Path:         "/dam/v1alpha/test/clients:sync",
+			Path:         "/dam/v1alpha/master/clients:sync",
 			Persona:      "non-admin",
 			ClientID:     "bad",
 			ClientSecret: "worse",
@@ -852,17 +866,31 @@ func TestHandlers(t *testing.T) {
 		},
 		{
 			Method:  "PATCH",
-			Path:    "/dam/v1alpha/test/clients:sync",
+			Path:    "/dam/v1alpha/master/clients:sync",
 			Persona: "non-admin",
 			Output:  `^.*not allowed`,
 			Status:  http.StatusBadRequest,
 		},
 		{
 			Method:  "DELETE",
-			Path:    "/dam/v1alpha/test/clients:sync",
+			Path:    "/dam/v1alpha/master/clients:sync",
 			Persona: "non-admin",
 			Output:  `^.*not allowed`,
 			Status:  http.StatusBadRequest,
+		},
+		{
+			Method:  "GET",
+			Path:    "/dam/v1alpha/test/clients:sync",
+			Persona: "admin",
+			Output:  `^.*client sync only allow on master realm`,
+			Status:  http.StatusForbidden,
+		},
+		{
+			Method:  "POST",
+			Path:    "/dam/v1alpha/test/clients:sync",
+			Persona: "admin",
+			Output:  `^.*client sync only allow on master realm`,
+			Status:  http.StatusForbidden,
 		},
 	}
 	test.HandlerTests(t, s.Handler, tests, hydraPublicURL, server.Config())
@@ -982,8 +1010,7 @@ func setupAuthorizationTest(t *testing.T) *authTestContext {
 		HydraPublicURL: hydraPublicURL,
 	})
 
-	realm := "master"
-	cfg, err := s.loadConfig(nil, realm)
+	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
 		t.Fatalf("cannot load config, %v", err)
 	}
@@ -1014,15 +1041,15 @@ func setupAuthorizationTest(t *testing.T) *authTestContext {
 
 func TestCheckAuthorization(t *testing.T) {
 	auth := setupAuthorizationTest(t)
-	status, err := checkAuthorization(auth.ctx, auth.id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts())
-	if status != http.StatusOK || err != nil {
-		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got %d: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, http.StatusOK, status, err)
+	err := checkAuthorization(auth.ctx, auth.id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if err != nil {
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, http.StatusOK, err)
 	}
 
 	// TODO: we need more tests for other condition in checkAuthorization()
 }
 
-func TestCheckAuthorization_Untrusted(t *testing.T) {
+func TestCheckAuthorization_UntrustedIssuer(t *testing.T) {
 	// Perform exactly the same call as TestCheckAuthorization() except remove trust of the visa issuer string
 	auth := setupAuthorizationTest(t)
 	delete(auth.cfg.TrustedIssuers, "test")
@@ -1033,13 +1060,204 @@ func TestCheckAuthorization_Untrusted(t *testing.T) {
 		t.Fatalf("unable to obtain passport identity: %v", err)
 	}
 
-	status, err := checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts())
-	if status != http.StatusForbidden || err == nil {
-		t.Errorf("using untrusted issuer: checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got %d: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, http.StatusForbidden, status, err)
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, codes.PermissionDenied, err)
+	}
+	if errutil.ErrorReason(err) != errUntrustedIssuer {
+		t.Errorf("errutil.ErrorReason() = %s want %s", errutil.ErrorReason(err), errUntrustedIssuer)
 	}
 }
 
-func setupHydraTest() (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Server, *persona.Server, error) {
+func TestCheckAuthorization_ResourceNotFound(t *testing.T) {
+	auth := setupAuthorizationTest(t)
+	auth.cfg.Resources = nil
+
+	id, err := auth.dam.populateIdentityVisas(auth.ctx, auth.id, auth.cfg)
+	if err != nil {
+		t.Fatalf("unable to obtain passport identity: %v", err)
+	}
+
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, codes.NotFound, err)
+	}
+	if errutil.ErrorReason(err) != errResourceNotFoound {
+		t.Errorf("errutil.ErrorReason() = %s want %s", errutil.ErrorReason(err), errResourceNotFoound)
+	}
+}
+
+func TestCheckAuthorization_ResourceViewNotFoound(t *testing.T) {
+	auth := setupAuthorizationTest(t)
+	auth.cfg.Resources[auth.resource].Views = nil
+
+	id, err := auth.dam.populateIdentityVisas(auth.ctx, auth.id, auth.cfg)
+	if err != nil {
+		t.Fatalf("unable to obtain passport identity: %v", err)
+	}
+
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if status.Code(err) != codes.NotFound {
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, codes.NotFound, err)
+	}
+	if errutil.ErrorReason(err) != errResourceViewNotFoound {
+		t.Errorf("errutil.ErrorReason() = %s want %s", errutil.ErrorReason(err), errResourceViewNotFoound)
+	}
+}
+
+func TestCheckAuthorization_ResolveAggregatesFail(t *testing.T) {
+	auth := setupAuthorizationTest(t)
+	auth.cfg.ServiceTemplates = nil
+
+	id, err := auth.dam.populateIdentityVisas(auth.ctx, auth.id, auth.cfg)
+	if err != nil {
+		t.Fatalf("unable to obtain passport identity: %v", err)
+	}
+
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, codes.PermissionDenied, err)
+	}
+	if errutil.ErrorReason(err) != errResolveAggregatesFail {
+		t.Errorf("errutil.ErrorReason() = %s want %s", errutil.ErrorReason(err), errResolveAggregatesFail)
+	}
+}
+
+func TestCheckAuthorization_RoleNotAvailable(t *testing.T) {
+	auth := setupAuthorizationTest(t)
+	auth.role = "invalid"
+
+	id, err := auth.dam.populateIdentityVisas(auth.ctx, auth.id, auth.cfg)
+	if err != nil {
+		t.Fatalf("unable to obtain passport identity: %v", err)
+	}
+
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, codes.PermissionDenied, err)
+	}
+	if errutil.ErrorReason(err) != errRoleNotAvailable {
+		t.Errorf("errutil.ErrorReason() = %s want %s", errutil.ErrorReason(err), errRoleNotAvailable)
+	}
+}
+
+func TestCheckAuthorization_CannotResolveServiceRole(t *testing.T) {
+	auth := setupAuthorizationTest(t)
+	auth.cfg.ServiceTemplates["gcs"].ServiceRoles = nil
+
+	id, err := auth.dam.populateIdentityVisas(auth.ctx, auth.id, auth.cfg)
+	if err != nil {
+		t.Fatalf("unable to obtain passport identity: %v", err)
+	}
+
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, codes.PermissionDenied, err)
+	}
+	if errutil.ErrorReason(err) != errCannotResolveServiceRole {
+		t.Errorf("errutil.ErrorReason() = %s want %s", errutil.ErrorReason(err), errCannotResolveServiceRole)
+	}
+}
+
+func TestCheckAuthorization_NoPolicyDefined(t *testing.T) {
+	auth := setupAuthorizationTest(t)
+	auth.cfg.Resources[auth.resource].Views[auth.view].Roles[auth.role].Policies = nil
+
+	id, err := auth.dam.populateIdentityVisas(auth.ctx, auth.id, auth.cfg)
+	if err != nil {
+		t.Fatalf("unable to obtain passport identity: %v", err)
+	}
+
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, codes.PermissionDenied, err)
+	}
+	if errutil.ErrorReason(err) != errNoPolicyDefined {
+		t.Errorf("errutil.ErrorReason() = %s want %s", errutil.ErrorReason(err), errNoPolicyDefined)
+	}
+}
+
+func TestCheckAuthorization_CannotEnforcePolicies(t *testing.T) {
+	auth := setupAuthorizationTest(t)
+	auth.resource = "dataset_example"
+	auth.cfg.Policies["dac"].AnyOf[0].AllOf[0].Value = "const:https://dac.nih.gov/datasets/${NOT_DATASET}"
+
+	id, err := auth.dam.populateIdentityVisas(auth.ctx, auth.id, auth.cfg)
+	if err != nil {
+		t.Fatalf("unable to obtain passport identity: %v", err)
+	}
+
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, codes.PermissionDenied, err)
+	}
+	if errutil.ErrorReason(err) != errCannotEnforcePolicies {
+		t.Errorf("errutil.ErrorReason() = %s want %s", errutil.ErrorReason(err), errCannotEnforcePolicies)
+	}
+}
+
+func TestCheckAuthorization_RejectedPolicy(t *testing.T) {
+	auth := setupAuthorizationTest(t)
+	auth.resource = "dataset_example"
+
+	id, err := auth.dam.populateIdentityVisas(auth.ctx, auth.id, auth.cfg)
+	if err != nil {
+		t.Fatalf("unable to obtain passport identity: %v", err)
+	}
+
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, codes.PermissionDenied, err)
+	}
+	if errutil.ErrorReason(err) != errRejectedPolicy {
+		t.Errorf("errutil.ErrorReason() = %s want %s", errutil.ErrorReason(err), errRejectedPolicy)
+	}
+}
+
+func TestCheckAuthorization_Whitelist(t *testing.T) {
+	auth := setupAuthorizationTest(t)
+	auth.resource = "dataset_example"
+
+	id, err := auth.dam.populateIdentityVisas(auth.ctx, auth.id, auth.cfg)
+	if err != nil {
+		t.Fatalf("unable to obtain passport identity: %v", err)
+	}
+
+	// Establish rejection due to not meeting policy.
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if status.Code(err) != codes.PermissionDenied {
+		t.Errorf("setup checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed, expected %d, got: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, codes.PermissionDenied, err)
+	}
+	if errutil.ErrorReason(err) != errRejectedPolicy {
+		t.Errorf("setup errutil.ErrorReason() = %s want %s", errutil.ErrorReason(err), errRejectedPolicy)
+	}
+
+	// Now try again with being on the whitelist.
+	auth.cfg.Resources[auth.resource].Views[auth.view].Roles[auth.role].Policies = []*pb.ViewRole_ViewPolicy{{
+		Name: whitelistPolicyName,
+		Args: map[string]string{
+			"users": "abc@example.org;dr_joe@faculty.example.edu;foo@bar.org",
+		},
+	}}
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if err != nil {
+		t.Errorf("whitelist by email: checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, err)
+	}
+
+	// Use group membership whitelist
+	auth.cfg.Resources[auth.resource].Views[auth.view].Roles[auth.role].Policies = []*pb.ViewRole_ViewPolicy{{
+		Name: whitelistPolicyName,
+		Args: map[string]string{
+			"groups": "whitelisted",
+		},
+	}}
+	err = checkAuthorization(auth.ctx, id, auth.ttl, auth.resource, auth.view, auth.role, auth.cfg, test.TestClientID, auth.dam.ValidateCfgOpts(storage.DefaultRealm, nil))
+	if err != nil {
+		t.Errorf("whitelist by group membership: checkAuthorization(ctx, id, %v, %q, %q, %q, cfg, %q) failed: %v", auth.ttl, auth.resource, auth.view, auth.role, test.TestClientID, err)
+	}
+}
+
+func setupHydraTest(readOnlyMasterRealm bool) (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Server, *persona.Server, error) {
 	store := storage.NewMemoryStorage("dam", "testdata/config")
 	broker, err := persona.NewBroker(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config", false)
 	if err != nil {
@@ -1064,6 +1282,10 @@ func setupHydraTest() (*Service, *pb.DamConfig, *pb.DamSecrets, *fakehydra.Serve
 
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	cfg.Options.ReadOnlyMasterRealm = readOnlyMasterRealm
+	if err := s.store.Write(storage.ConfigDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev, cfg, nil); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 
@@ -1095,7 +1317,7 @@ func sendLogin(s *Service, cfg *pb.DamConfig, h *fakehydra.Server, authParams st
 }
 
 func TestLogin_Hydra_Success(t *testing.T) {
-	s, cfg, _, h, _, err := setupHydraTest()
+	s, cfg, _, h, _, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1202,7 +1424,7 @@ func TestLogin_Hydra_Success(t *testing.T) {
 }
 
 func TestLogin_Hydra_Error(t *testing.T) {
-	s, cfg, _, h, _, err := setupHydraTest()
+	s, cfg, _, h, _, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1212,92 +1434,99 @@ func TestLogin_Hydra_Error(t *testing.T) {
 	tests := []struct {
 		name       string
 		authParams string
-		respCode   int
+		errCode    int64
 	}{
 		{
 			name:       "max_age wrong format",
 			authParams: "max_age=1h&resource=" + ga4ghGCSViewer,
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "negative max_age",
 			authParams: "max_age=-1000&resource=" + ga4ghGCSViewer,
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "max_age more than maxTTL",
 			authParams: "max_age=9999999&resource=" + ga4ghGCSViewer,
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "negative ttl",
 			authParams: "ttl=-1d&resource=" + ga4ghGCSViewer,
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "ttl more than maxTTL",
 			authParams: "ttl=100d&resource=" + ga4ghGCSViewer,
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "no resource",
 			authParams: "",
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "resource without domain",
 			authParams: "resource=dam/master/resources/ga4gh-apis/views/gcs_read/roles/viewer",
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "resource wrong format",
 			authParams: "resource=" + strings.ReplaceAll(ga4ghGCSViewer, "resources", "invalid"),
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "resource not exist",
 			authParams: "resource=" + strings.ReplaceAll(ga4ghGCSViewer, "ga4gh-apis", "invalid"),
-			respCode:   http.StatusNotFound,
+			errCode:    http.StatusNotFound,
 		},
 		{
 			name:       "resource view not exist",
 			authParams: "resource=" + strings.ReplaceAll(ga4ghGCSViewer, "gcs_read", "invalid"),
-			respCode:   http.StatusNotFound,
+			errCode:    http.StatusNotFound,
 		},
 		{
 			name:       "resource view role not exist",
 			authParams: "resource=" + strings.ReplaceAll(ga4ghGCSViewer, "viewer", "invalid"),
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "resource interface not exist",
 			authParams: "resource=" + strings.ReplaceAll(ga4ghGCSViewer, "gcp", "invalid"),
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "second resource invalid",
 			authParams: "resource=" + ga4ghGCSViewer + "&resource=invalid",
-			respCode:   http.StatusBadRequest,
+			errCode:    http.StatusBadRequest,
 		},
 		{
 			name:       "resource not at same realm",
 			authParams: "resource=" + ga4ghGCSViewer + "&resource=" + strings.ReplaceAll(ga4ghGCSViewer, "master", "test"),
-			respCode:   http.StatusConflict,
+			errCode:    http.StatusConflict,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			h.Clear()
+			h.RejectLoginResp = &hydraapi.RequestHandlerResponse{RedirectTo: hydraPublicURL}
+
 			resp := sendLogin(s, cfg, h, tc.authParams, nil)
-			if resp.StatusCode != tc.respCode {
-				t.Errorf("test case %q: sendLogin(_, _, _, %q, nil) = %+v, resp.StatusCode want %d, got %d", tc.name, tc.authParams, resp, tc.respCode, resp.StatusCode)
+			if resp.StatusCode != http.StatusTemporaryRedirect {
+				t.Errorf("StatusCode = %d, wants %d", resp.StatusCode, http.StatusTemporaryRedirect)
+			}
+
+			if h.RejectLoginReq.Code != tc.errCode {
+				t.Errorf("RejectLoginReq.Code = %d, wants %d", h.RejectLoginReq.Code, tc.errCode)
 			}
 		})
 	}
 }
 
 func TestLogin_LoginHint_Hydra_Success(t *testing.T) {
-	s, cfg, _, h, _, err := setupHydraTest()
+	s, cfg, _, h, _, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1337,7 +1566,7 @@ func TestLogin_LoginHint_Hydra_Success(t *testing.T) {
 }
 
 func TestLogin_Endpoint_Hydra_Success(t *testing.T) {
-	s, cfg, _, h, _, err := setupHydraTest()
+	s, cfg, _, h, _, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1431,7 +1660,7 @@ func sendLoggedIn(t *testing.T, s *Service, cfg *pb.DamConfig, h *fakehydra.Serv
 }
 
 func TestLoggedIn_Hydra_Success(t *testing.T) {
-	s, cfg, _, h, _, err := setupHydraTest()
+	s, cfg, _, h, _, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1476,8 +1705,52 @@ func TestLoggedIn_Hydra_Success(t *testing.T) {
 	}
 }
 
-func TestLoggedIn_Hydra_Errors(t *testing.T) {
-	s, cfg, _, h, _, err := setupHydraTest()
+func TestLoggedIn_Hydra_Success_Log(t *testing.T) {
+	s, cfg, _, h, _, err := setupHydraTest(true)
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+	logs, close := fakesdl.New()
+	defer close()
+	s.logger = logs.Client
+
+	serviceinfo.Project = "p1"
+	serviceinfo.Type = "t1"
+	serviceinfo.Name = "n1"
+
+	pname := "dr_joe_elixir"
+
+	sendLoggedIn(t, s, cfg, h, pname, loginStateID, pb.ResourceTokenRequestState_DATASET)
+
+	logs.Client.Close()
+	got := logs.Server.Logs[0].Entries[0]
+
+	want := &lepb.LogEntry{
+		Payload:  &lepb.LogEntry_JsonPayload{},
+		Severity: lspb.LogSeverity_DEFAULT,
+		Labels: map[string]string{
+			"type":            "policy_decision_log",
+			"token_id":        "token-id-dr_joe_elixir",
+			"token_subject":   "dr_joe_elixir",
+			"token_issuer":    "https://hydra.example.com/",
+			"pass_auth_check": "true",
+			"error_type":      "",
+			"resource":        "master/ga4gh-apis/gcs_read/viewer",
+			"ttl":             "1h",
+			"project_id":      "p1",
+			"service_type":    "t1",
+			"service_name":    "n1",
+		},
+	}
+
+	got.Timestamp = nil
+	if diff := cmp.Diff(want, got, protocmp.Transform()); diff != "" {
+		t.Fatalf("Logs returned diff (-want +got):\n%s", diff)
+	}
+}
+
+func TestLoggedIn_Hydra_Errors_no_challenge(t *testing.T) {
+	s, cfg, _, h, _, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1491,22 +1764,16 @@ func TestLoggedIn_Hydra_Errors(t *testing.T) {
 		respStatus int
 	}{
 		{
-			name:       "code invalid",
-			code:       "invalid",
+			name:       "no code",
+			code:       "",
 			stateID:    loginStateID,
-			respStatus: http.StatusServiceUnavailable,
+			respStatus: http.StatusBadRequest,
 		},
 		{
 			name:       "stateID invalid",
 			code:       pname,
 			stateID:    "invalid",
 			respStatus: http.StatusServiceUnavailable,
-		},
-		{
-			name:       "user does not have enough permission",
-			code:       "dr_joe_era_commons",
-			stateID:    loginStateID,
-			respStatus: http.StatusForbidden,
 		},
 	}
 
@@ -1521,8 +1788,84 @@ func TestLoggedIn_Hydra_Errors(t *testing.T) {
 	}
 }
 
+func TestLoggedIn_Hydra_Errors_with_challenge(t *testing.T) {
+	s, cfg, _, h, _, err := setupHydraTest(true)
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		code    string
+		stateID string
+		errCode int64
+	}{
+		{
+			name:    "code invalid",
+			code:    "invalid",
+			stateID: loginStateID,
+			errCode: http.StatusUnauthorized,
+		},
+		{
+			name:    "user does not have enough permission",
+			code:    "dr_joe_era_commons",
+			stateID: loginStateID,
+			errCode: http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h.Clear()
+			h.RejectLoginResp = &hydraapi.RequestHandlerResponse{RedirectTo: hydraPublicURL}
+
+			resp := sendLoggedIn(t, s, cfg, h, tc.code, tc.stateID, pb.ResourceTokenRequestState_DATASET)
+
+			if resp.StatusCode != http.StatusTemporaryRedirect {
+				t.Errorf("StatusCode = %d, wants %d", resp.StatusCode, http.StatusTemporaryRedirect)
+			}
+
+			if h.RejectLoginReq.Code != tc.errCode {
+				t.Errorf("RejectLoginReq.Code = %d, wants %d", h.RejectLoginReq.Code, tc.errCode)
+			}
+		})
+	}
+}
+
+func TestLoggedIn_Hydra_Error_Log(t *testing.T) {
+	s, cfg, _, h, _, err := setupHydraTest(true)
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+	logs, close := fakesdl.New()
+	defer close()
+	s.logger = logs.Client
+
+	h.RejectLoginResp = &hydraapi.RequestHandlerResponse{RedirectTo: hydraPublicURL}
+
+	pname := "dr_joe_era_commons"
+
+	sendLoggedIn(t, s, cfg, h, pname, loginStateID, pb.ResourceTokenRequestState_DATASET)
+
+	logs.Client.Close()
+
+	got := logs.Server.Logs[0].Entries[0]
+	if got.Labels["pass_auth_check"] == "true" {
+		t.Errorf("Labels[pass_auth_check] want false")
+	}
+	if got.Labels["error_type"] != errRejectedPolicy {
+		t.Errorf("Labels[pass_auth_check] = %s want %s", got.Labels["error_type"], errRejectedPolicy)
+	}
+	if got.Labels["error_type"] != errRejectedPolicy {
+		t.Errorf("Labels[pass_auth_check] = %s want %s", got.Labels["error_type"], errRejectedPolicy)
+	}
+	if got.GetJsonPayload() == nil {
+		t.Errorf("got.GetJsonPayload() want not nil")
+	}
+}
+
 func TestLoggedIn_Endpoint_Hydra_Success(t *testing.T) {
-	s, cfg, _, h, _, err := setupHydraTest()
+	s, cfg, _, h, _, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1554,7 +1897,7 @@ func TestLoggedIn_Endpoint_Hydra_Success(t *testing.T) {
 }
 
 func TestHydraConsent(t *testing.T) {
-	s, _, _, h, _, err := setupHydraTest()
+	s, _, _, h, _, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1592,10 +1935,24 @@ func TestHydraConsent(t *testing.T) {
 	if h.AcceptConsentReq.Session.AccessToken["cart"] != consentStateID {
 		t.Errorf("AccessToken.cart = %v wants %v", h.AcceptConsentReq.Session.AccessToken["cart"], consentStateID)
 	}
+
+	atid, ok := h.AcceptConsentReq.Session.AccessToken["tid"].(string)
+	if !ok {
+		t.Fatalf("tid in access token in wrong type")
+	}
+
+	itid, ok := h.AcceptConsentReq.Session.IDToken["tid"].(string)
+	if !ok {
+		t.Fatalf("tid in id token in wrong type")
+	}
+
+	if itid != atid {
+		t.Errorf("tid in id token and access token should be the same, %s, %s", itid, atid)
+	}
 }
 
 func TestHydraConsent_Endpoint(t *testing.T) {
-	s, _, _, h, _, err := setupHydraTest()
+	s, _, _, h, _, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1636,6 +1993,47 @@ func TestHydraConsent_Endpoint(t *testing.T) {
 
 	if diff := cmp.Diff(wantIdentities, h.AcceptConsentReq.Session.AccessToken["identities"]); len(diff) > 0 {
 		t.Errorf("AccessToken.identities (-want, +got): %s", diff)
+	}
+
+	atid, ok := h.AcceptConsentReq.Session.AccessToken["tid"].(string)
+	if !ok {
+		t.Fatalf("tid in access token in wrong type")
+	}
+
+	itid, ok := h.AcceptConsentReq.Session.IDToken["tid"].(string)
+	if !ok {
+		t.Fatalf("tid in id token in wrong type")
+	}
+
+	if itid != atid {
+		t.Errorf("tid in id token and access token should be the same, %s, %s", itid, atid)
+	}
+}
+
+func TestHydraConsent_Error(t *testing.T) {
+	s, _, _, h, _, err := setupHydraTest(true)
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	h.GetConsentRequestResp = &hydraapi.ConsentRequest{}
+	h.RejectConsentResp = &hydraapi.RequestHandlerResponse{RedirectTo: hydraPublicURL}
+
+	// Send Request.
+	query := fmt.Sprintf("?consent_challenge=%s", consentChallenge)
+	u := damURL + hydraConsentPath + query
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, u, nil)
+	s.Handler.ServeHTTP(w, r)
+
+	resp := w.Result()
+
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, http.StatusTemporaryRedirect)
+	}
+
+	if h.RejectConsentReq.Code != http.StatusBadRequest {
+		t.Errorf("RejectConsentReq.Code = %d, wants %d", h.RejectConsentReq.Code, http.StatusBadRequest)
 	}
 }
 
@@ -1688,7 +2086,7 @@ func sendResourceTokens(t *testing.T, s *Service, broker *persona.Server, cartID
 }
 
 func TestResourceTokens(t *testing.T) {
-	s, _, _, h, broker, err := setupHydraTest()
+	s, _, _, h, broker, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1705,7 +2103,7 @@ func TestResourceTokens(t *testing.T) {
 }
 
 func TestResourceTokens_CartNotExistsInToken(t *testing.T) {
-	s, _, _, h, broker, err := setupHydraTest()
+	s, _, _, h, broker, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1718,7 +2116,7 @@ func TestResourceTokens_CartNotExistsInToken(t *testing.T) {
 }
 
 func TestResourceTokens_CartNotExistsInStorage(t *testing.T) {
-	s, _, _, h, broker, err := setupHydraTest()
+	s, _, _, h, broker, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1733,7 +2131,7 @@ func TestResourceTokens_CartNotExistsInStorage(t *testing.T) {
 	}
 }
 
-func damSendTestRequest(t *testing.T, method, path, pathname, personaName, clientID, clientSecret string, data proto.Message, s *Service, iss *persona.Server) *http.Response {
+func damSendTestRequest(t *testing.T, method, path, pathname, realm, personaName, clientID, clientSecret string, data proto.Message, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -1753,7 +2151,7 @@ func damSendTestRequest(t *testing.T, method, path, pathname, personaName, clien
 		}
 	}
 
-	path = strings.ReplaceAll(path, "{realm}", "test")
+	path = strings.ReplaceAll(path, "{realm}", realm)
 	path = strings.ReplaceAll(path, "{name}", pathname)
 	q := url.Values{
 		"client_id":     []string{clientID},
@@ -1764,7 +2162,7 @@ func damSendTestRequest(t *testing.T, method, path, pathname, personaName, clien
 }
 
 func TestClients_Get(t *testing.T) {
-	s, cfg, sec, _, iss, err := setupHydraTest()
+	s, cfg, sec, _, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1773,7 +2171,7 @@ func TestClients_Get(t *testing.T) {
 	pname := "non-admin"
 	cli := cfg.Clients[clientName]
 
-	resp := damSendTestRequest(t, http.MethodGet, clientPath, clientName, pname, cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
+	resp := damSendTestRequest(t, http.MethodGet, clientPath, clientName, "master", pname, cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
 
 	got := &cpb.ClientResponse{}
 	if err := jsonpb.Unmarshal(resp.Body, got); err != nil && err != io.EOF {
@@ -1788,7 +2186,7 @@ func TestClients_Get(t *testing.T) {
 }
 
 func TestClients_Get_Error(t *testing.T) {
-	s, _, _, _, iss, err := setupHydraTest()
+	s, _, _, _, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1796,17 +2194,26 @@ func TestClients_Get_Error(t *testing.T) {
 	tests := []struct {
 		name       string
 		clientName string
+		realm      string
 		status     int
 	}{
 		{
 			name:       "client not exists",
 			clientName: "invalid",
+			realm:      "master",
 			status:     http.StatusNotFound,
 		},
 		{
 			name:       "client id and client name not match",
 			clientName: "test_client2",
+			realm:      "master",
 			status:     http.StatusNotFound,
+		},
+		{
+			name:       "not master realm",
+			clientName: "test_client",
+			realm:      "test",
+			status:     http.StatusForbidden,
 		},
 	}
 
@@ -1814,7 +2221,7 @@ func TestClients_Get_Error(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pname := "non-admin"
 
-			resp := damSendTestRequest(t, http.MethodGet, clientPath, tc.clientName, pname, test.TestClientID, test.TestClientSecret, nil, s, iss)
+			resp := damSendTestRequest(t, http.MethodGet, clientPath, tc.clientName, tc.realm, pname, test.TestClientID, test.TestClientSecret, nil, s, iss)
 
 			if resp.StatusCode != tc.status {
 				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
@@ -1824,7 +2231,7 @@ func TestClients_Get_Error(t *testing.T) {
 }
 
 func TestSyncClients_Get(t *testing.T) {
-	s, cfg, sec, _, iss, err := setupHydraTest()
+	s, cfg, sec, _, iss, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1832,7 +2239,7 @@ func TestSyncClients_Get(t *testing.T) {
 	clientName := "test_client"
 	cli := cfg.Clients[clientName]
 
-	resp := damSendTestRequest(t, http.MethodGet, syncClientsPath, clientName, "", cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
+	resp := damSendTestRequest(t, http.MethodGet, syncClientsPath, clientName, "master", "", cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
 
 	wantStatus := http.StatusOK
 	if resp.StatusCode != wantStatus {
@@ -1848,7 +2255,7 @@ func TestSyncClients_Get(t *testing.T) {
 }
 
 func TestSyncClients_Post(t *testing.T) {
-	s, cfg, sec, _, iss, err := setupHydraTest()
+	s, cfg, sec, _, iss, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1856,7 +2263,7 @@ func TestSyncClients_Post(t *testing.T) {
 	clientName := "test_client"
 	cli := cfg.Clients[clientName]
 
-	resp := damSendTestRequest(t, http.MethodPost, syncClientsPath, clientName, "", cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
+	resp := damSendTestRequest(t, http.MethodPost, syncClientsPath, clientName, "master", "", cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
 
 	wantStatus := http.StatusOK
 	if resp.StatusCode != wantStatus {
@@ -1872,7 +2279,7 @@ func TestSyncClients_Post(t *testing.T) {
 }
 
 func TestSyncClients_ScopeError(t *testing.T) {
-	s, cfg, sec, _, iss, err := setupHydraTest()
+	s, cfg, sec, _, iss, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1880,7 +2287,7 @@ func TestSyncClients_ScopeError(t *testing.T) {
 	clientName := "test_client2"
 	cli := cfg.Clients[clientName]
 
-	resp := damSendTestRequest(t, http.MethodGet, syncClientsPath, clientName, "", cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
+	resp := damSendTestRequest(t, http.MethodGet, syncClientsPath, clientName, "master", "", cli.ClientId, sec.ClientSecrets[cli.ClientId], nil, s, iss)
 
 	wantStatus := http.StatusForbidden
 	if resp.StatusCode != wantStatus {
@@ -1888,7 +2295,7 @@ func TestSyncClients_ScopeError(t *testing.T) {
 	}
 }
 
-func sendConfigClientsGet(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
+func sendConfigClientsGet(t *testing.T, pname, clientName, realm, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -1901,7 +2308,7 @@ func sendConfigClientsGet(t *testing.T, pname, clientName, clientID, clientSecre
 		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
 	}
 
-	path := strings.ReplaceAll(configClientPath, "{realm}", "test")
+	path := strings.ReplaceAll(configClientPath, "{realm}", realm)
 	path = strings.ReplaceAll(path, "{name}", clientName)
 	q := url.Values{
 		"client_id":     []string{clientID},
@@ -1912,7 +2319,7 @@ func sendConfigClientsGet(t *testing.T, pname, clientName, clientID, clientSecre
 }
 
 func TestConfigClients_Get(t *testing.T) {
-	s, cfg, sec, _, iss, err := setupHydraTest()
+	s, cfg, sec, _, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1921,7 +2328,7 @@ func TestConfigClients_Get(t *testing.T) {
 	pname := "admin"
 	cli := cfg.Clients[clientName]
 
-	resp := sendConfigClientsGet(t, pname, clientName, cli.ClientId, sec.ClientSecrets[cli.ClientId], s, iss)
+	resp := sendConfigClientsGet(t, pname, clientName, "master", cli.ClientId, sec.ClientSecrets[cli.ClientId], s, iss)
 
 	got := &cpb.ConfigClientResponse{}
 	if err := jsonpb.Unmarshal(resp.Body, got); err != nil && err != io.EOF {
@@ -1936,7 +2343,7 @@ func TestConfigClients_Get(t *testing.T) {
 }
 
 func TestConfigClients_Get_Error(t *testing.T) {
-	s, _, _, _, iss, err := setupHydraTest()
+	s, _, _, _, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -1945,25 +2352,35 @@ func TestConfigClients_Get_Error(t *testing.T) {
 		name       string
 		persona    string
 		clientName string
+		realm      string
 		status     int
 	}{
 		{
 			name:       "client not exists",
 			persona:    "admin",
 			clientName: "invalid",
+			realm:      "master",
 			status:     http.StatusNotFound,
 		},
 		{
 			name:       "not admin",
 			persona:    "non-admin",
 			clientName: "test_client",
+			realm:      "master",
 			status:     http.StatusUnauthorized,
+		},
+		{
+			name:       "not master realm",
+			persona:    "admin",
+			clientName: "test_client",
+			realm:      "test",
+			status:     http.StatusForbidden,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := sendConfigClientsGet(t, tc.persona, tc.clientName, test.TestClientID, test.TestClientSecret, s, iss)
+			resp := sendConfigClientsGet(t, tc.persona, tc.clientName, tc.realm, test.TestClientID, test.TestClientSecret, s, iss)
 
 			if resp.StatusCode != tc.status {
 				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
@@ -1976,7 +2393,7 @@ func diffOfHydraClientIgnoreClientIDAndSecret(c1 *hydraapi.Client, c2 *hydraapi.
 	return cmp.Diff(c1, c2, cmpopts.IgnoreFields(hydraapi.Client{}, "ClientID", "Secret"), cmpopts.IgnoreUnexported(strfmt.DateTime{}))
 }
 
-func sendConfigClientsCreate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *persona.Server) *http.Response {
+func sendConfigClientsCreate(t *testing.T, pname, clientName, realm, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -1995,7 +2412,7 @@ func sendConfigClientsCreate(t *testing.T, pname, clientName, clientID, clientSe
 		t.Fatal(err)
 	}
 
-	path := strings.ReplaceAll(configClientPath, "{realm}", "test")
+	path := strings.ReplaceAll(configClientPath, "{realm}", realm)
 	path = strings.ReplaceAll(path, "{name}", clientName)
 	q := url.Values{
 		"client_id":     []string{clientID},
@@ -2006,7 +2423,7 @@ func sendConfigClientsCreate(t *testing.T, pname, clientName, clientID, clientSe
 }
 
 func TestConfigClients_Create_Success(t *testing.T) {
-	s, _, _, h, iss, err := setupHydraTest()
+	s, _, _, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2034,7 +2451,7 @@ func TestConfigClients_Create_Success(t *testing.T) {
 		ResponseTypes: defaultResponseTypes,
 	}
 
-	resp := sendConfigClientsCreate(t, pname, clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+	resp := sendConfigClientsCreate(t, pname, clientName, "master", test.TestClientID, test.TestClientSecret, cli, s, iss)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status=%d, wants %d", resp.StatusCode, http.StatusOK)
 	}
@@ -2062,6 +2479,7 @@ func TestConfigClients_Create_Success(t *testing.T) {
 		ResponseTypes: defaultResponseTypes,
 		Scope:         defaultScope,
 		RedirectURIs:  cli.RedirectUris,
+		Audience:      []string{h.CreateClientReq.ClientID},
 	}
 	if diff := diffOfHydraClientIgnoreClientIDAndSecret(wantReq, h.CreateClientReq); len(diff) > 0 {
 		t.Errorf("client (-want, +got): %s", diff)
@@ -2085,7 +2503,7 @@ func TestConfigClients_Create_Success(t *testing.T) {
 }
 
 func TestConfigClients_Create_Success_Storage(t *testing.T) {
-	s, _, _, h, iss, err := setupHydraTest()
+	s, _, _, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2113,12 +2531,12 @@ func TestConfigClients_Create_Success_Storage(t *testing.T) {
 		ResponseTypes: defaultResponseTypes,
 	}
 
-	resp := sendConfigClientsCreate(t, pname, clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+	resp := sendConfigClientsCreate(t, pname, clientName, "master", test.TestClientID, test.TestClientSecret, cli, s, iss)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status=%d, wants %d", resp.StatusCode, http.StatusOK)
 	}
 
-	conf, err := s.loadConfig(nil, "test")
+	conf, err := s.loadConfig(nil, "master")
 	if err != nil {
 		t.Fatalf("s.loadConfig() failed %v", err)
 	}
@@ -2137,7 +2555,7 @@ func TestConfigClients_Create_Success_Storage(t *testing.T) {
 }
 
 func TestConfigClients_Create_Error(t *testing.T) {
-	s, _, _, h, iss, err := setupHydraTest()
+	s, _, _, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2157,6 +2575,7 @@ func TestConfigClients_Create_Error(t *testing.T) {
 		name       string
 		persona    string
 		clientName string
+		realm      string
 		client     *cpb.Client
 		status     int
 	}{
@@ -2164,6 +2583,7 @@ func TestConfigClients_Create_Error(t *testing.T) {
 			name:       "client exists",
 			persona:    "admin",
 			clientName: "test_client",
+			realm:      "master",
 			client:     cli,
 			status:     http.StatusConflict,
 		},
@@ -2171,6 +2591,7 @@ func TestConfigClients_Create_Error(t *testing.T) {
 			name:       "not admin",
 			persona:    "non-admin",
 			clientName: clientName,
+			realm:      "master",
 			client:     cli,
 			status:     http.StatusUnauthorized,
 		},
@@ -2178,6 +2599,7 @@ func TestConfigClients_Create_Error(t *testing.T) {
 			name:       "no redirect",
 			persona:    "admin",
 			clientName: clientName,
+			realm:      "master",
 			client:     &cpb.Client{Ui: cli.Ui},
 			status:     http.StatusBadRequest,
 		},
@@ -2185,8 +2607,17 @@ func TestConfigClients_Create_Error(t *testing.T) {
 			name:       "no ui",
 			persona:    "admin",
 			clientName: clientName,
+			realm:      "master",
 			client:     &cpb.Client{RedirectUris: cli.RedirectUris},
 			status:     http.StatusBadRequest,
+		},
+		{
+			name:       "not master realm",
+			persona:    "admin",
+			clientName: clientName,
+			realm:      "test",
+			client:     cli,
+			status:     http.StatusForbidden,
 		},
 	}
 
@@ -2199,7 +2630,7 @@ func TestConfigClients_Create_Error(t *testing.T) {
 				Secret:   "secret",
 			}
 
-			resp := sendConfigClientsCreate(t, tc.persona, tc.clientName, test.TestClientID, test.TestClientSecret, tc.client, s, iss)
+			resp := sendConfigClientsCreate(t, tc.persona, tc.clientName, tc.realm, test.TestClientID, test.TestClientSecret, tc.client, s, iss)
 
 			if resp.StatusCode != tc.status {
 				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
@@ -2209,7 +2640,7 @@ func TestConfigClients_Create_Error(t *testing.T) {
 				t.Errorf("should not call create client to hydra")
 			}
 
-			conf, err := s.loadConfig(nil, "test")
+			conf, err := s.loadConfig(nil, tc.realm)
 			if err != nil {
 				t.Fatalf("s.loadConfig() failed %v", err)
 			}
@@ -2221,7 +2652,7 @@ func TestConfigClients_Create_Error(t *testing.T) {
 }
 
 func TestConfigClients_Create_Hydra_Error(t *testing.T) {
-	s, _, _, h, iss, err := setupHydraTest()
+	s, _, _, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2248,14 +2679,14 @@ func TestConfigClients_Create_Hydra_Error(t *testing.T) {
 	}
 	h.CreateClientErr = &hydraapi.GenericError{Code: http.StatusServiceUnavailable}
 
-	resp := sendConfigClientsCreate(t, "admin", clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+	resp := sendConfigClientsCreate(t, "admin", clientName, "master", test.TestClientID, test.TestClientSecret, cli, s, iss)
 
 	// TODO should use better http status.
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, http.StatusBadRequest)
 	}
 
-	conf, err := s.loadConfig(nil, "test")
+	conf, err := s.loadConfig(nil, "master")
 	if err != nil {
 		t.Fatalf("s.loadConfig() failed %v", err)
 	}
@@ -2264,14 +2695,14 @@ func TestConfigClients_Create_Hydra_Error(t *testing.T) {
 	}
 }
 
-func sendConfigClientsUpdate(t *testing.T, pname, clientName, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *persona.Server) *http.Response {
+func sendConfigClientsUpdate(t *testing.T, pname, clientName, realm, clientID, clientSecret string, cli *cpb.Client, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
-	return damSendTestRequest(t, http.MethodPatch, configClientPath, clientName, pname, clientID, clientSecret, &cpb.ConfigClientRequest{Item: cli}, s, iss)
+	return damSendTestRequest(t, http.MethodPatch, configClientPath, clientName, realm, pname, clientID, clientSecret, &cpb.ConfigClientRequest{Item: cli}, s, iss)
 }
 
 func TestConfigClients_Update_Success(t *testing.T) {
-	s, cfg, sec, h, iss, err := setupHydraTest()
+	s, cfg, sec, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2299,7 +2730,7 @@ func TestConfigClients_Update_Success(t *testing.T) {
 		ResponseTypes: defaultResponseTypes,
 	}
 
-	resp := sendConfigClientsUpdate(t, pname, clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+	resp := sendConfigClientsUpdate(t, pname, clientName, "master", test.TestClientID, test.TestClientSecret, cli, s, iss)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status=%d, wants %d", resp.StatusCode, http.StatusOK)
 	}
@@ -2327,7 +2758,7 @@ func TestConfigClients_Update_Success(t *testing.T) {
 }
 
 func TestConfigClients_Update_Success_Storage(t *testing.T) {
-	s, _, _, h, iss, err := setupHydraTest()
+	s, _, _, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2351,12 +2782,12 @@ func TestConfigClients_Update_Success_Storage(t *testing.T) {
 		ResponseTypes: defaultResponseTypes,
 	}
 
-	resp := sendConfigClientsUpdate(t, pname, clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+	resp := sendConfigClientsUpdate(t, pname, clientName, "master", test.TestClientID, test.TestClientSecret, cli, s, iss)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status=%d, wants %d", resp.StatusCode, http.StatusOK)
 	}
 
-	conf, err := s.loadConfig(nil, "test")
+	conf, err := s.loadConfig(nil, "master")
 	if err != nil {
 		t.Fatalf("s.loadConfig() failed %v", err)
 	}
@@ -2375,7 +2806,7 @@ func TestConfigClients_Update_Success_Storage(t *testing.T) {
 }
 
 func TestConfigClients_Update_Error(t *testing.T) {
-	s, cfg, _, h, iss, err := setupHydraTest()
+	s, cfg, _, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2390,19 +2821,29 @@ func TestConfigClients_Update_Error(t *testing.T) {
 		name       string
 		persona    string
 		clientName string
+		realm      string
 		status     int
 	}{
 		{
 			name:       "client not exists",
 			persona:    "admin",
 			clientName: "invalid",
+			realm:      "master",
 			status:     http.StatusNotFound,
 		},
 		{
 			name:       "not admin",
 			persona:    "non-admin",
 			clientName: clientName,
+			realm:      "master",
 			status:     http.StatusUnauthorized,
+		},
+		{
+			name:       "not master realm",
+			persona:    "admin",
+			clientName: clientName,
+			realm:      "test",
+			status:     http.StatusForbidden,
 		},
 	}
 
@@ -2419,7 +2860,7 @@ func TestConfigClients_Update_Error(t *testing.T) {
 				ResponseTypes: defaultResponseTypes,
 			}
 
-			resp := sendConfigClientsUpdate(t, tc.persona, tc.clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+			resp := sendConfigClientsUpdate(t, tc.persona, tc.clientName, tc.realm, test.TestClientID, test.TestClientSecret, cli, s, iss)
 
 			if resp.StatusCode != tc.status {
 				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
@@ -2429,7 +2870,7 @@ func TestConfigClients_Update_Error(t *testing.T) {
 				t.Errorf("should not call Update client to hydra")
 			}
 
-			conf, err := s.loadConfig(nil, "test")
+			conf, err := s.loadConfig(nil, "master")
 			if err != nil {
 				t.Fatalf("s.loadConfig() failed %v", err)
 			}
@@ -2441,7 +2882,7 @@ func TestConfigClients_Update_Error(t *testing.T) {
 }
 
 func TestConfigClients_Update_Hydra_Error(t *testing.T) {
-	s, cfg, _, h, iss, err := setupHydraTest()
+	s, cfg, _, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2463,14 +2904,14 @@ func TestConfigClients_Update_Hydra_Error(t *testing.T) {
 	}
 	h.UpdateClientErr = &hydraapi.GenericError{Code: http.StatusServiceUnavailable}
 
-	resp := sendConfigClientsUpdate(t, "admin", clientName, test.TestClientID, test.TestClientSecret, cli, s, iss)
+	resp := sendConfigClientsUpdate(t, "admin", clientName, "master", test.TestClientID, test.TestClientSecret, cli, s, iss)
 
 	// TODO should use better http status.
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, http.StatusBadRequest)
 	}
 
-	conf, err := s.loadConfig(nil, "test")
+	conf, err := s.loadConfig(nil, "master")
 	if err != nil {
 		t.Fatalf("s.loadConfig() failed %v", err)
 	}
@@ -2479,7 +2920,7 @@ func TestConfigClients_Update_Hydra_Error(t *testing.T) {
 	}
 }
 
-func sendConfigClientsDelete(t *testing.T, pname, clientName, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
+func sendConfigClientsDelete(t *testing.T, pname, clientName, realm, clientID, clientSecret string, s *Service, iss *persona.Server) *http.Response {
 	t.Helper()
 
 	var p *cpb.TestPersona
@@ -2492,7 +2933,7 @@ func sendConfigClientsDelete(t *testing.T, pname, clientName, clientID, clientSe
 		t.Fatalf("persona.NewAccessToken(%q, %q, _, _) failed: %v", pname, hydraPublicURL, err)
 	}
 
-	path := strings.ReplaceAll(configClientPath, "{realm}", "test")
+	path := strings.ReplaceAll(configClientPath, "{realm}", realm)
 	path = strings.ReplaceAll(path, "{name}", clientName)
 	q := url.Values{
 		"client_id":     []string{clientID},
@@ -2503,7 +2944,7 @@ func sendConfigClientsDelete(t *testing.T, pname, clientName, clientID, clientSe
 }
 
 func TestConfigClients_Delete_Success(t *testing.T) {
-	s, _, _, _, iss, err := setupHydraTest()
+	s, _, _, _, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2512,13 +2953,13 @@ func TestConfigClients_Delete_Success(t *testing.T) {
 
 	pname := "admin"
 
-	resp := sendConfigClientsDelete(t, pname, clientName, test.TestClientID, test.TestClientSecret, s, iss)
+	resp := sendConfigClientsDelete(t, pname, clientName, "master", test.TestClientID, test.TestClientSecret, s, iss)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, http.StatusOK)
 	}
 
-	conf, err := s.loadConfig(nil, "test")
+	conf, err := s.loadConfig(nil, "master")
 	if err != nil {
 		t.Fatalf("s.loadConfig() failed %v", err)
 	}
@@ -2536,7 +2977,7 @@ func TestConfigClients_Delete_Success(t *testing.T) {
 }
 
 func TestConfigClients_Delete_Error(t *testing.T) {
-	s, cfg, _, h, iss, err := setupHydraTest()
+	s, cfg, _, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2547,19 +2988,29 @@ func TestConfigClients_Delete_Error(t *testing.T) {
 		name       string
 		persona    string
 		clientName string
+		realm      string
 		status     int
 	}{
 		{
 			name:       "client not exists",
 			persona:    "admin",
 			clientName: "invalid",
+			realm:      "master",
 			status:     http.StatusNotFound,
 		},
 		{
 			name:       "not admin",
 			persona:    "non-admin",
 			clientName: clientName,
+			realm:      "master",
 			status:     http.StatusUnauthorized,
+		},
+		{
+			name:       "not master realm",
+			persona:    "admin",
+			clientName: clientName,
+			realm:      "test",
+			status:     http.StatusForbidden,
 		},
 	}
 
@@ -2567,13 +3018,13 @@ func TestConfigClients_Delete_Error(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h.Clear()
 
-			resp := sendConfigClientsDelete(t, tc.persona, tc.clientName, test.TestClientID, test.TestClientSecret, s, iss)
+			resp := sendConfigClientsDelete(t, tc.persona, tc.clientName, tc.realm, test.TestClientID, test.TestClientSecret, s, iss)
 
 			if resp.StatusCode != tc.status {
 				t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, tc.status)
 			}
 
-			conf, err := s.loadConfig(nil, "test")
+			conf, err := s.loadConfig(nil, tc.realm)
 			if err != nil {
 				t.Fatalf("s.loadConfig() failed %v", err)
 			}
@@ -2585,7 +3036,7 @@ func TestConfigClients_Delete_Error(t *testing.T) {
 }
 
 func TestConfigClients_Delete_Hydra_Error(t *testing.T) {
-	s, cfg, _, h, iss, err := setupHydraTest()
+	s, cfg, _, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2594,14 +3045,14 @@ func TestConfigClients_Delete_Hydra_Error(t *testing.T) {
 
 	h.DeleteClientErr = &hydraapi.GenericError{Code: http.StatusServiceUnavailable}
 
-	resp := sendConfigClientsDelete(t, "admin", clientName, test.TestClientID, test.TestClientSecret, s, iss)
+	resp := sendConfigClientsDelete(t, "admin", clientName, "master", test.TestClientID, test.TestClientSecret, s, iss)
 
 	// TODO should use better http status.
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("resp.StatusCode = %d, wants %d", resp.StatusCode, http.StatusBadRequest)
 	}
 
-	conf, err := s.loadConfig(nil, "test")
+	conf, err := s.loadConfig(nil, "master")
 	if err != nil {
 		t.Fatalf("s.loadConfig() failed %v", err)
 	}
@@ -2611,14 +3062,14 @@ func TestConfigClients_Delete_Hydra_Error(t *testing.T) {
 }
 
 func TestConfig_Hydra_Put(t *testing.T) {
-	s, _, _, h, iss, err := setupHydraTest()
+	s, _, _, h, iss, err := setupHydraTest(false)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
 
-	cfg, err := s.loadConfig(nil, "test")
+	cfg, err := s.loadConfig(nil, "master")
 	if err != nil {
-		t.Fatalf(`s.loadConfig(_, "test") failed %v`, err)
+		t.Fatalf(`s.loadConfig(_, "master") failed %v`, err)
 	}
 	sec, err := s.loadSecrets(nil)
 	if err != nil {
@@ -2658,10 +3109,11 @@ func TestConfig_Hydra_Put(t *testing.T) {
 	updatedScope := cli.Scope + " new-scope"
 	cli.Scope = updatedScope
 
-	resp := damSendTestRequest(t, http.MethodPut, configPath, "", pname, test.TestClientID, test.TestClientSecret, &pb.ConfigRequest{Item: cfg}, s, iss)
+	// Call update config.
+	resp := damSendTestRequest(t, http.MethodPut, configPath, "", "master", pname, test.TestClientID, test.TestClientSecret, &pb.ConfigRequest{Item: cfg}, s, iss)
 	if resp.StatusCode != http.StatusOK {
 		body, _ := ioutil.ReadAll(resp.Body)
-		t.Fatalf("damSendTestRequest() status mismatch: got %d, want %d, body: %v", resp.StatusCode, http.StatusOK, string(body))
+		t.Fatalf("damSendTestRequest().StatusCode = %d, want %d\n body: %v", resp.StatusCode, http.StatusOK, string(body))
 	}
 
 	got := &pb.ConfigResponse{}
@@ -2675,6 +3127,7 @@ func TestConfig_Hydra_Put(t *testing.T) {
 		ResponseTypes: cli.ResponseTypes,
 		Scope:         updatedScope,
 		RedirectURIs:  cli.RedirectUris,
+		Audience:      []string{cli.ClientId},
 	}
 	if diff := diffOfHydraClientIgnoreClientIDAndSecret(wantReq, h.UpdateClientReq); len(diff) > 0 {
 		t.Errorf("client (-want, +got): %s", diff)
@@ -2686,8 +3139,64 @@ func TestConfig_Hydra_Put(t *testing.T) {
 	}
 }
 
+func TestConfig_Hydra_Put_NotMasterRealmError(t *testing.T) {
+	s, _, _, h, iss, err := setupHydraTest(true)
+	if err != nil {
+		t.Fatalf("setupHydraTest() failed: %v", err)
+	}
+
+	cfg, err := s.loadConfig(nil, "test")
+	if err != nil {
+		t.Fatalf(`s.loadConfig(_, "test") failed %v`, err)
+	}
+	sec, err := s.loadSecrets(nil)
+	if err != nil {
+		t.Fatalf("s.loadSecrets(_) failed %v", err)
+	}
+
+	clientName := "test_client"
+	cli, ok := cfg.Clients[clientName]
+	if !ok {
+		t.Fatalf("client %q not defined in config", clientName)
+	}
+
+	var existing []*hydraapi.Client
+	for name, c := range cfg.Clients {
+		existing = append(existing, &hydraapi.Client{
+			Name:          name,
+			ClientID:      c.ClientId,
+			Secret:        sec.ClientSecrets[c.ClientId],
+			RedirectURIs:  c.RedirectUris,
+			Scope:         defaultScope,
+			GrantTypes:    defaultGrantTypes,
+			ResponseTypes: defaultResponseTypes,
+		})
+	}
+	h.ListClientsResp = existing
+	h.UpdateClientResp = &hydraapi.Client{
+		ClientID:      cli.ClientId,
+		Name:          clientName,
+		Secret:        "secret",
+		RedirectURIs:  cli.RedirectUris,
+		Scope:         defaultScope,
+		GrantTypes:    defaultGrantTypes,
+		ResponseTypes: defaultResponseTypes,
+	}
+
+	pname := "admin"
+	updatedScope := cli.Scope + " new-scope"
+	cli.Scope = updatedScope
+
+	// Call update config.
+	resp := damSendTestRequest(t, http.MethodPut, configPath, "", "test", pname, test.TestClientID, test.TestClientSecret, &pb.ConfigRequest{Item: cfg}, s, iss)
+	if resp.StatusCode != http.StatusBadRequest {
+		body, _ := ioutil.ReadAll(resp.Body)
+		t.Fatalf("damSendTestRequest().StatusCode = %d, want %d\n body: %v", resp.StatusCode, http.StatusBadRequest, string(body))
+	}
+}
+
 func TestConfigReset_Hydra(t *testing.T) {
-	s, _, _, h, iss, err := setupHydraTest()
+	s, _, _, h, iss, err := setupHydraTest(true)
 	if err != nil {
 		t.Fatalf("setupHydraTest() failed: %v", err)
 	}
@@ -2724,7 +3233,7 @@ func TestConfigReset_Hydra(t *testing.T) {
 		"client_id":     []string{test.TestClientID},
 		"client_secret": []string{test.TestClientSecret},
 	}
-	path := strings.ReplaceAll(configResetPath, "{realm}", "test")
+	path := strings.ReplaceAll(configResetPath, "{realm}", "master")
 	header := http.Header{"Authorization": []string{"Bearer " + string(tok)}}
 	resp := testhttp.SendTestRequest(t, s.Handler, http.MethodGet, path, q, nil, header)
 
@@ -2742,57 +3251,5 @@ func TestConfigReset_Hydra(t *testing.T) {
 
 	if h.CreateClientReq.Name != "test_client2" {
 		t.Errorf("h.CreateClientReq.Name = %s, wants test_client2", h.CreateClientReq.Name)
-	}
-}
-
-func Test_HydraAccessTokenForEndpoint(t *testing.T) {
-	store := storage.NewMemoryStorage("dam", "testdata/config")
-	wh := clouds.NewMockTokenCreator(false)
-	server, err := fakeoidcissuer.New(hydraPublicURL, &testkeys.PersonaBrokerKey, "dam", "testdata/config", false)
-	if err != nil {
-		t.Fatalf("fakeoidcissuer.New(%q, _, _) failed: %v", hydraPublicURL, err)
-	}
-	ctx := server.ContextWithClient(context.Background())
-	s := NewService(&Options{
-		Domain:         "test.org",
-		ServiceName:    "dam",
-		DefaultBroker:  "no-broker",
-		Store:          store,
-		Warehouse:      wh,
-		UseHydra:       useHydra,
-		HydraAdminURL:  hydraAdminURL,
-		HydraPublicURL: hydraPublicURL,
-	})
-
-	cfg, err := s.loadConfig(nil, "master")
-	if err != nil {
-		t.Fatalf("loadConfig failed: %v", err)
-	}
-
-	now := time.Now().Unix()
-	identity := &ga4gh.Identity{
-		Issuer:    hydraPublicURL,
-		Subject:   "admin",
-		IssuedAt:  now,
-		Expiry:    now + 10000,
-		Audiences: ga4gh.NewAudience(test.TestClientID),
-		Extra: map[string]interface{}{
-			"identities": []interface{}{"admin@faculty.example.edu"},
-		},
-	}
-
-	tok, err := server.Sign(nil, identity)
-	if err != nil {
-		t.Fatalf("Sign() failed: %v", err)
-	}
-
-	id, err := s.damSignedBearerTokenToPassportIdentity(ctx, cfg, tok, test.TestClientID)
-	if err != nil {
-		t.Fatalf("damSignedBearerTokenToPassportIdentity() failed: %v", err)
-	}
-
-	_, err = s.permissions.CheckAdmin(id)
-	if err != nil {
-		t.Errorf("CheckAdmin(%s) got error: %v", id.Subject, err)
 	}
 }

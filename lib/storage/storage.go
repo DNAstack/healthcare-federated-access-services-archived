@@ -33,17 +33,21 @@ const (
 	DefaultID      = "main"
 	AllRealms      = ""
 
-	AccountDatatype        = "account"
-	AccountLookupDatatype  = "acct_lookup"
-	ClientDatatype         = "client"
-	ConfigDatatype         = "config"
-	LockDatatype           = "lock"
-	LoginStateDatatype     = "login_state"
-	ProcessDataType        = "process"
-	AuthTokenStateDatatype = "auth_token_state"
-	PermissionsDatatype    = "permissions"
-	SecretsDatatype        = "secrets"
-	TokensDatatype         = "tokens"
+	AccountDatatype            = "account"
+	AccountLookupDatatype      = "acct_lookup"
+	CliAuthDatatype            = "cli_auth"
+	ClientDatatype             = "client"
+	ConfigDatatype             = "config"
+	GroupDatatype              = "group"
+	GroupMemberDatatype        = "member"
+	LockDatatype               = "lock"
+	LoginStateDatatype         = "login_state"
+	ProcessDataType            = "process"
+	AuthTokenStateDatatype     = "auth_token_state"
+	PermissionsDatatype        = "permissions"
+	SecretsDatatype            = "secrets"
+	TokensDatatype             = "tokens"
+	PendingDeleteTokenDatatype = "pending_delete_token"
 
 	ResourceTokenRequestStateDataType = "resource_token_state"
 
@@ -89,7 +93,9 @@ type Store interface {
 
 type Tx interface {
 	Finish() error
-	Rollback()
+	Rollback() error
+	// MakeUpdate will upgrade a read-only transaction to an update transaction.
+	MakeUpdate() error
 	IsUpdate() bool
 }
 

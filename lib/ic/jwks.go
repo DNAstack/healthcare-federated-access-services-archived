@@ -17,11 +17,12 @@ package ic
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 
+	"google.golang.org/grpc/codes" /* copybara-comment */
+	"google.golang.org/grpc/status" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
 )
 
 // JWKS returns the JSON Web Key Set response for visas. Note that this is
@@ -29,12 +30,12 @@ import (
 func (s *Service) JWKS(w http.ResponseWriter, r *http.Request) {
 	sec, err := s.loadSecrets(nil)
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 	key, ok := sec.TokenKeys[s.getVisaIssuerString()]
 	if !ok {
-		httputil.WriteError(w, http.StatusServiceUnavailable, fmt.Errorf("looking up keys failed: no keys are available for this service"))
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "looking up keys failed: no keys are available for this service"))
 		return
 	}
 	use := "sig"
@@ -56,7 +57,7 @@ func (s *Service) JWKS(w http.ResponseWriter, r *http.Request) {
 	}
 	b, err := json.Marshal(keys)
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, fmt.Errorf("writing jwks to json: %v", err))
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "writing jwks to json: %v", err))
 		return
 	}
 	w.Write(b)

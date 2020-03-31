@@ -14,42 +14,6 @@
 
 package auth
 
-import (
-	"google.golang.org/grpc/status" /* copybara-comment */
-
-	glog "github.com/golang/glog" /* copybara-comment */
-	edpb "google.golang.org/genproto/googleapis/rpc/errdetails" /* copybara-comment */
-)
-
-func withErrorType(typ string, err error) error {
-	s, ok := status.FromError(err)
-	if !ok {
-		glog.Error("not a status error")
-		return err
-	}
-
-	s, err = s.WithDetails(&edpb.ErrorInfo{Type: typ})
-	if err != nil {
-		glog.Errorf("status.WithDetails() failed: %v", err)
-	}
-	return s.Err()
-}
-
-func errorType(err error) string {
-	s, ok := status.FromError(err)
-	if !ok {
-		glog.Error("not a status error")
-		return string(errUnkown)
-	}
-	for _, d := range s.Details() {
-		switch v := d.(type) {
-		case *edpb.ErrorInfo:
-			return v.GetType()
-		}
-	}
-	return string(errUnkown)
-}
-
 type errType = string
 
 const (
@@ -63,6 +27,7 @@ const (
 	errSubMissing          errType = "id:sub_missing"
 	errAudMismatch         errType = "id:aud_mismatch"
 	errIDInvalid           errType = "id:invalid"
+	errScopeMissing        errType = "id:scope_missing"
 	errVerifierUnavailable errType = "oidc:verifier_unavailable"
 	errIDVerifyFailed      errType = "id:verify_failed"
 	errNotAdmin            errType = "role:user_not_admin"

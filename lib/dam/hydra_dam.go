@@ -15,6 +15,7 @@
 package dam
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 
@@ -22,8 +23,10 @@ import (
 	"google.golang.org/grpc/status" /* copybara-comment */
 	"golang.org/x/oauth2" /* copybara-comment */
 	"bitbucket.org/creachadair/stringset" /* copybara-comment */
+	"github.com/pborman/uuid" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/apis/hydraapi" /* copybara-comment: hydraapi */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/errutil" /* copybara-comment: errutil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
@@ -38,15 +41,15 @@ const (
 func (s *Service) HydraLogin(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	// Use login_challenge fetch information from hydra.
-	challenge, status := hydra.ExtractLoginChallenge(r)
-	if status != nil {
-		httputil.WriteStatus(w, status)
+	challenge, sts := hydra.ExtractLoginChallenge(r)
+	if sts != nil {
+		httputils.WriteError(w, sts.Err())
 		return
 	}
 
 	login, err := hydra.GetLoginRequest(s.httpClient, s.hydraAdminURL, challenge)
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 
@@ -54,10 +57,19 @@ func (s *Service) HydraLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	redirect, err := s.hydraLogin(r.Context(), challenge, login)
+	if err != nil {
+		hydra.SendLoginReject(w, r, s.httpClient, s.hydraAdminURL, challenge, err)
+	} else {
+		httputils.WriteRedirect(w, r, redirect)
+	}
+}
+
+// hydraLogin returns redirect and status error
+func (s *Service) hydraLogin(ctx context.Context, challenge string, login *hydraapi.LoginRequest) (string, error) {
 	u, err := url.Parse(login.RequestURL)
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
-		return
+		return "", errutil.WithErrorReason("url_parse", status.Errorf(codes.FailedPrecondition, "url parse: %v", err))
 	}
 
 	in := authHandlerIn{
@@ -75,24 +87,21 @@ func (s *Service) HydraLogin(w http.ResponseWriter, r *http.Request) {
 		in.tokenType = pb.ResourceTokenRequestState_DATASET
 		in.ttl, err = extractTTL(u.Query().Get("max_age"), u.Query().Get("ttl"))
 		if err != nil {
-			httputil.WriteError(w, http.StatusBadRequest, err)
-			return
+			return "", errutil.WithErrorReason("ttl_invalid", status.Errorf(codes.InvalidArgument, "ttl invalid: %v", err))
 		}
 
 		list := u.Query()["resource"]
 		in.resources, err = s.resourceViewRoleFromRequest(list)
 		if err != nil {
-			httputil.WriteError(w, http.StatusBadRequest, err)
-			return
+			return "", errutil.WithErrorReason("resource_invalid", status.Errorf(codes.InvalidArgument, "resource invalid: %v", err))
 		}
 
 		in.responseKeyFile = u.Query().Get("response_type") == "key-file-type"
 	}
 
-	out, st, err := s.auth(r.Context(), in)
+	out, err := s.auth(ctx, in)
 	if err != nil {
-		httputil.WriteError(w, st, err)
-		return
+		return "", err
 	}
 
 	var opts []oauth2.AuthCodeOption
@@ -104,45 +113,64 @@ func (s *Service) HydraLogin(w http.ResponseWriter, r *http.Request) {
 
 	auth := out.oauth.AuthCodeURL(out.stateID, opts...)
 
-	httputil.WriteRedirect(w, r, auth)
+	return auth, nil
 }
 
 // HydraConsent handles consent request from hydra.
 func (s *Service) HydraConsent(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	// Use consent_challenge fetch information from hydra.
-	challenge, status := hydra.ExtractConsentChallenge(r)
-	if status != nil {
-		httputil.WriteStatus(w, status)
+	challenge, st := hydra.ExtractConsentChallenge(r)
+	if st != nil {
+		httputils.WriteError(w, st.Err())
 		return
 	}
 
 	consent, err := hydra.GetConsentRequest(s.httpClient, s.hydraAdminURL, challenge)
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, status.Errorf(codes.Unavailable, "%v", err))
 		return
 	}
 
-	identities, status := hydra.ExtractIdentitiesInConsent(consent)
-	if status != nil {
-		httputil.WriteStatus(w, status)
-		return
+	redirect, err := s.hydraConsent(challenge, consent)
+	if err != nil {
+		hydra.SendConsentReject(w, r, s.httpClient, s.hydraAdminURL, challenge, err)
+	} else {
+		httputils.WriteRedirect(w, r, redirect)
+	}
+}
+
+// hydraConsent returns redirect and status error
+func (s *Service) hydraConsent(challenge string, consent *hydraapi.ConsentRequest) (string, error) {
+	identities, sts := hydra.ExtractIdentitiesInConsent(consent)
+	if sts != nil {
+		return "", sts.Err()
 	}
 
 	var stateID string
 	if len(identities) == 0 {
-		stateID, status = hydra.ExtractStateIDInConsent(consent)
-		if status != nil {
-			httputil.WriteStatus(w, status)
-			return
+		stateID, sts = hydra.ExtractStateIDInConsent(consent)
+		if sts != nil {
+			return "", sts.Err()
 		}
 	}
+
+	if len(identities) == 0 && len(stateID) == 0 {
+		return "", status.Errorf(codes.FailedPrecondition, "token format invalid: identities or stateID not found")
+	}
+
+	tokenID := uuid.New()
 
 	req := &hydraapi.HandledConsentRequest{
 		GrantedAudience: append(consent.RequestedAudience, consent.Client.ClientID),
 		GrantedScope:    consent.RequestedScope,
 		Session: &hydraapi.ConsentRequestSessionData{
-			AccessToken: map[string]interface{}{},
+			AccessToken: map[string]interface{}{
+				"tid": tokenID,
+			},
+			IDToken: map[string]interface{}{
+				"tid": tokenID,
+			},
 		},
 	}
 
@@ -154,11 +182,11 @@ func (s *Service) HydraConsent(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := hydra.AcceptConsent(s.httpClient, s.hydraAdminURL, challenge, req)
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
-		return
+		// TODO: hydra client should return status error.
+		return "", status.Errorf(codes.Unavailable, "%v", err)
 	}
 
-	httputil.WriteRedirect(w, r, resp.RedirectTo)
+	return resp.RedirectTo, nil
 }
 
 func (s *Service) extractCartFromAccessToken(token string) (string, error) {

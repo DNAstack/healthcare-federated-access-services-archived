@@ -17,25 +17,27 @@ package dam_test
 import (
 	"testing"
 
-	glog "github.com/golang/glog" /* copybara-comment */
 	"google.golang.org/grpc/codes" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dam" /* copybara-comment: dam */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 
+	glog "github.com/golang/glog" /* copybara-comment */
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
 )
 
 const (
-	hydraAdminURL = "https://admin.hydra.example.com"
-	hydraURL      = "https://example.com/oidc"
-	useHydra      = true
+	hydraAdminURL    = "https://admin.hydra.example.com"
+	hydraURL         = "https://example.com/oidc"
+	hydraURLInternal = "https://hydra.internal.example.com/"
+	useHydra         = true
 )
 
 func TestCheckIntegrity_FileConfig(t *testing.T) {
 	s, cfg := setupFromFile(t)
 	glog.Infof("DAMConfig: %v", cfg)
-	if err := s.CheckIntegrity(cfg).Err(); err != nil {
+	if err := s.CheckIntegrity(cfg, storage.DefaultRealm, nil).Err(); err != nil {
 		t.Errorf("CheckIntegrity(cfg) error: %v", err)
 	}
 }
@@ -83,9 +85,30 @@ func TestCheckIntegrity_BadCfg(t *testing.T) {
 			want: codes.InvalidArgument,
 		},
 		{
-			desc: "all fields of a condition are emptry",
+			desc: "all fields of a condition are empty",
 			mutation: func(cfg *pb.DamConfig) {
 				cfg.Policies["bona_fide"].AnyOf[0].AllOf[0] = &cpb.Condition{}
+			},
+			want: codes.InvalidArgument,
+		},
+		{
+			desc: "edit built-in policy",
+			mutation: func(cfg *pb.DamConfig) {
+				cfg.Policies["whitelist"].Ui["label"] = "edited whitelist label that should be rejected"
+			},
+			want: codes.InvalidArgument,
+		},
+		{
+			desc: "regular (non built-in) policy with UI source label",
+			mutation: func(cfg *pb.DamConfig) {
+				cfg.Policies["bona_fide"].Ui["source"] = "me"
+			},
+			want: codes.InvalidArgument,
+		},
+		{
+			desc: "regular (non built-in) policy with UI edit label",
+			mutation: func(cfg *pb.DamConfig) {
+				cfg.Policies["bona_fide"].Ui["edit"] = "go ahead"
 			},
 			want: codes.InvalidArgument,
 		},
@@ -95,7 +118,7 @@ func TestCheckIntegrity_BadCfg(t *testing.T) {
 		t.Run(tc.desc, func(t *testing.T) {
 			s, cfg := setupFromFile(t)
 			tc.mutation(cfg)
-			if got := s.CheckIntegrity(cfg).Code(); got != tc.want {
+			if got := s.CheckIntegrity(cfg, storage.DefaultRealm, nil).Code(); got != tc.want {
 				t.Errorf("CheckIntegrity(cfg).Code() = %v, want %v", got, tc.want)
 			}
 		})
@@ -107,6 +130,12 @@ func setupFromFile(t *testing.T) (*dam.Service, *pb.DamConfig) {
 	cfg := &pb.DamConfig{}
 	if err := store.Read(storage.ConfigDatatype, storage.DefaultRealm, storage.DefaultUser, storage.DefaultID, storage.LatestRev, cfg); err != nil {
 		t.Fatalf("error reading config: %v", err)
+	}
+
+	for k, v := range dam.BuiltinPolicies {
+		p := &pb.Policy{}
+		proto.Merge(p, v)
+		cfg.Policies[k] = p
 	}
 
 	opts := &dam.Options{

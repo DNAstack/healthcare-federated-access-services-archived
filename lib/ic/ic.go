@@ -33,27 +33,33 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
-	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"cloud.google.com/go/logging" /* copybara-comment: logging */
 	"github.com/google/go-cmp/cmp" /* copybara-comment */
 	"github.com/gorilla/mux" /* copybara-comment */
 	"google.golang.org/grpc/codes" /* copybara-comment */
 	"google.golang.org/grpc/status" /* copybara-comment */
 	"golang.org/x/oauth2" /* copybara-comment */
+	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"github.com/pborman/uuid" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/auth" /* copybara-comment: auth */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/check" /* copybara-comment: check */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/cli" /* copybara-comment: cli */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/consentsapi" /* copybara-comment: consentsapi */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydraproxy" /* copybara-comment: hydraproxy */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms" /* copybara-comment: kms */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/permissions" /* copybara-comment: permissions */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/scim" /* copybara-comment: scim */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/srcutil" /* copybara-comment: srcutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/strutil" /* copybara-comment: strutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/tokensapi" /* copybara-comment: tokensapi */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
 
 	glog "github.com/golang/glog" /* copybara-comment */
@@ -71,7 +77,7 @@ const (
 	loginPageFile              = "pages/login.html"
 	loginPageInfoFile          = "pages/ic/login_info.html"
 	clientLoginPageFile        = "pages/ic/client_login.html"
-	informationReleasePageFile = "pages/ic/inforelease.html"
+	informationReleasePageFile = "pages/ic/info_release.html"
 	staticDirectory            = "assets/serve/"
 
 	serviceTitle            = "Identity Concentrator"
@@ -207,35 +213,32 @@ var (
 )
 
 type Service struct {
-	store                 storage.Store
-	Handler               *ServiceHandler
-	httpClient            *http.Client
-	loginPage             string
-	clientLoginPage       string
-	infomationReleasePage string
-	startTime             int64
-	permissions           *permissions.Permissions
-	domain                string
-	serviceName           string
-	accountDomain         string
-	hydraAdminURL         string
-	hydraPublicURL        string
-	translators           sync.Map
-	encryption            Encryption
-	logger                *logging.Client
-	useHydra              bool
-	hydraSyncFreq         time.Duration
+	store                      storage.Store
+	Handler                    *ServiceHandler
+	httpClient                 *http.Client
+	loginPage                  string
+	clientLoginPage            string
+	infomationReleasePage      string
+	startTime                  int64
+	permissions                *permissions.Permissions
+	domain                     string
+	serviceName                string
+	accountDomain              string
+	hydraAdminURL              string
+	hydraPublicURL             string
+	hydraPublicURLProxy        *hydraproxy.Service
+	translators                sync.Map
+	encryption                 kms.Encryption
+	logger                     *logging.Client
+	skipInformationReleasePage bool
+	useHydra                   bool
+	hydraSyncFreq              time.Duration
+	scim                       *scim.Scim
 }
 
 type ServiceHandler struct {
 	Handler *mux.Router
 	s       *Service
-}
-
-// Encryption abstracts a encryption service for storing visa.
-type Encryption interface {
-	Encrypt(ctx context.Context, data []byte, additionalAuthData string) ([]byte, error)
-	Decrypt(ctx context.Context, encrypted []byte, additionalAuthData string) ([]byte, error)
 }
 
 // Options contains parameters to New IC Service.
@@ -251,15 +254,19 @@ type Options struct {
 	// Store: data storage and configuration storage.
 	Store storage.Store
 	// Encryption: the encryption use for storing tokens safely in database.
-	Encryption Encryption
+	Encryption kms.Encryption
 	// Logger: audit log logger
 	Logger *logging.Client
+	// SkipInformationReleasePage: set true if want to skip the information release page.
+	SkipInformationReleasePage bool
 	// UseHydra: service use hydra integrated OIDC.
 	UseHydra bool
 	// HydraAdminURL: hydra admin endpoints url.
 	HydraAdminURL string
 	// HydraPublicURL: hydra public endpoints url.
 	HydraPublicURL string
+	// HydraPublicProxy: proxy for hydra public endpoint.
+	HydraPublicProxy *hydraproxy.Service
 	// HydraSyncFreq: how often to allow clients:sync to be called
 	HydraSyncFreq time.Duration
 }
@@ -275,20 +282,20 @@ func New(r *mux.Router, params *Options) *Service {
 	sh := &ServiceHandler{}
 	lp, err := srcutil.LoadFile(loginPageFile)
 	if err != nil {
-		glog.Fatalf("cannot load login page: %v", err)
+		glog.Exitf("cannot load login page: %v", err)
 	}
 	lpi, err := srcutil.LoadFile(loginPageInfoFile)
 	if err != nil {
-		glog.Fatalf("cannot load login page info %q: %v", loginPageInfoFile, err)
+		glog.Exitf("cannot load login page info %q: %v", loginPageInfoFile, err)
 	}
 	lp = strings.Replace(lp, "${LOGIN_INFO_HTML}", lpi, -1)
 	clp, err := srcutil.LoadFile(clientLoginPageFile)
 	if err != nil {
-		glog.Fatalf("cannot load client login page: %v", err)
+		glog.Exitf("cannot load client login page: %v", err)
 	}
 	irp, err := srcutil.LoadFile(informationReleasePageFile)
 	if err != nil {
-		glog.Fatalf("cannot load information release page: %v", err)
+		glog.Exitf("cannot load information release page: %v", err)
 	}
 	syncFreq := time.Minute
 	if params.HydraSyncFreq > 0 {
@@ -297,26 +304,29 @@ func New(r *mux.Router, params *Options) *Service {
 
 	perms, err := permissions.LoadPermissions(params.Store)
 	if err != nil {
-		glog.Fatalf("cannot load permissions:%v", err)
+		glog.Exitf("cannot load permissions:%v", err)
 	}
 	s := &Service{
-		store:                 params.Store,
-		Handler:               sh,
-		httpClient:            params.HTTPClient,
-		loginPage:             lp,
-		clientLoginPage:       clp,
-		infomationReleasePage: irp,
-		startTime:             time.Now().Unix(),
-		permissions:           perms,
-		domain:                params.Domain,
-		serviceName:           params.ServiceName,
-		accountDomain:         params.AccountDomain,
-		hydraAdminURL:         params.HydraAdminURL,
-		hydraPublicURL:        params.HydraPublicURL,
-		encryption:            params.Encryption,
-		logger:                params.Logger,
-		useHydra:              params.UseHydra,
-		hydraSyncFreq:         syncFreq,
+		store:                      params.Store,
+		Handler:                    sh,
+		httpClient:                 params.HTTPClient,
+		loginPage:                  lp,
+		clientLoginPage:            clp,
+		infomationReleasePage:      irp,
+		startTime:                  time.Now().Unix(),
+		permissions:                perms,
+		domain:                     params.Domain,
+		serviceName:                params.ServiceName,
+		accountDomain:              params.AccountDomain,
+		hydraAdminURL:              params.HydraAdminURL,
+		hydraPublicURL:             params.HydraPublicURL,
+		hydraPublicURLProxy:        params.HydraPublicProxy,
+		encryption:                 params.Encryption,
+		logger:                     params.Logger,
+		skipInformationReleasePage: params.SkipInformationReleasePage,
+		useHydra:                   params.UseHydra,
+		hydraSyncFreq:              syncFreq,
+		scim:                       scim.New(params.Store),
 	}
 
 	if s.httpClient == nil {
@@ -327,27 +337,27 @@ func New(r *mux.Router, params *Options) *Service {
 		"DOMAIN as URL":         "https://" + params.Domain,
 		"ACCOUNT_DOMAIN as URL": "https://" + params.AccountDomain,
 	}); err != nil {
-		glog.Fatalf(err.Error())
+		glog.Exitf(err.Error())
 	}
 	exists, err := configExists(params.Store)
 	if err != nil {
-		glog.Fatalf("cannot use storage layer: %v", err)
+		glog.Exitf("cannot use storage layer: %v", err)
 	}
 	if !exists {
 		if err = ImportConfig(params.Store, params.ServiceName, nil); err != nil {
-			glog.Fatalf("cannot import configs to service %q: %v", params.ServiceName, err)
+			glog.Exitf("cannot import configs to service %q: %v", params.ServiceName, err)
 		}
 	}
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
-		glog.Fatalf("cannot load config: %v", err)
+		glog.Exitf("cannot load config: %v", err)
 	}
 	if err = s.checkConfigIntegrity(cfg); err != nil {
-		glog.Fatalf("invalid config: %v", err)
+		glog.Exitf("invalid config: %v", err)
 	}
 	secrets, err := s.loadSecrets(nil)
 	if err != nil {
-		glog.Fatalf("cannot load client secrets: %v", err)
+		glog.Exitf("cannot load client secrets: %v", err)
 	}
 
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, s.httpClient)
@@ -367,23 +377,23 @@ func New(r *mux.Router, params *Options) *Service {
 }
 
 func getClientID(r *http.Request) string {
-	cid := httputil.QueryParam(r, "client_id")
+	cid := httputils.QueryParam(r, "client_id")
 	if len(cid) > 0 {
 		return cid
 	}
-	return httputil.QueryParam(r, "clientId")
+	return httputils.QueryParam(r, "clientId")
 }
 
 func getClientSecret(r *http.Request) string {
-	cs := httputil.QueryParam(r, "client_secret")
+	cs := httputils.QueryParam(r, "client_secret")
 	if len(cs) > 0 {
 		return cs
 	}
-	return httputil.QueryParam(r, "clientSecret")
+	return httputils.QueryParam(r, "clientSecret")
 }
 
 func getNonce(r *http.Request) (string, error) {
-	n := httputil.QueryParam(r, "nonce")
+	n := httputils.QueryParam(r, "nonce")
 	if len(n) > 0 {
 		return n, nil
 	}
@@ -393,7 +403,7 @@ func getNonce(r *http.Request) (string, error) {
 }
 
 func extractState(r *http.Request) (string, error) {
-	n := httputil.QueryParam(r, "state")
+	n := httputils.QueryParam(r, "state")
 	if len(n) > 0 {
 		return n, nil
 	}
@@ -404,7 +414,7 @@ func extractState(r *http.Request) (string, error) {
 
 func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
-		httputil.WriteCorsHeaders(w)
+		httputils.WriteCorsHeaders(w)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -525,19 +535,18 @@ type loginIn struct {
 	scope     []string
 }
 
-func (s *Service) login(in loginIn, w http.ResponseWriter, r *http.Request, cfg *pb.IcConfig) {
+// login returns redirect and status error.
+func (s *Service) login(in loginIn, cfg *pb.IcConfig) (string, error) {
 	var err error
 
 	idp, ok := cfg.IdentityProviders[in.idpName]
 	if !ok {
-		httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("login service %q not found", in.idpName))
-		return
+		return "", status.Errorf(codes.NotFound, "login service %q not found", in.idpName)
 	}
 
 	idpc, state, err := s.idpAuthorize(in, idp, cfg, nil)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
-		return
+		return "", status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	resType := idp.ResponseType
 	if len(resType) == 0 {
@@ -554,16 +563,16 @@ func (s *Service) login(in loginIn, w http.ResponseWriter, r *http.Request, cfg 
 	url := idpc.AuthCodeURL(state, options...)
 	url = strings.Replace(url, "${CLIENT_ID}", idp.ClientId, -1)
 	url = strings.Replace(url, "${REDIRECT_URI}", buildRedirectNonOIDC(idp, idpc, state), -1)
-	httputil.WriteRedirect(w, r, url)
+	return url, nil
 }
 
 func getStateRedirect(r *http.Request) (string, error) {
-	redirect, err := url.Parse(httputil.QueryParam(r, "redirect_uri"))
+	redirect, err := url.Parse(httputils.QueryParam(r, "redirect_uri"))
 	if err != nil {
 		return "", fmt.Errorf("redirect_uri missing or invalid: %v", err)
 	}
 	q := redirect.Query()
-	if clientState := httputil.QueryParam(r, "state"); len(clientState) > 0 {
+	if clientState := httputils.QueryParam(r, "state"); len(clientState) > 0 {
 		q.Set("state", clientState)
 	}
 	redirect.RawQuery = q.Encode()
@@ -585,49 +594,47 @@ func (s *Service) getAndValidateStateRedirect(r *http.Request, cfg *pb.IcConfig)
 	return redirect, nil
 }
 
-func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, clientID, state, challenge string, tx storage.Tx, cfg *pb.IcConfig, secrets *pb.IcSecrets, r *http.Request, w http.ResponseWriter) {
+// finishLogin returns html page or redirect url and status error
+func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, clientID, state, challenge string, tx storage.Tx, cfg *pb.IcConfig, secrets *pb.IcSecrets, r *http.Request) (*htmlPageOrRedirectURL, error) {
 	realm := getRealm(r)
-	lookup, err := s.accountLookup(realm, id.Subject, tx)
+	lookup, err := s.scim.LoadAccountLookup(realm, id.Subject, tx)
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
-		return
+		return nil, status.Errorf(codes.Unavailable, "%v", err)
 	}
 	var subject string
 	if isLookupActive(lookup) {
 		subject = lookup.Subject
-		acct, _, err := s.loadAccount(subject, realm, tx)
+		acct, _, err := s.scim.LoadAccount(subject, realm, true, tx)
 		if err != nil {
-			httputil.WriteError(w, http.StatusServiceUnavailable, err)
-			return
+			return nil, status.Errorf(codes.Unavailable, "%v", err)
+		}
+		if acct.State == storage.StateDisabled {
+			// Reject using a DISABLED account.
+			return nil, status.Errorf(codes.PermissionDenied, "this account has been disabled, please contact the system administrator")
 		}
 		visas, err := s.accountLinkToVisas(r.Context(), acct, id.Subject, provider, cfg, secrets)
 		if err != nil {
-			httputil.WriteError(w, http.StatusServiceUnavailable, err)
-			return
+			return nil, status.Errorf(codes.Unavailable, "%v", err)
 		}
 		if !visasAreEqual(visas, id.VisaJWTs) {
 			// Refresh the claims in the storage layer.
 			if err := s.populateAccountVisas(r.Context(), acct, id, provider); err != nil {
-				httputil.WriteError(w, http.StatusServiceUnavailable, err)
-				return
+				return nil, status.Errorf(codes.Unavailable, "%v", err)
 			}
-			err := s.saveAccount(nil, acct, "REFRESH claims "+id.Subject, r, id.Subject, tx)
+			err := s.scim.SaveAccount(nil, acct, "REFRESH claims "+id.Subject, r, id.Subject, tx)
 			if err != nil {
-				httputil.WriteError(w, http.StatusServiceUnavailable, err)
-				return
+				return nil, status.Errorf(codes.Unavailable, "%v", err)
 			}
 		}
 	} else {
 		// Create an account for the identity automatically.
 		acct, err := s.newAccountWithLink(r.Context(), id, provider, cfg)
 		if err != nil {
-			httputil.WriteError(w, http.StatusServiceUnavailable, err)
-			return
+			return nil, status.Errorf(codes.Unavailable, "%v", err)
 		}
 
 		if err = s.saveNewLinkedAccount(acct, id, "New Account", r, tx, lookup); err != nil {
-			httputil.WriteError(w, http.StatusServiceUnavailable, err)
-			return
+			return nil, status.Errorf(codes.Unavailable, "%v", err)
 		}
 		subject = acct.Properties.Subject
 	}
@@ -650,15 +657,19 @@ func (s *Service) finishLogin(id *ga4gh.Identity, provider, redirect, scope, cli
 
 	err = s.store.WriteTx(storage.AuthTokenStateDatatype, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, auth, nil, tx)
 	if err != nil {
-		httputil.WriteError(w, http.StatusInternalServerError, err)
-		return
+		return nil, status.Errorf(codes.Internal, "%v", err)
 	}
 
 	if s.useHydra {
-		hydra.SendLoginSuccess(w, r, s.httpClient, s.hydraAdminURL, challenge, subject, stateID, nil)
-	} else {
-		s.sendInformationReleasePage(id, stateID, extractClientName(cfg, clientID), scope, realm, cfg, w)
+		// send login success to hydra and redirect to hydra, hydra will come back to /identity/consent for information release.
+		redirect, err := hydra.LoginSuccess(r, s.httpClient, s.hydraAdminURL, challenge, subject, stateID, nil)
+		if err != nil {
+			return nil, status.Errorf(codes.Unavailable, "%v", err)
+		}
+		return &htmlPageOrRedirectURL{redirect: redirect}, nil
 	}
+
+	return nil, status.Errorf(codes.Unimplemented, "Unimplemented oidc provider")
 }
 
 func extractClientName(cfg *pb.IcConfig, clientID string) string {
@@ -677,7 +688,7 @@ func extractClientName(cfg *pb.IcConfig, clientID string) string {
 	return clientName
 }
 
-func (s *Service) sendInformationReleasePage(id *ga4gh.Identity, stateID, clientName, scope, realm string, cfg *pb.IcConfig, w http.ResponseWriter) {
+func (s *Service) informationReleasePage(id *ga4gh.Identity, stateID, clientName, scope, realm string, cfg *pb.IcConfig) string {
 	var info []string
 	scopes := strings.Split(scope, " ")
 
@@ -724,7 +735,7 @@ func (s *Service) sendInformationReleasePage(id *ga4gh.Identity, stateID, client
 	page = strings.ReplaceAll(page, "${STATE}", stateID)
 	page = strings.ReplaceAll(page, "${PATH}", strings.ReplaceAll(acceptInformationReleasePath, "{realm}", realm))
 
-	httputil.WriteHTMLResp(w, page)
+	return page
 }
 
 //////////////////////////////////////////////////////////////////
@@ -775,127 +786,12 @@ func (s *Service) handlerSetup(tx storage.Tx, r *http.Request, scope string, ite
 	if err != nil {
 		return nil, nil, nil, http.StatusServiceUnavailable, status.Errorf(codes.Unavailable, "%v", err)
 	}
-	id, st, err := s.getIdentity(r, scope, getRealm(r), cfg, secrets, tx)
+	c, err := auth.FromContext(r.Context())
 	if err != nil {
-		return nil, nil, nil, st, status.Errorf(httputil.RPCCode(st), "%v", err)
+		return nil, nil, nil, httputils.FromError(err), err
 	}
 
-	return cfg, secrets, id, st, status.Errorf(httputil.RPCCode(st), "%v", err)
-}
-
-func (s *Service) getIdentity(r *http.Request, scope, realm string, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	tok := getBearerToken(r)
-	if len(tok) == 0 {
-		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token not found")
-	}
-	return s.tokenToIdentity(tok, r, scope, realm, cfg, secrets, tx)
-}
-
-func (s *Service) tokenRealm(r *http.Request) (string, int, error) {
-	tok := getBearerToken(r)
-	if len(tok) == 0 {
-		return "", http.StatusUnauthorized, fmt.Errorf("bearer token not found")
-	}
-	id, err := ga4gh.ConvertTokenToIdentityUnsafe(tok)
-	if err != nil {
-		return "", http.StatusUnauthorized, fmt.Errorf("inspecting token: %v", err)
-	}
-	realm := id.Realm
-	if len(realm) == 0 {
-		return storage.DefaultRealm, http.StatusOK, nil
-	}
-	return realm, http.StatusOK, nil
-}
-
-func (s *Service) getTokenIdentity(ctx context.Context, tok, scope, clientID string, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	id, err := ga4gh.ConvertTokenToIdentityUnsafe(tok)
-	if err != nil {
-		return nil, http.StatusUnauthorized, fmt.Errorf("inspecting token: %v", err)
-	}
-
-	v, err := ga4gh.GetOIDCTokenVerifier(ctx, clientID, id.Issuer)
-	if err != nil {
-		return nil, http.StatusServiceUnavailable, fmt.Errorf("GetOIDCTokenVerifier failed: %v", err)
-	}
-
-	if _, err = v.Verify(ctx, tok); err != nil {
-		return nil, http.StatusServiceUnavailable, fmt.Errorf("token unauthorized: %v", err)
-	}
-
-	if len(id.Scope) == 0 && len(id.Scp) > 0 {
-		// Hydra populates "scp" instead of "scope", so populate "scope" accordingly.
-		id.Scope = strutil.JoinNonEmpty(id.Scp, " ")
-	}
-
-	// TODO: add more checks here as appropriate.
-	iss := s.getIssuerString()
-	if err = id.Valid(); err != nil {
-		return nil, http.StatusUnauthorized, err
-	} else if id.Issuer != iss {
-		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized for issuer %q", id.Issuer)
-	} else if len(scope) > 0 && !hasScopes(scope, id.Scope, matchFullScope) {
-		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized for scope %q", scope)
-	} else if !ga4gh.IsAudience(id, clientID, iss) {
-		return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized party")
-	}
-	return id, http.StatusOK, nil
-}
-
-func (s *Service) getTokenAccountIdentity(ctx context.Context, token *ga4gh.Identity, realm string, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	acct, status, err := s.loadAccount(token.Subject, realm, tx)
-	if err != nil {
-		if status == http.StatusNotFound {
-			return nil, http.StatusUnauthorized, fmt.Errorf("bearer token unauthorized account")
-		}
-		return nil, http.StatusServiceUnavailable, err
-	}
-	id, err := s.accountToIdentity(ctx, acct, cfg, secrets)
-	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
-	}
-
-	id.ID = token.ID
-	id.Scope = token.Scope
-	id.Expiry = token.Expiry
-	id.IdentityProvider = token.IdentityProvider
-	id.Nonce = token.Nonce
-	return id, http.StatusOK, nil
-}
-
-func (s *Service) requestTokenToIdentity(tok, scope string, r *http.Request, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	realm := getRealm(r)
-	cfg, err := s.loadConfig(tx, realm)
-	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
-	}
-	secrets, err := s.loadSecrets(tx)
-	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
-	}
-	return s.tokenToIdentity(tok, r, scope, realm, cfg, secrets, tx)
-}
-
-func (s *Service) tokenToIdentity(tok string, r *http.Request, scope, realm string, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	token, status, err := s.getTokenIdentity(r.Context(), tok, scope, getClientID(r), tx)
-	if err != nil {
-		return token, status, err
-	}
-	return s.getTokenAccountIdentity(r.Context(), token, realm, cfg, secrets, tx)
-}
-
-func (s *Service) refreshTokenToIdentity(tok string, r *http.Request, cfg *pb.IcConfig, secrets *pb.IcSecrets, tx storage.Tx) (*ga4gh.Identity, int, error) {
-	id, status, err := s.getTokenIdentity(r.Context(), tok, "", getClientID(r), tx)
-	if err != nil {
-		return nil, status, fmt.Errorf("inspecting token: %v", err)
-	}
-	token := pb.TokenMetadata{}
-	if err := s.store.ReadTx(storage.TokensDatatype, getRealm(r), id.Subject, id.ID, storage.LatestRev, &token, tx); err != nil {
-		if storage.ErrNotFound(err) {
-			return nil, http.StatusBadRequest, fmt.Errorf("the incoming refresh token had already been revoked or is invalid")
-		}
-		return nil, http.StatusServiceUnavailable, err
-	}
-	return s.getTokenAccountIdentity(r.Context(), id, getRealm(r), cfg, secrets, tx)
+	return cfg, secrets, c.ID, st, status.Errorf(httputils.RPCCode(st), "%v", err)
 }
 
 func (s *Service) accountToIdentity(ctx context.Context, acct *cpb.Account, cfg *pb.IcConfig, secrets *pb.IcSecrets) (*ga4gh.Identity, error) {
@@ -951,7 +847,7 @@ func (s *Service) loginTokenToIdentity(acTok, idTok string, idp *cpb.IdentityPro
 		if !ga4gh.HasUserinfoClaims(tid) {
 			return tid, http.StatusOK, nil
 		}
-		id, err := translator.FetchUserinfoClaims(r.Context(), tid, acTok, t)
+		id, err := translator.FetchUserinfoClaims(r.Context(), s.httpClient, tid, acTok, t)
 		if err != nil {
 			return nil, http.StatusUnauthorized, fmt.Errorf("fetching user info from issuer %q: %v", idp.Issuer, err)
 		}
@@ -1112,16 +1008,8 @@ func (s *Service) populateLinkVisas(ctx context.Context, id *ga4gh.Identity, lin
 	return nil
 }
 
-func getBearerToken(r *http.Request) string {
-	parts := strings.SplitN(r.Header.Get("Authorization"), " ", 2)
-	if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-		return parts[1]
-	}
-	return ""
-}
-
 func getScope(r *http.Request) (string, error) {
-	s := httputil.QueryParam(r, "scope")
+	s := httputils.QueryParam(r, "scope")
 	if !hasScopes(scopeOpenID, s, matchFullScope) {
 		return "", fmt.Errorf("scope must include 'openid'")
 	}
@@ -1181,22 +1069,6 @@ func scopedIdentity(identity *ga4gh.Identity, scope, iss, subject, nonce string,
 	}
 
 	return claims
-}
-
-type authToken struct {
-	ID       string `json:"jti,omitempty"`
-	IssuedAt int64  `json:"iat,omitempty"`
-	Expiry   int64  `json:"exp,omitempty"`
-}
-
-// Valid implements dgrijalva/jwt-go Claims interface. This will be called when using
-// dgrijalva/jwt-go parse. This validates only the exp timestamp.
-func (auth *authToken) Valid() error {
-	now := time.Now().Unix()
-	if now > auth.Expiry {
-		return fmt.Errorf("token is expired")
-	}
-	return nil
 }
 
 func (s *Service) visaIssuerJKU() string {
@@ -1452,7 +1324,7 @@ func (s *Service) createIssuerTranslator(ctx context.Context, cfgIdp *cpb.Identi
 func (s *Service) checkConfigIntegrity(cfg *pb.IcConfig) error {
 	// Check Id Providers.
 	for name, idp := range cfg.IdentityProviders {
-		if err := httputil.CheckName("name", name, nil); err != nil {
+		if err := httputils.CheckName("name", name, nil); err != nil {
 			return fmt.Errorf("invalid idProvider name %q: %v", name, err)
 		}
 		if len(idp.Issuer) == 0 {
@@ -1607,31 +1479,8 @@ func makeLoginHint(provider, subject string) string {
 	return provider + ":" + subject
 }
 
-func (s *Service) loadAccount(name, realm string, tx storage.Tx) (*cpb.Account, int, error) {
-	acct := &cpb.Account{}
-	status, err := s.singleRealmReadTx(storage.AccountDatatype, realm, storage.DefaultUser, name, storage.LatestRev, acct, tx)
-	if err != nil {
-		return nil, status, err
-	}
-	if acct.State != storage.StateActive {
-		return nil, http.StatusNotFound, fmt.Errorf("not found")
-	}
-	return acct, http.StatusOK, nil
-}
-
-func (s *Service) lookupAccount(fedAcct, realm string, tx storage.Tx) (*cpb.Account, int, error) {
-	lookup, err := s.accountLookup(realm, fedAcct, tx)
-	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
-	}
-	if lookup == nil {
-		return nil, http.StatusNotFound, fmt.Errorf("subject not found")
-	}
-	return s.loadAccount(lookup.Subject, realm, tx)
-}
-
 func (s *Service) saveNewLinkedAccount(newAcct *cpb.Account, id *ga4gh.Identity, desc string, r *http.Request, tx storage.Tx, lookup *cpb.AccountLookup) error {
-	if err := s.saveAccount(nil, newAcct, desc, r, id.Subject, tx); err != nil {
+	if err := s.scim.SaveAccount(nil, newAcct, desc, r, id.Subject, tx); err != nil {
 		return fmt.Errorf("service dependencies not available; try again later")
 	}
 	rev := int64(0)
@@ -1643,7 +1492,7 @@ func (s *Service) saveNewLinkedAccount(newAcct *cpb.Account, id *ga4gh.Identity,
 		Revision: rev,
 		State:    storage.StateActive,
 	}
-	if err := s.saveAccountLookup(lookup, getRealm(r), id.Subject, r, id, tx); err != nil {
+	if err := s.scim.SaveAccountLookup(lookup, getRealm(r), id.Subject, r, id, tx); err != nil {
 		return fmt.Errorf("service dependencies not available; try again later")
 	}
 	return nil
@@ -1743,53 +1592,6 @@ func (s *Service) saveSecrets(secrets *pb.IcSecrets, desc, resType string, r *ht
 	return nil
 }
 
-func (s *Service) accountLookup(realm, acct string, tx storage.Tx) (*cpb.AccountLookup, error) {
-	lookup := &cpb.AccountLookup{}
-	status, err := s.singleRealmReadTx(storage.AccountLookupDatatype, realm, storage.DefaultUser, acct, storage.LatestRev, lookup, tx)
-	if err != nil && status == http.StatusNotFound {
-		return nil, nil
-	}
-	return lookup, err
-}
-
-func (s *Service) saveAccountLookup(lookup *cpb.AccountLookup, realm, fedAcct string, r *http.Request, id *ga4gh.Identity, tx storage.Tx) error {
-	lookup.Revision++
-	lookup.CommitTime = float64(time.Now().UnixNano()) / 1e9
-	if err := s.store.WriteTx(storage.AccountLookupDatatype, realm, storage.DefaultUser, fedAcct, lookup.Revision, lookup, storage.MakeConfigHistory("link account", storage.AccountLookupDatatype, lookup.Revision, lookup.CommitTime, r, id.Subject, nil, lookup), tx); err != nil {
-		return fmt.Errorf("service storage unavailable: %v, retry later", err)
-	}
-	return nil
-}
-
-func (s *Service) removeAccountLookup(rev int64, realm, fedAcct string, r *http.Request, id *ga4gh.Identity, tx storage.Tx) error {
-	lookup := &cpb.AccountLookup{
-		Subject:  "",
-		Revision: rev,
-		State:    "DELETED",
-	}
-	if err := s.saveAccountLookup(lookup, realm, fedAcct, r, id, tx); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Service) saveAccount(oldAcct, newAcct *cpb.Account, desc string, r *http.Request, subject string, tx storage.Tx) error {
-	newAcct.Revision++
-	newAcct.Properties.Modified = float64(time.Now().UnixNano()) / 1e9
-	if newAcct.Properties.Created == 0 {
-		if oldAcct != nil && oldAcct.Properties.Created != 0 {
-			newAcct.Properties.Created = oldAcct.Properties.Created
-		} else {
-			newAcct.Properties.Created = newAcct.Properties.Modified
-		}
-	}
-
-	if err := s.store.WriteTx(storage.AccountDatatype, getRealm(r), storage.DefaultUser, newAcct.Properties.Subject, newAcct.Revision, newAcct, storage.MakeConfigHistory(desc, storage.AccountDatatype, newAcct.Revision, newAcct.Properties.Modified, r, subject, oldAcct, newAcct), tx); err != nil {
-		return fmt.Errorf("service storage unavailable: %v, retry later", err)
-	}
-	return nil
-}
-
 func (s *Service) singleRealmReadTx(datatype, realm, user, id string, rev int64, item proto.Message, tx storage.Tx) (int, error) {
 	err := s.store.ReadTx(datatype, realm, user, id, rev, item, tx)
 	if err == nil {
@@ -1839,12 +1641,17 @@ type damArgs struct {
 }
 
 // ImportConfig ingests bootstrap configuration files to the IC's storage sytem.
-func ImportConfig(store storage.Store, service string, cfgVars map[string]string) error {
+func ImportConfig(store storage.Store, service string, cfgVars map[string]string) (ferr error) {
 	tx, err := store.Tx(true)
 	if err != nil {
 		return err
 	}
-	defer tx.Finish()
+	defer func() {
+		err := tx.Finish()
+		if ferr == nil {
+			ferr = err
+		}
+	}()
 
 	glog.Infof("import IC config into data store")
 	history := &cpb.HistoryEntry{
@@ -1914,6 +1721,15 @@ func registerHandlers(r *mux.Router, s *Service) {
 	r.HandleFunc(hydraLoginPath, auth.MustWithAuth(s.HydraLogin, checker, auth.RequireNone)).Methods(http.MethodGet)
 	r.HandleFunc(hydraConsentPath, auth.MustWithAuth(s.HydraConsent, checker, auth.RequireNone)).Methods(http.MethodGet)
 
+	// CLI login endpoints
+	cliAuthURL := urlPathJoin(s.getDomainURL(), cliAuthPath)
+	hydraAuthURL := urlPathJoin(s.hydraPublicURL, oauthAuthPath)
+	hydraTokenURL := urlPathJoin(s.hydraPublicURL, oauthTokenPath)
+	cliAcceptURL := urlPathJoin(s.getDomainURL(), cliAcceptPath)
+	r.HandleFunc(cliRegisterPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), cli.RegisterFactory(s.GetStore(), cliRegisterPath, s.encryption, cliAuthURL, s.hydraPublicURL, hydraAuthURL, hydraTokenURL, cliAcceptURL, http.DefaultClient)), checker, auth.RequireClientIDAndSecret))
+	r.HandleFunc(cliAuthPath, auth.MustWithAuth(cli.NewAuthHandler(s.GetStore()).Handle, checker, auth.RequireNone)).Methods(http.MethodGet)
+	r.HandleFunc(cliAcceptPath, auth.MustWithAuth(cli.NewAcceptHandler(s.store, s.encryption, "/identity").Handle, checker, auth.RequireNone)).Methods(http.MethodGet)
+
 	// info endpoints
 	r.HandleFunc(infoPath, auth.MustWithAuth(s.Status, checker, auth.RequireNone)).Methods(http.MethodGet)
 	r.HandleFunc(jwksPath, auth.MustWithAuth(s.JWKS, checker, auth.RequireNone)).Methods(http.MethodGet)
@@ -1937,22 +1753,43 @@ func registerHandlers(r *mux.Router, s *Service) {
 	r.HandleFunc(clientPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.clientFactory()), checker, auth.RequireClientIDAndSecret))
 
 	// scim service endpoints
-	r.HandleFunc(scimMePath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.scimMeFactory()), checker, auth.RequireUserToken))
-	r.HandleFunc(scimUserPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.scimUserFactory()), checker, auth.RequireUserToken))
-	r.HandleFunc(scimUsersPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.scimUsersFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(scimGroupPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), scim.GroupFactory(s.GetStore(), scimGroupPath)), checker, auth.RequireAdminToken))
+	r.HandleFunc(scimGroupsPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), scim.GroupsFactory(s.GetStore(), scimGroupsPath)), checker, auth.RequireAdminToken))
+	r.HandleFunc(scimMePath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), scim.MeFactory(s.GetStore(), s.getDomainURL(), scimMePath)), checker, auth.RequireAccountAdminUserToken))
+	r.HandleFunc(scimUserPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), scim.UserFactory(s.GetStore(), s.getDomainURL(), scimUserPath)), checker, auth.RequireAccountAdminUserToken))
+	r.HandleFunc(scimUsersPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), scim.UsersFactory(s.GetStore(), s.getDomainURL(), scimUsersPath)), checker, auth.RequireAdminToken))
 
 	// token service endpoints
-	tokens := &stubTokens{token: fakeToken}
-	r.HandleFunc(tokensPath, auth.MustWithAuth(NewTokensHandler(tokens).ListTokens, checker, auth.RequireUserToken)).Methods(http.MethodGet)
-	r.HandleFunc(tokenPath, auth.MustWithAuth(NewTokensHandler(tokens).GetToken, checker, auth.RequireUserToken)).Methods(http.MethodGet)
-	r.HandleFunc(tokenPath, auth.MustWithAuth(NewTokensHandler(tokens).DeleteToken, checker, auth.RequireUserToken)).Methods(http.MethodDelete)
+	tokens := &tokensapi.StubTokens{Token: tokensapi.FakeToken}
+	r.HandleFunc(tokensPath, auth.MustWithAuth(tokensapi.NewTokensHandler(tokens).ListTokens, checker, auth.RequireUserToken)).Methods(http.MethodGet)
+	r.HandleFunc(tokenPath, auth.MustWithAuth(tokensapi.NewTokensHandler(tokens).GetToken, checker, auth.RequireUserToken)).Methods(http.MethodGet)
+	r.HandleFunc(tokenPath, auth.MustWithAuth(tokensapi.NewTokensHandler(tokens).DeleteToken, checker, auth.RequireUserToken)).Methods(http.MethodDelete)
 
 	// consents service endpoints
-	consents := &stubConsents{consent: fakeConsent}
-	r.HandleFunc(consentsPath, auth.MustWithAuth(NewConsentsHandler(consents).ListConsents, checker, auth.RequireUserToken)).Methods(http.MethodGet)
-	r.HandleFunc(consentPath, auth.MustWithAuth(NewConsentsHandler(consents).DeleteConsent, checker, auth.RequireUserToken)).Methods(http.MethodDelete)
+	consents := &consentsapi.StubConsents{Consent: consentsapi.FakeConsent}
+	r.HandleFunc(consentsPath, auth.MustWithAuth(consentsapi.NewConsentsHandler(consents).ListConsents, checker, auth.RequireUserToken)).Methods(http.MethodGet)
+	r.HandleFunc(consentPath, auth.MustWithAuth(consentsapi.NewConsentsHandler(consents).DeleteConsent, checker, auth.RequireUserToken)).Methods(http.MethodDelete)
 
 	// legacy endpoints
 	r.HandleFunc(adminClaimsPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.adminClaimsFactory()), checker, auth.RequireAdminToken))
 	r.HandleFunc(adminTokenMetadataPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.adminTokenMetadataFactory()), checker, auth.RequireAdminToken))
+
+	// proxy hydra oauth token endpoint
+	if s.hydraPublicURLProxy != nil {
+		r.HandleFunc(oauthTokenPath, s.hydraPublicURLProxy.HydraOAuthToken).Methods(http.MethodPost)
+	}
+}
+
+func urlPathJoin(urlStr, pathStr string) string {
+	// Niether path.Join nor url.Parse()...String() does the right thing.
+	// Just append.
+	s1 := strings.HasSuffix(urlStr, "/")
+	s2 := strings.HasPrefix(pathStr, "/")
+	if !s1 && !s2 {
+		return urlStr + "/" + pathStr
+	}
+	if s1 && s2 {
+		return urlStr + pathStr[1:]
+	}
+	return urlStr + pathStr
 }

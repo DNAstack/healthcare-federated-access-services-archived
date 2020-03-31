@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/protobuf/ptypes" /* copybara-comment */
 	"golang.org/x/text/language" /* copybara-comment */
+	"github.com/golang/protobuf/ptypes" /* copybara-comment */
 
 	dpb "github.com/golang/protobuf/ptypes/duration" /* copybara-comment */
 	tspb "github.com/golang/protobuf/ptypes/timestamp" /* copybara-comment */
@@ -153,6 +153,16 @@ func RFC3339(ts *tspb.Timestamp) string {
 		return ""
 	}
 	return t.Format(time.RFC3339)
+}
+
+// ParseRFC3339 converts an RFC3339 string to time.Time.
+// Returns default value of time.Time if the string is invalid.
+func ParseRFC3339(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // TimestampProto returns the timestamp proto for a given time.

@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"flag"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -28,7 +29,8 @@ import (
 	"cloud.google.com/go/logging" /* copybara-comment: logging */
 	"github.com/gorilla/mux" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/dsstore" /* copybara-comment: dsstore */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydraproxy" /* copybara-comment: hydraproxy */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ic" /* copybara-comment: ic */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/kms/gcpcrypt" /* copybara-comment: gcpcrypt */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/osenv" /* copybara-comment: osenv */
@@ -57,6 +59,10 @@ var (
 
 	port = osenv.VarWithDefault("IC_PORT", "8080")
 
+	// skipInformationReleasePage is useful if IC and DAM provided by same org.
+	// Use env var "SKIP_INFORMATION_RELEASE_PAGE" = true to set.
+	skipInformationReleasePage = os.Getenv("SKIP_INFORMATION_RELEASE_PAGE") == "true"
+
 	useHydra = os.Getenv("USE_HYDRA") != ""
 	// hydraAdminAddr is the address for the Hydra admin endpoint.
 	hydraAdminAddr = ""
@@ -80,7 +86,7 @@ func main() {
 	var store storage.Store
 	switch storageType {
 	case "datastore":
-		store = dsstore.NewDatastoreStorage(ctx, project, srvName, cfgPath)
+		store = dsstore.NewStore(ctx, project, srvName, cfgPath)
 	case "memory":
 		store = storage.NewMemoryStorage(srvName, cfgPath)
 		// Import and resolve template variables, if any.
@@ -108,26 +114,35 @@ func main() {
 		glog.Warningf("StackdriverLogging.Client.OnError: %v", err)
 	}
 
+	var hyproxy *hydraproxy.Service
 	if useHydra {
 		hydraAdminAddr = osenv.MustVar("HYDRA_ADMIN_URL")
 		hydraPublicAddr = osenv.MustVar("HYDRA_PUBLIC_URL")
+		hydraPublicAddrInternal := osenv.MustVar("HYDRA_PUBLIC_URL_INTERNAL")
+
+		hyproxy, err = hydraproxy.New(http.DefaultClient, hydraAdminAddr, hydraPublicAddrInternal, store)
+		if err != nil {
+			glog.Exitf("hydraproxy.New failed: %v", err)
+		}
 	}
 
 	r := mux.NewRouter()
 
 	s := ic.New(r, &ic.Options{
-		Domain:         srvAddr,
-		ServiceName:    srvName,
-		AccountDomain:  acctDomain,
-		Store:          store,
-		Encryption:     gcpkms,
-		Logger:         logger,
-		UseHydra:       useHydra,
-		HydraAdminURL:  hydraAdminAddr,
-		HydraPublicURL: hydraPublicAddr,
+		Domain:                     srvAddr,
+		ServiceName:                srvName,
+		AccountDomain:              acctDomain,
+		Store:                      store,
+		Encryption:                 gcpkms,
+		Logger:                     logger,
+		SkipInformationReleasePage: skipInformationReleasePage,
+		UseHydra:                   useHydra,
+		HydraAdminURL:              hydraAdminAddr,
+		HydraPublicURL:             hydraPublicAddr,
+		HydraPublicProxy:           hyproxy,
 	})
 
-	r.HandleFunc("/liveness_check", httputil.LivenessCheckHandler)
+	r.HandleFunc("/liveness_check", httputils.LivenessCheckHandler)
 
 	srv := server.New("ic", port, s.Handler)
 	srv.ServeUnblock()

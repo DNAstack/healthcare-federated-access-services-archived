@@ -46,7 +46,6 @@
     },
     "elixir": {
       "issuer": "https://login.elixir-czech.org/oidc/",
-      "translateUsing": "elixir_translator",
       "ui": {
         "label": "elixir passport issuer",
         "description": "elixir passport issuer"
@@ -782,7 +781,7 @@
         "http://example.com"
       ],
       "scope": "openid offline ga4gh_passport_v1 profile email identities account_admin sync",
-      "grantTypes": ["authorization_code"],
+      "grantTypes": ["authorization_code", "refresh_token"],
       "responseTypes": ["token", "code", "id_token"]
     },
     "test_client2": {

@@ -20,10 +20,11 @@ import (
 
 	"google.golang.org/grpc/codes" /* copybara-comment */
 	"google.golang.org/grpc/status" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/check" /* copybara-comment: check */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/strutil" /* copybara-comment: strutil */
@@ -80,13 +81,13 @@ func (c *clientService) Save(tx storage.Tx, desc, typeName string, r *http.Reque
 
 func (c *clientService) CheckIntegrity(r *http.Request, m *cpb.ConfigModification) *status.Status {
 	if err := check.CheckReadOnly(getRealm(r), c.cfg.Options.ReadOnlyMasterRealm, c.cfg.Options.WhitelistedRealms); err != nil {
-		return httputil.NewStatus(codes.InvalidArgument, err.Error())
+		return httputils.NewStatus(codes.InvalidArgument, err.Error())
 	}
 	if err := configRevision(toICModification(m), c.cfg); err != nil {
-		return httputil.NewStatus(codes.InvalidArgument, err.Error())
+		return httputils.NewStatus(codes.InvalidArgument, err.Error())
 	}
 	if err := c.s.checkConfigIntegrity(c.cfg); err != nil {
-		return httputil.NewStatus(codes.InvalidArgument, err.Error())
+		return httputils.NewStatus(codes.InvalidArgument, err.Error())
 	}
 	return nil
 }
@@ -112,16 +113,14 @@ func (c *clientService) CheckIntegrity(r *http.Request, m *cpb.ConfigModificatio
 //   Return nothing
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) configClientFactory() *handlerfactory.HandlerFactory {
+func (s *Service) configClientFactory() *handlerfactory.Options {
 	c := &clientService{s: s}
 
-	return &handlerfactory.HandlerFactory{
+	return &handlerfactory.Options{
 		TypeName:            "configClient",
 		PathPrefix:          configClientsPath,
 		HasNamedIdentifiers: true,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
-			return oathclients.NewAdminClientHandler(w, r, c, c.s.useHydra, c.s.httpClient, c.s.hydraAdminURL)
-		},
+		Service:             oathclients.NewAdminClientHandler(c, c.s.useHydra, c.s.httpClient, c.s.hydraAdminURL),
 	}
 }
 
@@ -140,40 +139,36 @@ func toICModification(m *cpb.ConfigModification) *pb.ConfigModification {
 //   Return empty response on success
 //////////////////////////////////////////////////////////////////
 
-func (s *Service) syncClientsFactory() *handlerfactory.HandlerFactory {
-	return &handlerfactory.HandlerFactory{
+func (s *Service) syncClientsFactory() *handlerfactory.Options {
+	return &handlerfactory.Options{
 		TypeName:            "configClientsSync",
 		PathPrefix:          syncClientsPath,
 		HasNamedIdentifiers: false,
-		NewHandler: func(w http.ResponseWriter, r *http.Request) handlerfactory.HandlerInterface {
-			return NewSyncClientsHandler(s, w, r)
-		},
+		Service:             NewSyncClientsHandler(s),
 	}
 }
 
 type syncClientsHandler struct {
 	s   *Service
-	w   http.ResponseWriter
-	r   *http.Request
 	cfg *pb.IcConfig
 	tx  storage.Tx
 }
 
 // NewSyncClientsHandler implements the sync Hydra clients RPC method.
-func NewSyncClientsHandler(s *Service, w http.ResponseWriter, r *http.Request) *syncClientsHandler {
-	return &syncClientsHandler{
-		s: s,
-		w: w,
-		r: r,
-	}
+func NewSyncClientsHandler(s *Service) *syncClientsHandler {
+	return &syncClientsHandler{s: s}
 }
-func (h *syncClientsHandler) Setup(tx storage.Tx) (int, error) {
-	cfg, st, err := h.s.handlerSetupNoAuth(tx, h.r, nil)
+func (h *syncClientsHandler) Setup(r *http.Request, tx storage.Tx) (int, error) {
+	cfg, st, err := h.s.handlerSetupNoAuth(tx, r, nil)
 	if err != nil {
 		return st, err
 	}
 
-	cliID := getClientID(h.r)
+	if getRealm(r) != storage.DefaultRealm {
+		return http.StatusForbidden, status.Errorf(codes.PermissionDenied, "client sync only allow on master realm")
+	}
+
+	cliID := getClientID(r)
 	var scope string
 	for _, c := range cfg.Clients {
 		if c.ClientId == cliID {
@@ -190,60 +185,49 @@ func (h *syncClientsHandler) Setup(tx storage.Tx) (int, error) {
 	h.tx = tx
 	return http.StatusOK, nil
 }
-func (h *syncClientsHandler) LookupItem(name string, vars map[string]string) bool {
+func (h *syncClientsHandler) LookupItem(r *http.Request, name string, vars map[string]string) bool {
 	// Allow POST to proceed by returning false, otherwise mark it as existing.
-	return h.r.Method != http.MethodPost
+	return r.Method != http.MethodPost
 }
-func (h *syncClientsHandler) NormalizeInput(name string, vars map[string]string) error {
+func (h *syncClientsHandler) NormalizeInput(r *http.Request, name string, vars map[string]string) error {
 	return nil
 }
-func (h *syncClientsHandler) Get(name string) error {
+func (h *syncClientsHandler) Get(r *http.Request, name string) (proto.Message, error) {
 	secrets, err := h.s.loadSecrets(h.tx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	state, err := oathclients.SyncState(h.s.httpClient, h.s.hydraAdminURL, h.cfg.Clients, secrets.ClientSecrets)
 	if err != nil {
-		state = &cpb.ClientState{
-			Status: httputil.NewStatus(codes.Aborted, fmt.Sprintf("getting client sync state failed: %v", err)).Proto(),
-		}
-		httputil.WriteProtoResp(h.w, state)
-		return err
+		return nil, status.Errorf(codes.Aborted, "getting client sync state failed: %v", err)
 	}
-
-	httputil.WriteProtoResp(h.w, state)
-	return nil
+	return state, nil
 }
-func (h *syncClientsHandler) Post(name string) error {
+func (h *syncClientsHandler) Post(r *http.Request, name string) (proto.Message, error) {
 	secrets, err := h.s.loadSecrets(h.tx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	state, err := h.s.syncToHydra(h.cfg.Clients, secrets.ClientSecrets, h.s.hydraSyncFreq, h.tx)
 	if err != nil {
-		state = &cpb.ClientState{
-			Status: httputil.NewStatus(codes.Aborted, fmt.Sprintf("sync clients did not complete: %v", err)).Proto(),
-		}
-		httputil.WriteProtoResp(h.w, state)
-		return err
+		return nil, status.Errorf(codes.Aborted, "sync clients did not complete: %v", err)
 	}
-	httputil.WriteProtoResp(h.w, state)
+	return state, nil
+}
+func (h *syncClientsHandler) Put(r *http.Request, name string) (proto.Message, error) {
+	return nil, fmt.Errorf("PUT not allowed")
+}
+func (h *syncClientsHandler) Patch(r *http.Request, name string) (proto.Message, error) {
+	return nil, fmt.Errorf("PATCH not allowed")
+}
+func (h *syncClientsHandler) Remove(r *http.Request, name string) (proto.Message, error) {
+	return nil, fmt.Errorf("DELETE not allowed")
+}
+func (h *syncClientsHandler) CheckIntegrity(*http.Request) *status.Status {
 	return nil
 }
-func (h *syncClientsHandler) Put(name string) error {
-	return fmt.Errorf("PUT not allowed")
-}
-func (h *syncClientsHandler) Patch(name string) error {
-	return fmt.Errorf("PATCH not allowed")
-}
-func (h *syncClientsHandler) Remove(name string) error {
-	return fmt.Errorf("DELETE not allowed")
-}
-func (h *syncClientsHandler) CheckIntegrity() *status.Status {
-	return nil
-}
-func (h *syncClientsHandler) Save(tx storage.Tx, name string, vars map[string]string, desc, typeName string) error {
+func (h *syncClientsHandler) Save(r *http.Request, tx storage.Tx, name string, vars map[string]string, desc, typeName string) error {
 	return nil
 }

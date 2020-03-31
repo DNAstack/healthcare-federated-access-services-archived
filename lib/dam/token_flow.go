@@ -23,13 +23,16 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/logging" /* copybara-comment: logging */
 	"google.golang.org/grpc/codes" /* copybara-comment */
 	"google.golang.org/grpc/status" /* copybara-comment */
 	"golang.org/x/oauth2" /* copybara-comment */
 	"github.com/pborman/uuid" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter" /* copybara-comment: adapter */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/auditlog" /* copybara-comment: auditlog */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/errutil" /* copybara-comment: errutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydra" /* copybara-comment: hydra */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
@@ -63,7 +66,7 @@ func extractBearerToken(r *http.Request) (string, error) {
 }
 
 func extractAuthCode(r *http.Request) (string, error) {
-	code := httputil.QueryParam(r, "code")
+	code := httputils.QueryParam(r, "code")
 	if len(code) != 0 {
 		return code, nil
 	}
@@ -102,7 +105,7 @@ func extractTTL(maxAgeStr, ttlStr string) (time.Duration, error) {
 }
 
 func responseKeyFile(r *http.Request) bool {
-	return httputil.QueryParam(r, "response_type") == "key-file-type"
+	return httputils.QueryParam(r, "response_type") == "key-file-type"
 }
 
 func (s *Service) generateResourceToken(ctx context.Context, clientID, resourceName, viewName, role string, ttl time.Duration, useKeyFile bool, id *ga4gh.Identity, cfg *pb.DamConfig, res *pb.Resource, view *pb.View) (*pb.ResourceResults_ResourceAccess, int, error) {
@@ -151,7 +154,7 @@ func (s *Service) generateResourceToken(ctx context.Context, clientID, resourceN
 		return nil, http.StatusServiceUnavailable, err
 	}
 
-	if httputil.IsJSON(result.TokenFormat) && result.Credentials != nil {
+	if httputils.IsJSON(result.TokenFormat) && result.Credentials != nil {
 		return &pb.ResourceResults_ResourceAccess{
 			Credentials: map[string]string{"key_file": result.Credentials["json"]},
 		}, http.StatusOK, nil
@@ -238,45 +241,50 @@ type authHandlerOut struct {
 	stateID string
 }
 
-func (s *Service) auth(ctx context.Context, in authHandlerIn) (*authHandlerOut, int, error) {
+func (s *Service) auth(ctx context.Context, in authHandlerIn) (_ *authHandlerOut, ferr error) {
 	tx, err := s.store.Tx(true)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
+		return nil, status.Errorf(codes.Unavailable, err.Error())
 	}
-	defer tx.Finish()
+	defer func() {
+		err := tx.Finish()
+		if ferr == nil && err != nil {
+			ferr = status.Errorf(codes.Unavailable, err.Error())
+		}
+	}()
 
 	sec, err := s.loadSecrets(tx)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
+		return nil, status.Errorf(codes.Unavailable, err.Error())
 	}
 
 	realm := in.realm
 	if in.tokenType == pb.ResourceTokenRequestState_DATASET {
 		if len(in.resources) == 0 {
-			return nil, http.StatusBadRequest, fmt.Errorf("empty resource list")
+			return nil, status.Errorf(codes.FailedPrecondition, "empty resource list")
 		}
 		realm = in.resources[0].realm
 	}
 
 	cfg, err := s.loadConfig(tx, realm)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
+		return nil, status.Errorf(codes.Unavailable, err.Error())
 	}
 
 	broker, ok := cfg.TrustedIssuers[s.defaultBroker]
 	if !ok {
-		return nil, http.StatusBadRequest, fmt.Errorf("broker %q is not defined", s.defaultBroker)
+		return nil, status.Errorf(codes.InvalidArgument, "broker %q is not defined", s.defaultBroker)
 	}
 	clientSecret, ok := sec.GetBrokerSecrets()[broker.ClientId]
 	if !ok {
-		return nil, http.StatusBadRequest, fmt.Errorf("client secret of broker %q is not defined", s.defaultBroker)
+		return nil, status.Errorf(codes.FailedPrecondition, "client secret of broker %q is not defined", s.defaultBroker)
 	}
 
 	var list []*pb.ResourceTokenRequestState_Resource
 
 	for _, rvr := range in.resources {
 		if rvr.realm != realm {
-			return nil, http.StatusConflict, fmt.Errorf("cannot authorize resources using different realms")
+			return nil, status.Errorf(codes.Aborted, "cannot authorize resources using different realms")
 		}
 
 		resName := rvr.resource
@@ -284,30 +292,30 @@ func (s *Service) auth(ctx context.Context, in authHandlerIn) (*authHandlerOut, 
 		roleName := rvr.role
 		interf := rvr.interf
 		if err := checkName(resName); err != nil {
-			return nil, http.StatusBadRequest, err
+			return nil, status.Errorf(codes.InvalidArgument, err.Error())
 		}
 		if err := checkName(viewName); err != nil {
-			return nil, http.StatusBadRequest, err
+			return nil, status.Errorf(codes.InvalidArgument, err.Error())
 		}
 
 		res, ok := cfg.Resources[resName]
 		if !ok {
-			return nil, http.StatusNotFound, fmt.Errorf("resource not found: %q", resName)
+			return nil, status.Errorf(codes.NotFound, "resource not found: %q", resName)
 		}
 		view, ok := res.Views[viewName]
 		if !ok {
-			return nil, http.StatusNotFound, fmt.Errorf("view %q not found for resource %q", viewName, resName)
+			return nil, status.Errorf(codes.NotFound, "view %q not found for resource %q", viewName, resName)
 		}
 		grantRole := roleName
 		if len(grantRole) == 0 {
 			grantRole = view.DefaultRole
 		}
 		if !viewHasRole(view, grantRole) {
-			return nil, http.StatusBadRequest, fmt.Errorf("role %q is not defined on resource %q view %q", grantRole, resName, viewName)
+			return nil, status.Errorf(codes.FailedPrecondition, "role %q is not defined on resource %q view %q", grantRole, resName, viewName)
 		}
 		st, ok := cfg.ServiceTemplates[view.ServiceTemplate]
 		if !ok {
-			return nil, http.StatusInternalServerError, fmt.Errorf("service template %q is invalid for resource %q view %q", view.ServiceTemplate, resName, viewName)
+			return nil, status.Errorf(codes.Internal, "service template %q is invalid for resource %q view %q", view.ServiceTemplate, resName, viewName)
 		}
 		// TODO: remove support for oldResourcePath
 		if len(interf) == 0 {
@@ -317,7 +325,7 @@ func (s *Service) auth(ctx context.Context, in authHandlerIn) (*authHandlerOut, 
 			}
 		}
 		if _, ok = st.Interfaces[interf]; !ok {
-			return nil, http.StatusBadRequest, fmt.Errorf("interface %q is not defined on resource %q view %q service template %q", interf, resName, viewName, view.ServiceTemplate)
+			return nil, status.Errorf(codes.FailedPrecondition, "interface %q is not defined on resource %q view %q service template %q", interf, resName, viewName, view.ServiceTemplate)
 		}
 
 		list = append(list, &pb.ResourceTokenRequestState_Resource{
@@ -354,14 +362,14 @@ func (s *Service) auth(ctx context.Context, in authHandlerIn) (*authHandlerOut, 
 
 	err = s.store.WriteTx(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, sID, storage.LatestRev, state, nil, tx)
 	if err != nil {
-		return nil, http.StatusInternalServerError, err
+		return nil, status.Errorf(codes.Unavailable, err.Error())
 	}
 
 	conf := s.oauthConf(s.defaultBroker, broker, clientSecret, scopes)
 	return &authHandlerOut{
 		oauth:   conf,
 		stateID: sID,
-	}, http.StatusOK, nil
+	}, nil
 }
 
 type loggedInHandlerIn struct {
@@ -373,76 +381,112 @@ type loggedInHandlerOut struct {
 	redirect   string
 	stateID    string
 	subject    string
-	challenge  string
 	identities []string
 }
 
-func (s *Service) loggedIn(ctx context.Context, in loggedInHandlerIn) (*loggedInHandlerOut, int, error) {
+func (s *Service) loggedIn(ctx context.Context, in loggedInHandlerIn) (_ *loggedInHandlerOut, _ string, ferr error) {
 	tx, err := s.store.Tx(true)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
+		return nil, "", status.Errorf(codes.Unavailable, err.Error())
 	}
-	defer tx.Finish()
+	defer func() {
+		err := tx.Finish()
+		if ferr == nil && err != nil {
+			ferr = status.Errorf(codes.Internal, err.Error())
+		}
+	}()
 
 	state := &pb.ResourceTokenRequestState{}
 	err = s.store.ReadTx(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, in.stateID, storage.LatestRev, state, tx)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
+		return nil, "", status.Errorf(codes.Unavailable, err.Error())
 	}
 
 	sec, err := s.loadSecrets(tx)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
+		return nil, state.Challenge, status.Errorf(codes.Unavailable, err.Error())
 	}
 
 	realm := state.Realm
 	cfg, err := s.loadConfig(tx, realm)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
+		return nil, state.Challenge, status.Errorf(codes.Unavailable, err.Error())
 	}
 
 	broker, ok := cfg.TrustedIssuers[state.Broker]
 	if !ok {
-		return nil, http.StatusBadRequest, fmt.Errorf("unknown identity broker %q", state.Broker)
+		return nil, state.Challenge, status.Errorf(codes.InvalidArgument, "unknown identity broker %q", state.Broker)
 	}
 
 	clientSecret, ok := sec.GetBrokerSecrets()[broker.ClientId]
 	if !ok {
-		return nil, http.StatusBadRequest, fmt.Errorf("client secret of broker %q is not defined", s.defaultBroker)
+		return nil, state.Challenge, status.Errorf(codes.FailedPrecondition, "client secret of broker %q is not defined", s.defaultBroker)
 	}
 
 	conf := s.oauthConf(state.Broker, broker, clientSecret, []string{})
 	tok, err := conf.Exchange(ctx, in.authCode)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, fmt.Errorf("token exchange failed. %s", err)
+		return nil, state.Challenge, status.Errorf(codes.Unauthenticated, "token exchange failed. %s", err)
 	}
 
 	id, err := s.upstreamTokenToPassportIdentity(ctx, cfg, tx, tok.AccessToken, broker.ClientId)
 	if err != nil {
-		return nil, http.StatusUnauthorized, err
+		return nil, state.Challenge, status.Errorf(codes.Unauthenticated, err.Error())
 	}
 
 	if state.Type == pb.ResourceTokenRequestState_DATASET {
-		return s.loggedInForDatasetToken(ctx, id, state, cfg, in.stateID, realm, tx)
+		out, err := s.loggedInForDatasetToken(ctx, id, state, cfg, in.stateID, realm, tx)
+		return out, state.Challenge, err
 	}
 
-	return s.loggedInForEndpointToken(id, state, in.stateID, tx)
+	out, err := s.loggedInForEndpointToken(id, state, in.stateID, tx)
+	return out, state.Challenge, err
 }
 
-func (s *Service) loggedInForDatasetToken(ctx context.Context, id *ga4gh.Identity, state *pb.ResourceTokenRequestState, cfg *pb.DamConfig, stateID, realm string, tx storage.Tx) (*loggedInHandlerOut, int, error) {
+func resourceToString(res *pb.ResourceTokenRequestState_Resource) string {
+	return fmt.Sprintf("%s/%s/%s/%s", res.Realm, res.Resource, res.View, res.Role)
+}
+
+func writePolicyDeccisionLog(logger *logging.Client, id *ga4gh.Identity, res *pb.ResourceTokenRequestState_Resource, ttl time.Duration, err error) {
+	log := &auditlog.PolicyDecisionLog{
+		TokenID:       id.ID,
+		TokenSubject:  id.Subject,
+		TokenIssuer:   id.Issuer,
+		Resource:      resourceToString(res),
+		TTL:           timeutil.TTLString(ttl),
+		PassAuthCheck: true,
+	}
+
+	if err != nil {
+		log.PassAuthCheck = false
+		log.ErrorType = errutil.ErrorReason(err)
+
+		if reject := rejectedPolicy(err); reject != nil {
+			log.Message = reject
+		} else {
+			log.Message = err.Error()
+		}
+	}
+
+	auditlog.WritePolicyDecisionLog(logger, log)
+}
+
+func (s *Service) loggedInForDatasetToken(ctx context.Context, id *ga4gh.Identity, state *pb.ResourceTokenRequestState, cfg *pb.DamConfig, stateID, realm string, tx storage.Tx) (*loggedInHandlerOut, error) {
 	ttl := time.Duration(state.Ttl)
 
 	list := state.Resources
 	if len(list) == 0 {
-		return nil, http.StatusInternalServerError, fmt.Errorf("empty resource list")
+		return nil, status.Errorf(codes.Internal, "empty resource list")
 	}
 	for _, r := range list {
 		if r.Realm != realm {
-			return nil, http.StatusConflict, fmt.Errorf("cannot authorize resources using different realms")
+			return nil, status.Errorf(codes.Aborted, "cannot authorize resources using different realms")
 		}
-		status, err := checkAuthorization(ctx, id, ttl, r.Resource, r.View, r.Role, cfg, state.ClientId, s.ValidateCfgOpts())
+
+		err := checkAuthorization(ctx, id, ttl, r.Resource, r.View, r.Role, cfg, state.ClientId, s.ValidateCfgOpts(realm, tx))
+		writePolicyDeccisionLog(s.logger, id, r, ttl, err)
 		if err != nil {
-			return nil, status, err
+			return nil, err
 		}
 	}
 
@@ -450,20 +494,19 @@ func (s *Service) loggedInForDatasetToken(ctx context.Context, id *ga4gh.Identit
 	state.Subject = id.Subject
 	err := s.store.WriteTx(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, state, nil, tx)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
+		return nil, status.Errorf(codes.Unavailable, err.Error())
 	}
 
 	return &loggedInHandlerOut{
-		stateID:   stateID,
-		subject:   id.Subject,
-		challenge: state.Challenge,
-	}, http.StatusOK, nil
+		stateID: stateID,
+		subject: id.Subject,
+	}, nil
 }
 
-func (s *Service) loggedInForEndpointToken(id *ga4gh.Identity, state *pb.ResourceTokenRequestState, stateID string, tx storage.Tx) (*loggedInHandlerOut, int, error) {
+func (s *Service) loggedInForEndpointToken(id *ga4gh.Identity, state *pb.ResourceTokenRequestState, stateID string, tx storage.Tx) (*loggedInHandlerOut, error) {
 	err := s.store.DeleteTx(storage.ResourceTokenRequestStateDataType, storage.DefaultRealm, storage.DefaultUser, stateID, storage.LatestRev, tx)
 	if err != nil {
-		return nil, http.StatusServiceUnavailable, err
+		return nil, status.Errorf(codes.Unavailable, err.Error())
 	}
 
 	identities := []string{id.Subject}
@@ -473,48 +516,57 @@ func (s *Service) loggedInForEndpointToken(id *ga4gh.Identity, state *pb.Resourc
 
 	return &loggedInHandlerOut{
 		subject:    id.Subject,
-		challenge:  state.Challenge,
 		identities: identities,
-	}, http.StatusOK, nil
+	}, nil
 }
 
 // ResourceTokens returns a set of access tokens for a set of resources.
 func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
-	tx, err := s.store.Tx(false)
+	resp, err := s.fetchResourceTokens(r)
 	if err != nil {
-		httputil.WriteError(w, http.StatusServiceUnavailable, err)
+		httputils.WriteError(w, err)
 		return
 	}
-	defer tx.Finish()
+	httputils.WriteResp(w, resp)
+}
+
+func (s *Service) fetchResourceTokens(r *http.Request) (_ *pb.ResourceResults, ferr error) {
+	tx, err := s.store.Tx(false)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "%v", err)
+	}
+	defer func() {
+		err := tx.Finish()
+		if ferr == nil {
+			ferr = err
+		}
+	}()
 
 	auth, err := extractBearerToken(r)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
-		return
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
 	cart := ""
 	if s.useHydra {
 		cart, err = s.extractCartFromAccessToken(auth)
 		if err != nil {
-			httputil.WriteRPCResp(w, nil, err)
-			return
+			return nil, status.Errorf(codes.Unauthenticated, "%v", err)
 		}
+	} else {
+		return nil, status.Errorf(codes.Unimplemented, "Unimplemented oidc provider")
 	}
 
 	state, id, err := s.resourceTokenState(cart, tx)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
-		return
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	if len(state.Resources) == 0 {
-		httputil.WriteError(w, http.StatusBadRequest, fmt.Errorf("empty resource list"))
-		return
+		return nil, status.Errorf(codes.InvalidArgument, "empty resource list")
 	}
 	cfg, err := s.loadConfig(tx, state.Resources[0].Realm)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
-		return
+		return nil, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 
 	ctx := r.Context()
@@ -527,20 +579,17 @@ func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
 	for i, r := range state.Resources {
 		res, ok := cfg.Resources[r.Resource]
 		if !ok {
-			httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("resource not found: %q", r.Resource))
-			return
+			return nil, status.Errorf(codes.NotFound, "resource not found: %q", r.Resource)
 		}
 
 		view, ok := res.Views[r.View]
 		if !ok {
-			httputil.WriteError(w, http.StatusNotFound, fmt.Errorf("view %q not found for resource %q", r.View, r.Resource))
-			return
+			return nil, status.Errorf(codes.NotFound, "view %q not found for resource %q", r.View, r.Resource)
 		}
 
-		result, status, err := s.generateResourceToken(ctx, state.ClientId, r.Resource, r.View, r.Role, time.Duration(state.Ttl), keyFile, id, cfg, res, view)
+		result, st, err := s.generateResourceToken(ctx, state.ClientId, r.Resource, r.View, r.Role, time.Duration(state.Ttl), keyFile, id, cfg, res, view)
 		if err != nil {
-			httputil.WriteError(w, status, err)
-			return
+			return nil, status.Errorf(httputils.RPCCode(st), "%v", err)
 		}
 		access := strconv.Itoa(i)
 
@@ -563,7 +612,7 @@ func (s *Service) ResourceTokens(w http.ResponseWriter, r *http.Request) {
 			Labels:      result.Labels,
 		}
 	}
-	httputil.WriteRPCResp(w, out, nil)
+	return out, nil
 }
 
 func (s *Service) resourceTokenState(stateID string, tx storage.Tx) (*pb.ResourceTokenRequestState, *ga4gh.Identity, error) {
@@ -593,18 +642,22 @@ func (s *Service) LoggedInHandler(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	code, err := extractAuthCode(r)
 	if err != nil {
-		httputil.WriteError(w, http.StatusBadRequest, err)
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "%v", err))
 		return
 	}
 
-	stateID := httputil.QueryParam(r, "state")
+	stateID := httputils.QueryParam(r, "state")
 	if len(stateID) == 0 {
-		httputil.WriteError(w, http.StatusBadRequest, fmt.Errorf("request must include state"))
+		httputils.WriteError(w, status.Errorf(codes.InvalidArgument, "request must include state"))
 	}
 
-	out, st, err := s.loggedIn(r.Context(), loggedInHandlerIn{authCode: code, stateID: stateID})
+	out, challenge, err := s.loggedIn(r.Context(), loggedInHandlerIn{authCode: code, stateID: stateID})
 	if err != nil {
-		httputil.WriteError(w, st, err)
+		if s.useHydra && len(challenge) > 0 {
+			hydra.SendLoginReject(w, r, s.httpClient, s.hydraAdminURL, challenge, err)
+		} else {
+			httputils.WriteError(w, err)
+		}
 		return
 	}
 
@@ -614,9 +667,9 @@ func (s *Service) LoggedInHandler(w http.ResponseWriter, r *http.Request) {
 			ext["identities"] = out.identities
 		}
 
-		hydra.SendLoginSuccess(w, r, s.httpClient, s.hydraAdminURL, out.challenge, out.subject, out.stateID, ext)
+		hydra.SendLoginSuccess(w, r, s.httpClient, s.hydraAdminURL, challenge, out.subject, out.stateID, ext)
 		return
 	}
 
-	httputil.WriteStatus(w, status.New(codes.Unimplemented, "oidc service not supported"))
+	httputils.WriteError(w, status.Errorf(codes.Unimplemented, "oidc service not supported"))
 }

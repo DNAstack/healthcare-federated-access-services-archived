@@ -22,6 +22,7 @@ import (
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/osenv"
 	"io"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -30,26 +31,32 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
-	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"cloud.google.com/go/logging" /* copybara-comment: logging */
 	"github.com/gorilla/mux" /* copybara-comment */
 	"google.golang.org/grpc/codes" /* copybara-comment */
 	"google.golang.org/grpc/status" /* copybara-comment */
 	"golang.org/x/oauth2" /* copybara-comment */
+	"github.com/golang/protobuf/jsonpb" /* copybara-comment */
+	"github.com/golang/protobuf/proto" /* copybara-comment */
 	"bitbucket.org/creachadair/stringset" /* copybara-comment */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/adapter" /* copybara-comment: adapter */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/auth" /* copybara-comment: auth */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds" /* copybara-comment: clouds */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/consentsapi" /* copybara-comment: consentsapi */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/errutil" /* copybara-comment: errutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/ga4gh" /* copybara-comment: ga4gh */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/handlerfactory" /* copybara-comment: handlerfactory */
-	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputil" /* copybara-comment: httputil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/httputils" /* copybara-comment: httputils */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/hydraproxy" /* copybara-comment: hydraproxy */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/oathclients" /* copybara-comment: oathclients */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/permissions" /* copybara-comment: permissions */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/persona" /* copybara-comment: persona */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/saw" /* copybara-comment: saw */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/scim" /* copybara-comment: scim */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/srcutil" /* copybara-comment: srcutil */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil" /* copybara-comment: timeutil */
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/tokensapi" /* copybara-comment: tokensapi */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/translator" /* copybara-comment: translator */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/validator" /* copybara-comment: validator */
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/verifier" /* copybara-comment: verifier */
@@ -57,6 +64,7 @@ import (
 	glog "github.com/golang/glog" /* copybara-comment */
 	cpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/common/v1" /* copybara-comment: go_proto */
 	pb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1" /* copybara-comment: go_proto */
+	tgrpcpb "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/tokens/v1" /* copybara-comment: go_proto_grpc */
 )
 
 const (
@@ -82,26 +90,29 @@ var (
 )
 
 type Service struct {
-	adapters         *adapter.ServiceAdapters
-	roleCategories   map[string]*pb.RoleCategory
-	domainURL        string
-	defaultBroker    string
-	serviceName      string
-	hydraAdminURL    string
-	hydraPublicURL   string
-	hydraSyncFreq    time.Duration
-	store            storage.Store
-	warehouse        clouds.ResourceTokenCreator
-	logger           *logging.Client
-	permissions      *permissions.Permissions
-	Handler          *ServiceHandler
-	hidePolicyBasis  bool
-	hideRejectDetail bool
-	httpClient       *http.Client
-	startTime        int64
-	translators      sync.Map
-	useHydra         bool
-	visaVerifier     *verifier.Verifier
+	adapters            *adapter.ServiceAdapters
+	roleCategories      map[string]*pb.RoleCategory
+	domainURL           string
+	defaultBroker       string
+	serviceName         string
+	hydraAdminURL       string
+	hydraPublicURL      string
+	hydraPublicURLProxy *hydraproxy.Service
+	hydraSyncFreq       time.Duration
+	store               storage.Store
+	warehouse           clouds.ResourceTokenCreator
+	logger              *logging.Client
+	permissions         *permissions.Permissions
+	Handler             *ServiceHandler
+	hidePolicyBasis     bool
+	hideRejectDetail    bool
+	httpClient          *http.Client
+	startTime           int64
+	translators         sync.Map
+	useHydra            bool
+	visaVerifier        *verifier.Verifier
+	scim                *scim.Scim
+	tokens              tgrpcpb.TokensServer
 }
 
 type ServiceHandler struct {
@@ -122,7 +133,8 @@ type Options struct {
 	// Store: data storage and configuration storage
 	Store storage.Store
 	// Warehouse: resource token creator service
-	Warehouse clouds.ResourceTokenCreator
+	Warehouse             clouds.ResourceTokenCreator
+	ServiceAccountManager *saw.AccountWarehouse
 	// Logger: audit log logger
 	Logger *logging.Client
 	// UseHydra: service use hydra integrated OIDC.
@@ -131,6 +143,8 @@ type Options struct {
 	HydraAdminURL string
 	// HydraPublicURL: hydra public endpoints url
 	HydraPublicURL string
+	// HydraPublicProxy: proxy for hydra public endpoint.
+	HydraPublicProxy *hydraproxy.Service
 	// HydraSyncFreq: how often to allow clients:sync to be called
 	HydraSyncFreq time.Duration
 	// HidePolicyBasis: do not send policy basis to client
@@ -148,13 +162,12 @@ func NewService(params *Options) *Service {
 // New creates a DAM and registers it on r.
 func New(r *mux.Router, params *Options) *Service {
 	var roleCat pb.DamRoleCategoriesResponse
-	path := damRolesJsonPath()
-	if err := srcutil.LoadProto(path, &roleCat); err != nil {
-		glog.Fatalf("cannot load role categories file %q: %v", path, err)
+	if err := srcutil.LoadProto("deploy/metadata/dam_roles.json", &roleCat); err != nil {
+		glog.Exitf("cannot load role categories file %q: %v", "deploy/metadata/dam_roles.json", err)
 	}
 	perms, err := permissions.LoadPermissions(params.Store)
 	if err != nil {
-		glog.Fatalf("cannot load permissions: %v", err)
+		glog.Exitf("cannot load permissions: %v", err)
 	}
 	syncFreq := time.Minute
 	if params.HydraSyncFreq > 0 {
@@ -163,24 +176,27 @@ func New(r *mux.Router, params *Options) *Service {
 
 	sh := &ServiceHandler{}
 	s := &Service{
-		roleCategories:   roleCat.DamRoleCategories,
-		domainURL:        params.Domain,
-		defaultBroker:    params.DefaultBroker,
-		serviceName:      params.ServiceName,
-		store:            params.Store,
-		warehouse:        params.Warehouse,
-		logger:           params.Logger,
-		permissions:      perms,
-		Handler:          sh,
-		hidePolicyBasis:  params.HidePolicyBasis,
-		hideRejectDetail: params.HideRejectDetail,
-		httpClient:       params.HTTPClient,
-		startTime:        time.Now().Unix(),
-		useHydra:         params.UseHydra,
-		hydraAdminURL:    params.HydraAdminURL,
-		hydraPublicURL:   params.HydraPublicURL,
-		hydraSyncFreq:    syncFreq,
-		visaVerifier:     verifier.New(""),
+		roleCategories:      roleCat.DamRoleCategories,
+		domainURL:           params.Domain,
+		defaultBroker:       params.DefaultBroker,
+		serviceName:         params.ServiceName,
+		store:               params.Store,
+		warehouse:           params.Warehouse,
+		logger:              params.Logger,
+		permissions:         perms,
+		Handler:             sh,
+		hidePolicyBasis:     params.HidePolicyBasis,
+		hideRejectDetail:    params.HideRejectDetail,
+		httpClient:          params.HTTPClient,
+		startTime:           time.Now().Unix(),
+		useHydra:            params.UseHydra,
+		hydraAdminURL:       params.HydraAdminURL,
+		hydraPublicURL:      params.HydraPublicURL,
+		hydraPublicURLProxy: params.HydraPublicProxy,
+		hydraSyncFreq:       syncFreq,
+		visaVerifier:        verifier.New(""),
+		scim:                scim.New(params.Store),
+		tokens:              tokensapi.NewDAMTokens(params.Store, params.ServiceAccountManager),
 	}
 
 	if s.httpClient == nil {
@@ -189,40 +205,40 @@ func New(r *mux.Router, params *Options) *Service {
 
 	exists, err := configExists(params.Store)
 	if err != nil {
-		glog.Fatalf("cannot use storage layer: %v", err)
+		glog.Exitf("cannot use storage layer: %v", err)
 	}
 	if !exists {
 		if err = ImportConfig(params.Store, params.ServiceName, params.Warehouse, nil); err != nil {
-			glog.Fatalf("cannot import configs to service %q: %v", params.ServiceName, err)
+			glog.Exitf("cannot import configs to service %q: %v", params.ServiceName, err)
 		}
 	}
 	secrets, err := s.loadSecrets(nil)
 	if err != nil {
-		glog.Fatalf("cannot load client secrets: %v", err)
+		glog.Exitf("cannot load client secrets: %v", err)
 	}
 	adapters, err := adapter.CreateAdapters(params.Store, params.Warehouse, secrets)
 	if err != nil {
-		glog.Fatalf("cannot load adapters: %v", err)
+		glog.Exitf("cannot load adapters: %v", err)
 	}
 	s.adapters = adapters
 
 	cfg, err := s.loadConfig(nil, storage.DefaultRealm)
 	if err != nil {
-		glog.Fatalf("cannot load config: %v", err)
+		glog.Exitf("cannot load config: %v", err)
 	}
-	if stat := s.CheckIntegrity(cfg); stat != nil {
-		glog.Fatalf("config integrity error: %+v", stat.Proto())
+	if stat := s.CheckIntegrity(cfg, storage.DefaultRealm, nil); stat != nil {
+		glog.Exitf("config integrity error: %+v", stat.Proto())
 	}
 	if err = s.updateWarehouseOptions(cfg.Options, storage.DefaultRealm, nil); err != nil {
-		glog.Fatalf("setting service account config options failed (cannot enforce access management policies): %v", err)
+		glog.Exitf("setting service account config options failed (cannot enforce access management policies): %v", err)
 	}
 	if err = s.registerAllProjects(nil); err != nil {
-		glog.Fatalf("registation of one or more service account projects failed (cannot enforce access management policies): %v", err)
+		glog.Exitf("registation of one or more service account projects failed (cannot enforce access management policies): %v", err)
 	}
 
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, s.httpClient)
-	if tests := runTests(ctx, cfg, nil, s.ValidateCfgOpts()); hasTestError(tests) {
-		glog.Fatalf("run tests error: %v; results: %v; modification: <%v>", tests.Error, tests.TestResults, tests.Modification)
+	if tests := runTests(ctx, cfg, nil, s.ValidateCfgOpts(storage.DefaultRealm, nil)); hasTestError(tests) {
+		glog.Exitf("run tests error: %v; results: %v; modification: <%v>", tests.Error, tests.TestResults, tests.Modification)
 	}
 
 	for name, cfgTpi := range cfg.TrustedIssuers {
@@ -295,16 +311,17 @@ func (s *Service) handlerSetup(tx storage.Tx, r *http.Request, scope string, ite
 	if err != nil {
 		return nil, nil, status, err
 	}
-	id, status, err := s.getBearerTokenIdentity(cfg, r)
+
+	c, err := auth.FromContext(r.Context())
 	if err != nil {
-		return nil, nil, status, err
+		return nil, nil, httputils.FromError(err), err
 	}
-	return cfg, id, status, err
+	return cfg, c.ID, status, err
 }
 
 func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "OPTIONS" {
-		httputil.WriteCorsHeaders(w)
+		httputils.WriteCorsHeaders(w)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -316,7 +333,7 @@ func (sh *ServiceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func checkName(name string) error {
-	return httputil.CheckName("name", name, nil)
+	return httputils.CheckName("name", name, nil)
 }
 
 func (s *Service) getIssuerString() string {
@@ -325,63 +342,6 @@ func (s *Service) getIssuerString() string {
 	}
 
 	return ""
-}
-
-func (s *Service) damSignedBearerTokenToPassportIdentity(ctx context.Context, cfg *pb.DamConfig, tok, clientID string) (*ga4gh.Identity, error) {
-	id, err := ga4gh.ConvertTokenToIdentityUnsafe(tok)
-	if err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, fmt.Sprintf("inspecting token: %v", err))
-	}
-
-	v, err := ga4gh.GetOIDCTokenVerifier(ctx, clientID, id.Issuer)
-	if err != nil {
-		return nil, status.Errorf(codes.Unavailable, fmt.Sprintf("GetOIDCTokenVerifier failed: %v", err))
-	}
-
-	if _, err = v.Verify(ctx, tok); err != nil {
-		return nil, status.Errorf(codes.Unavailable, fmt.Sprintf("token unauthorized: %v", err))
-	}
-
-	// TODO: add more checks here as appropriate.
-	iss := s.getIssuerString()
-	if err = id.Valid(); err != nil {
-		return nil, status.Errorf(codes.Unauthenticated, fmt.Sprintf("token invalid: %v", err))
-	}
-	if id.Issuer != iss {
-		return nil, status.Errorf(codes.Unauthenticated, fmt.Sprintf("bearer token unauthorized for issuer %q", id.Issuer))
-	}
-	if !ga4gh.IsAudience(id, clientID, iss) {
-		return nil, status.Errorf(codes.Unauthenticated, "bearer token unauthorized party")
-	}
-
-	if !s.useHydra {
-		return id, nil
-	}
-
-	l, ok := id.Extra["identities"]
-	if !ok {
-		return id, nil
-	}
-
-	list, ok := l.([]interface{})
-	if !ok {
-		return nil, status.Errorf(codes.Internal, "id.Extra[identities] in wrong type")
-	}
-
-	if id.Identities == nil {
-		id.Identities = map[string][]string{}
-	}
-
-	for i, it := range list {
-		identity, ok := it.(string)
-		if !ok {
-			return nil, status.Errorf(codes.Internal, fmt.Sprintf("id.Extra[identities][%d] in wrong type", i))
-		}
-
-		id.Identities[identity] = nil
-	}
-
-	return id, nil
 }
 
 func (s *Service) upstreamTokenToPassportIdentity(ctx context.Context, cfg *pb.DamConfig, tx storage.Tx, tok, clientID string) (*ga4gh.Identity, error) {
@@ -401,7 +361,7 @@ func (s *Service) upstreamTokenToPassportIdentity(ctx context.Context, cfg *pb.D
 		return nil, fmt.Errorf("translating token from issuer %q: %v", iss, err)
 	}
 	if ga4gh.HasUserinfoClaims(id) {
-		id, err = translator.FetchUserinfoClaims(ctx, id, tok, t)
+		id, err = translator.FetchUserinfoClaims(ctx, s.httpClient, id, tok, t)
 		if err != nil {
 			return nil, fmt.Errorf("fetching user info from issuer %q: %v", iss, err)
 		}
@@ -446,19 +406,6 @@ func trustedIssuers(trustedIssuers map[string]*pb.TrustedIssuer) map[string]bool
 		trusted[tpi.Issuer] = true
 	}
 	return trusted
-}
-
-func (s *Service) getBearerTokenIdentity(cfg *pb.DamConfig, r *http.Request) (*ga4gh.Identity, int, error) {
-	tok, err := extractBearerToken(r)
-	if err != nil {
-		return nil, http.StatusBadRequest, err
-	}
-
-	id, err := s.damSignedBearerTokenToPassportIdentity(r.Context(), cfg, tok, getClientID(r))
-	if err != nil {
-		return nil, http.StatusUnauthorized, err
-	}
-	return id, http.StatusOK, nil
 }
 
 func (s *Service) getPassportIdentity(cfg *pb.DamConfig, tx storage.Tx, r *http.Request) (*ga4gh.Identity, int, error) {
@@ -534,7 +481,7 @@ func resolveAccessList(ctx context.Context, id *ga4gh.Identity, resources, views
 				if len(roles) > 0 && !stringset.Contains(roles, rname) {
 					continue
 				}
-				if _, err := checkAuthorization(ctx, id, 0, rn, vn, rname, cfg, noClientID, vopts); err != nil {
+				if err := checkAuthorization(ctx, id, 0, rn, vn, rname, cfg, noClientID, vopts); err != nil {
 					continue
 				}
 				got = append(got, rn+"/"+vn+"/"+rname)
@@ -545,7 +492,7 @@ func resolveAccessList(ctx context.Context, id *ga4gh.Identity, resources, views
 	return "OK", got, nil
 }
 
-func (s *Service) makeAccessList(id *ga4gh.Identity, resources, views, roles []string, cfg *pb.DamConfig, r *http.Request) []string {
+func (s *Service) makeAccessList(id *ga4gh.Identity, resources, views, roles []string, cfg *pb.DamConfig, r *http.Request, vopts ValidateCfgOpts) []string {
 	// Ignore errors as the goal of makeAccessList is to show what is accessible despite any errors.
 	// TODO: consider separating acceptable errors (don't halt the request) from system errors that should return an error code.
 	if id == nil {
@@ -555,66 +502,141 @@ func (s *Service) makeAccessList(id *ga4gh.Identity, resources, views, roles []s
 			return nil
 		}
 	}
-	_, got, err := resolveAccessList(r.Context(), id, resources, views, roles, cfg, s.ValidateCfgOpts())
+	_, got, err := resolveAccessList(r.Context(), id, resources, views, roles, cfg, vopts)
 	if err != nil {
 		return nil
 	}
 	return got
 }
 
-func checkAuthorization(ctx context.Context, id *ga4gh.Identity, ttl time.Duration, resourceName, viewName, roleName string, cfg *pb.DamConfig, client string, vopts ValidateCfgOpts) (int, error) {
+func checkAuthorization(ctx context.Context, id *ga4gh.Identity, ttl time.Duration, resourceName, viewName, roleName string, cfg *pb.DamConfig, client string, vopts ValidateCfgOpts) error {
 	if stat := checkTrustedIssuer(id.Issuer, cfg, vopts); stat != nil {
-		return httputil.HTTPStatus(stat.Code()), stat.Err()
+		return errutil.WithErrorReason(errUntrustedIssuer, stat.Err())
 	}
 	srcRes, ok := cfg.Resources[resourceName]
 	if !ok {
-		return http.StatusNotFound, fmt.Errorf("resource %q not found", resourceName)
+		return errutil.WithErrorReason(errResourceNotFoound, status.Errorf(codes.NotFound, "resource %q not found", resourceName))
 	}
 	srcView, ok := srcRes.Views[viewName]
 	if !ok {
-		return http.StatusNotFound, fmt.Errorf("resource %q view %q not found", resourceName, viewName)
+		return errutil.WithErrorReason(errResourceViewNotFoound, status.Errorf(codes.NotFound, "resource %q view %q not found", resourceName, viewName))
 	}
 	entries, err := resolveAggregates(srcRes, srcView, cfg, vopts.Services)
 	if err != nil {
-		return http.StatusForbidden, err
+		return errutil.WithErrorReason(errResolveAggregatesFail, status.Error(codes.PermissionDenied, err.Error()))
 	}
 	active := false
 	for _, entry := range entries {
+		// Step 1: validation.
 		view := entry.View
 		res := entry.Res
 		vRole, ok := view.Roles[roleName]
 		if !ok {
-			return http.StatusForbidden, fmt.Errorf("unauthorized for resource %q view %q role %q (role not available on this view)", resourceName, viewName, roleName)
+			return errutil.WithErrorReason(errRoleNotAvailable, status.Errorf(codes.PermissionDenied, "unauthorized for resource %q view %q role %q (role not available on this view)", resourceName, viewName, roleName))
 		}
 		_, err := adapter.ResolveServiceRole(roleName, view, res, cfg)
 		if err != nil {
-			return http.StatusForbidden, fmt.Errorf("unauthorized for resource %q view %q role %q (cannot resolve service role)", resourceName, viewName, roleName)
+			return errutil.WithErrorReason(errCannotResolveServiceRole, status.Errorf(codes.PermissionDenied, "unauthorized for resource %q view %q role %q (cannot resolve service role)", resourceName, viewName, roleName))
 		}
+
+		// Step 3: check visa policies.
 		if len(vRole.Policies) == 0 {
-			return http.StatusForbidden, fmt.Errorf("unauthorized for resource %q view %q role %q (no policy defined for this view's role)", resourceName, viewName, roleName)
+			return errutil.WithErrorReason(errNoPolicyDefined, status.Errorf(codes.PermissionDenied, "unauthorized for resource %q view %q role %q (no policy defined for this view's role)", resourceName, viewName, roleName))
 		}
+
 		ctxWithTTL := context.WithValue(ctx, validator.RequestTTLInNanoFloat64, float64(ttl.Nanoseconds())/1e9)
 		for _, p := range vRole.Policies {
+			if p.Name == whitelistPolicyName {
+				ok, err := checkWhitelist(p.Args, id, cfg, vopts)
+				if err != nil {
+					return errutil.WithErrorReason(errWhitelistUnavailable, status.Errorf(codes.PermissionDenied, "unauthorized for resource %q view %q role %q (whitelist unavailable): %v", resourceName, viewName, roleName, err))
+				}
+				if !ok {
+					return errutil.WithErrorReason(errRejectedPolicy, status.Errorf(codes.PermissionDenied, "unauthorized for resource %q view %q role %q (user not on whitelist)", resourceName, viewName, roleName))
+				}
+				active = true
+				continue
+			}
+
 			v, err := buildValidator(ctxWithTTL, p, vRole, cfg)
 			if err != nil {
-				return http.StatusInternalServerError, fmt.Errorf("cannot enforce policies for resource %q view %q role %q: %v", resourceName, viewName, roleName, err)
+				return errutil.WithErrorReason(errCannotEnforcePolicies, status.Errorf(codes.PermissionDenied, "cannot enforce policies for resource %q view %q role %q: %v", resourceName, viewName, roleName, err))
 			}
 			ok, err = v.Validate(ctxWithTTL, id)
 			if err != nil {
 				// Strip internal error in case it contains any sensitive data.
-				return http.StatusInternalServerError, fmt.Errorf("cannot validate identity (subject %q, issuer %q): internal error", id.Subject, id.Issuer)
+				return errutil.WithErrorReason(errCannotValidateIdentity, status.Errorf(codes.PermissionDenied, "cannot validate identity (subject %q, issuer %q): internal error", id.Subject, id.Issuer))
 			}
 			if !ok {
-				rejected := rejectedPolicyString(id.RejectedVisas, makePolicyBasis(roleName, view, res, cfg, vopts.HidePolicyBasis, vopts.Services), vopts)
-				return http.StatusForbidden, fmt.Errorf("unauthorized for resource %q view %q role %q (policy requirements failed)\n\n%s", resourceName, viewName, roleName, rejected)
+				details, s := buildRejectedPolicy(id.RejectedVisas, makePolicyBasis(roleName, view, res, cfg, vopts.HidePolicyBasis, vopts.Services), vopts)
+				return errutil.WithErrorReason(errRejectedPolicy, withRejectedPolicy(details, status.Errorf(codes.PermissionDenied, "unauthorized for resource %q view %q role %q (policy requirements failed)\n\n%s", resourceName, viewName, roleName, s)))
 			}
 			active = true
 		}
 	}
 	if !active {
-		return http.StatusForbidden, fmt.Errorf("unauthorized for resource %q view %q role %q (role not enabled)", resourceName, viewName, roleName)
+		return errutil.WithErrorReason(errRoleNotEnabled, status.Errorf(codes.PermissionDenied, "unauthorized for resource %q view %q role %q (role not enabled)", resourceName, viewName, roleName))
 	}
-	return http.StatusOK, nil
+	return nil
+}
+
+func checkWhitelist(args map[string]string, id *ga4gh.Identity, cfg *pb.DamConfig, vopts ValidateCfgOpts) (bool, error) {
+	if id.GA4GH == nil {
+		return false, nil
+	}
+	users := strings.Split(args["users"], ";")
+	if users[0] == "" {
+		users = nil
+	}
+	groups := strings.Split(args["groups"], ";")
+	if groups[0] == "" {
+		groups = nil
+	}
+	for _, email := range extractEmails(id) {
+		// Option 1: the whitelist item is an email address.
+		for _, wl := range users {
+			addr, err := mail.ParseAddress(wl)
+			if err != nil {
+				// Don't expose the email address to the end user, just hint at the problem being the email format.
+				return false, errutil.WithErrorReason(errWhitelistUnavailable, status.Errorf(codes.PermissionDenied, "whitelist contains invalid email addresses"))
+			}
+			if email == addr.Address {
+				return true, nil
+			}
+		}
+		// Option 2: the whitelist item is a group.
+		for _, wl := range groups {
+			member, err := vopts.Scim.LoadGroupMember(wl, email, vopts.Realm, vopts.Tx)
+			if err != nil {
+				return false, errutil.WithErrorReason(errWhitelistUnavailable, status.Errorf(codes.PermissionDenied, "loading group %q member %q failed: %v", wl, email, err))
+			}
+			if member != nil {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func extractEmails(id *ga4gh.Identity) []string {
+	out := []string{}
+	if id.GA4GH == nil {
+		return out
+	}
+	for _, li := range id.GA4GH[string(ga4gh.LinkedIdentities)] {
+		parts := strings.SplitN(li.Value, ",", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		decoded, err := url.QueryUnescape(parts[0])
+		if err != nil || !strings.Contains(decoded, "@") {
+			continue
+		}
+		if addr, err := mail.ParseAddress(decoded); err == nil {
+			out = append(out, addr.Address)
+		}
+	}
+	return out
 }
 
 func resolveAggregates(srcRes *pb.Resource, srcView *pb.View, cfg *pb.DamConfig, tas *adapter.ServiceAdapters) ([]*adapter.AggregateView, error) {
@@ -866,13 +888,8 @@ func isItemVariable(str string) bool {
 	return strings.HasPrefix(str, "${") && strings.HasSuffix(str, "}")
 }
 
-type rejectedPolicy struct {
-	Rejections    int                   `json:"rejections"`
-	RejectedVisas []*ga4gh.RejectedVisa `json:"rejectedVisas,omitempty"`
-	PolicyBasis   []string              `json:"policyBasis,omitempty"`
-}
-
-func rejectedPolicyString(rejected []*ga4gh.RejectedVisa, policyBasis map[string]bool, vopts ValidateCfgOpts) string {
+// buildRejectedPolicy combines the given information to build RejectedPolicy and the marshalled json.
+func buildRejectedPolicy(rejected []*ga4gh.RejectedVisa, policyBasis map[string]bool, vopts ValidateCfgOpts) (*cpb.RejectedPolicy, string) {
 	rejections := len(rejected)
 	if vopts.HideRejectDetail {
 		rejected = nil
@@ -883,17 +900,23 @@ func rejectedPolicyString(rejected []*ga4gh.RejectedVisa, policyBasis map[string
 			basis = append(basis, k)
 		}
 	}
-	detail := &rejectedPolicy{
-		Rejections:    rejections,
-		RejectedVisas: rejected,
-		PolicyBasis:   basis,
+	detail := &cpb.RejectedPolicy{
+		Rejections:  int32(rejections),
+		PolicyBasis: basis,
 	}
+	for _, rv := range rejected {
+		if rv == nil {
+			continue
+		}
+		detail.RejectedVisas = append(detail.RejectedVisas, ga4gh.ToRejectedVisaProto(rv))
+	}
+
 	b, err := json.Marshal(detail)
 	if err != nil {
 		// Already in the error state and this is optional detail, just return something.
-		return fmt.Sprintf(`{"rejections":%d}`, rejections)
+		return detail, fmt.Sprintf(`{"rejections":%d}`, rejections)
 	}
-	return string(b)
+	return detail, string(b)
 }
 
 func makePolicyBasis(roleName string, srcView *pb.View, srcRes *pb.Resource, cfg *pb.DamConfig, hidePolicyBasis bool, tas *adapter.ServiceAdapters) map[string]bool {
@@ -1059,12 +1082,58 @@ func receiveConfigOptions(opts *pb.ConfigOptions, cfg *pb.DamConfig) *pb.ConfigO
 	return out
 }
 
+var (
+	whitelistPolicyName = "whitelist"
+	whitelistPolicy     = &pb.Policy{
+		AnyOf: []*cpb.ConditionSet{{AllOf: []*cpb.Condition{}}},
+		VariableDefinitions: map[string]*pb.VariableFormat{
+			"users": &pb.VariableFormat{
+				Type:     "split_pattern",
+				Regexp:   `^[^@]+@[^@]+\.[^@]+$`,
+				Optional: true,
+				Ui: map[string]string{
+					"label":       "User email addresses",
+					"description": "a set of email addresses to grant access to",
+				},
+			},
+			"groups": &pb.VariableFormat{
+				Type:     "split_pattern",
+				Regexp:   `^[A-Za-z][-_A-Za-z0-9\.]{1,30}[A-Za-z0-9]$`,
+				Optional: true,
+				Ui: map[string]string{
+					"label":       "Group names",
+					"description": "a set of group names to grant access to",
+				},
+			},
+		},
+		Ui: map[string]string{
+			"label":       "Whitelist",
+			"description": "Allow users and groups to be whitelisted for access directly without using visas",
+			"source":      "built-in",
+			"edit":        "immutable",
+		},
+	}
+
+	// BuiltinPolicies contains the set of policies that are managed by DAM directly (not the administrator).
+	BuiltinPolicies = map[string]*pb.Policy{
+		whitelistPolicyName: whitelistPolicy,
+	}
+)
+
 func normalizeConfig(cfg *pb.DamConfig) error {
 	if cfg.Clients == nil {
 		cfg.Clients = make(map[string]*cpb.Client)
 	}
 	for _, p := range cfg.TestPersonas {
 		sort.Strings(p.Access)
+	}
+	if cfg.Policies == nil {
+		cfg.Policies = make(map[string]*pb.Policy)
+	}
+	for k, v := range BuiltinPolicies {
+		p := &pb.Policy{}
+		proto.Merge(p, v)
+		cfg.Policies[k] = p
 	}
 	return nil
 }
@@ -1096,6 +1165,12 @@ func (s *Service) saveConfig(cfg *pb.DamConfig, desc, resType string, r *http.Re
 	}
 	if modification != nil && modification.DryRun {
 		return nil
+	}
+	if cfg.Policies != nil {
+		// Remove built-in policies from the storage layer. These should only be maintained by the code.
+		for k := range BuiltinPolicies {
+			delete(cfg.Policies, k)
+		}
 	}
 	cfg.Revision++
 	cfg.CommitTime = float64(time.Now().UnixNano()) / 1e9
@@ -1203,14 +1278,19 @@ func (s *Service) updateWarehouseOptions(opts *pb.ConfigOptions, realm string, t
 }
 
 // ImportConfig ingests bootstrap configuration files to the DAM's storage sytem.
-func ImportConfig(store storage.Store, service string, warehouse clouds.ResourceTokenCreator, cfgVars map[string]string) error {
+func ImportConfig(store storage.Store, service string, warehouse clouds.ResourceTokenCreator, cfgVars map[string]string) (ferr error) {
 	fs := getFileStore(store, service)
 	glog.Infof("import DAM config %q into data store", fs.Info()["service"])
 	tx, err := store.Tx(true)
 	if err != nil {
 		return err
 	}
-	defer tx.Finish()
+	defer func() {
+		err := tx.Finish()
+		if ferr == nil {
+			ferr = err
+		}
+	}()
 
 	history := &cpb.HistoryEntry{
 		Revision:   1,
@@ -1305,13 +1385,17 @@ func registerHandlers(r *mux.Router, s *Service) {
 	r.HandleFunc(configTrustedIssuerPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configIssuerFactory()), checker, auth.RequireAdminToken))
 	r.HandleFunc(configTrustedSourcePath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configSourceFactory()), checker, auth.RequireAdminToken))
 	r.HandleFunc(configPolicyPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configPolicyFactory()), checker, auth.RequireAdminToken))
-	r.HandleFunc(configClaimDefPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configVisaTypeFactory()), checker, auth.RequireAdminToken))
+	r.HandleFunc(configVisaTypePath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configVisaTypeFactory()), checker, auth.RequireAdminToken))
 	r.HandleFunc(configServiceTemplatePath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configServiceTemplateFactory()), checker, auth.RequireAdminToken))
 	r.HandleFunc(configTestPersonaPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configPersonaFactory()), checker, auth.RequireAdminToken))
 	r.HandleFunc(configClientPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.configClientFactory()), checker, auth.RequireAdminToken))
 
 	r.HandleFunc(processesPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.processesFactory()), checker, auth.RequireAdminToken))
 	r.HandleFunc(processPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), s.processFactory()), checker, auth.RequireAdminToken))
+
+	// scim service endpoints
+	r.HandleFunc(scimGroupPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), scim.GroupFactory(s.GetStore(), scimGroupPath)), checker, auth.RequireAdminToken))
+	r.HandleFunc(scimGroupsPath, auth.MustWithAuth(handlerfactory.MakeHandler(s.GetStore(), scim.GroupsFactory(s.GetStore(), scimGroupsPath)), checker, auth.RequireAdminToken))
 
 	// hydra related oidc endpoints
 	r.HandleFunc(hydraLoginPath, auth.MustWithAuth(s.HydraLogin, checker, auth.RequireNone)).Methods(http.MethodGet)
@@ -1322,4 +1406,18 @@ func registerHandlers(r *mux.Router, s *Service) {
 
 	// resource token exchange endpoint
 	r.HandleFunc(resourceTokensPath, auth.MustWithAuth(s.ResourceTokens, checker, auth.RequireUserToken)).Methods(http.MethodGet, http.MethodPost)
+
+	// token service endpoints
+	r.HandleFunc(tokensPath, auth.MustWithAuth(tokensapi.NewTokensHandler(s.tokens).ListTokens, checker, auth.RequireUserToken)).Methods(http.MethodGet)
+	r.HandleFunc(tokenPath, auth.MustWithAuth(tokensapi.NewTokensHandler(s.tokens).DeleteToken, checker, auth.RequireUserToken)).Methods(http.MethodDelete)
+
+	// consents service endpoints
+	consents := &consentsapi.StubConsents{Consent: consentsapi.FakeConsent}
+	r.HandleFunc(consentsPath, auth.MustWithAuth(consentsapi.NewConsentsHandler(consents).ListConsents, checker, auth.RequireUserToken)).Methods(http.MethodGet)
+	r.HandleFunc(consentPath, auth.MustWithAuth(consentsapi.NewConsentsHandler(consents).DeleteConsent, checker, auth.RequireUserToken)).Methods(http.MethodDelete)
+
+	// proxy hydra oauth token endpoint
+	if s.hydraPublicURLProxy != nil {
+		r.HandleFunc(oauthTokenPath, s.hydraPublicURLProxy.HydraOAuthToken).Methods(http.MethodPost)
+	}
 }

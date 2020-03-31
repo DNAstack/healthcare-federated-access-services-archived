@@ -1,0 +1,143 @@
+// Copyright 2019 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+// Package v1 provides protocol buffer for AuditLogs API.
+package AuditLogs.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/audits/v1";
+
+// AuditLogs service.
+service AuditLogs {
+  // Lists the AuditLogs Logs.
+  rpc ListAuditLogs(ListAuditLogsRequest) returns (ListAuditLogsResponse) {
+    option (google.api.http) = {
+      get: "/v1/auditlogs"
+    };
+  }
+}
+
+// An AuditLog records request for access. They contain the following
+// information:
+// - Where:    the name of the service that made the decision.
+// - What:     the requested Action (e.g. read/write/...) and
+//             the Resource (e.g. GCS bucket, a resource at an endpoint).
+// - When:     the time the decision was made.
+// - Who:      the identity and authentication information for the requester.
+// - Decision: the authorization decision, and the reason for it.
+// - Metadata: the request, response, status code, tracing id, etc.
+message AuditLog {
+  // Name of the audit log.
+  // Format: `users/{user_id}/logs/{log_id}`.
+  string name = 1;
+
+  AccessLog access_log = 2;
+  PolicyLog policy_log = 3;
+}
+
+// AccessLog is the audit log for auth checks for requests at endpoints.
+message AccessLog {
+  // ServiceName is the name of the service which made the decision.
+  string service_name = 1;
+  // ServiceType is the type of the service which made the decision.
+  string service_type = 2;
+
+  // TokenID is the id of the token, maybe "jti".
+  string token_id = 3;
+  // TokenSubject is the "sub" of the token.
+  string token_subject = 4;
+  // TokenIssuer is the iss of the token.
+  string token_issuer = 5;
+
+  // Decision is the PassAuthCheck if the request passes the auth check.
+  Decision decision = 6;
+  // ErrorType of deny.
+  // TODO: consider making this an enum.
+  string error_type = 7;
+  // The reason for the deny decision.
+  string reason = 8;
+
+  // Time at which the decision was made.
+  google.protobuf.Timestamp time = 9;
+
+  // MethodName is the name of the service method or operation.
+  string method_name = 10;
+  // ResourceName is the name of the resource that was target of the operation.
+  string resource_name = 11;
+
+  // TracingID is the id of request from proxies.
+  string tracing_id = 12;
+  // Requester's IP.
+  string caller_ip = 13;
+  // HTTP Response Code.
+  int64 http_response_code = 14;
+  // HTTP Request.
+  google.protobuf.Struct http_request = 15;
+}
+
+// PolicyLog is the audit log for dataset access decision.
+message PolicyLog {
+  // ServiceName is the name of the service which made the decision.
+  string service_name = 1;
+  // ServiceType is the type of the service which made the decision.
+  string service_type = 2;
+
+  // TokenID is the id of the token, maybe "jti".
+  string token_id = 3;
+  // TokenSubject is the "sub" of the token.
+  string token_subject = 4;
+  // TokenIssuer is the iss of the token.
+  string token_issuer = 5;
+
+  // Decission if the request pass the auth checker.
+  Decision decision = 6;
+  // ErrorType of deny.
+  // TODO: consider making this an enum.
+  string error_type = 7;
+  // The reason for the deny decision.
+  string reason = 8;
+
+  // Time at which the decision was made.
+  google.protobuf.Timestamp time = 9;
+
+  // ResourceName identifies the dataset to which the access was requested.
+  string resource_name = 10;
+  // TTL that user requested for the access.
+  google.protobuf.Duration ttl = 11;
+}
+
+// Decision is the result of an auth check.
+enum Decision {
+  UNSPECIFIED = 0;
+  PASS = 1;
+  FAIL = 2;
+}
+
+message ListAuditLogsRequest {
+  string parent = 1;
+  string filter = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListAuditLogsResponse {
+  repeated AuditLog audit_logs = 1;
+  string next_page_token = 2;
+}

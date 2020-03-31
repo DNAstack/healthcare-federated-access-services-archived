@@ -34,15 +34,15 @@ func TestConfigHandlers(t *testing.T) {
 	}
 
 	s := NewService(&Options{
-		HTTPClient:     server.Client(),
-		Domain:         "test.org",
-		ServiceName:    "dam",
-		DefaultBroker:  "no-broker",
-		Store:          store,
-		Warehouse:      wh,
-		UseHydra:       useHydra,
-		HydraAdminURL:  hydraAdminURL,
-		HydraPublicURL: hydraPublicURL,
+		HTTPClient:             server.Client(),
+		Domain:                 "test.org",
+		ServiceName:            "dam",
+		DefaultBroker:          "no-broker",
+		Store:                  store,
+		Warehouse:              wh,
+		UseHydra:               useHydra,
+		HydraAdminURL:          hydraAdminURL,
+		HydraPublicURL:         hydraPublicURL,
 	})
 
 	role := `{"roleCategories":["metadata"],"policyBasis":{"AcceptedTermsAndPolicies":true,"ResearcherStatus":true}}`
@@ -103,7 +103,7 @@ func TestConfigHandlers(t *testing.T) {
 		{
 			Method: "GET",
 			Path:   "/dam/v1alpha/master/passportTranslators",
-			Output: `{"passportTranslators":{"dbgap_translator":{"compatibleIssuers":["https://dbgap.nlm.nih.gov/aa"],"ui":{"label":"dbGaP Passport Translator"}},"elixir_translator":{"compatibleIssuers":["https://login.elixir-czech.org/oidc","https://login.elixir-czech.org/oidc/"],"ui":{"label":"Elixir Passport Translator"}}}}`,
+			Output: `{"passportTranslators":{"dbgap_translator":{"compatibleIssuers":["https://dbgap.nlm.nih.gov/aa"],"ui":{"label":"dbGaP Passport Translator"}}}}`,
 			Status: http.StatusOK,
 		},
 		{

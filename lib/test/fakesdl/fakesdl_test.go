@@ -19,9 +19,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/protobuf/ptypes" /* copybara-comment */
 	"cloud.google.com/go/logging" /* copybara-comment: logging */
 	"github.com/google/go-cmp/cmp" /* copybara-comment */
+	"github.com/golang/protobuf/ptypes" /* copybara-comment */
 	"google.golang.org/protobuf/testing/protocmp" /* copybara-comment */
 
 	glog "github.com/golang/glog" /* copybara-comment */

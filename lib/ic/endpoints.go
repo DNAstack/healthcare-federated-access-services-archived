@@ -33,16 +33,20 @@ const (
 	hydraConsentPath = "/identity/consent"
 	// Redirected to here from Identity Broker.
 	acceptLoginPath = "/identity/loggedin"
+	// Proxy hydra token endpoint.
+	oauthTokenPath = "/oauth2/token"
+	// Hydra's auth endpoint.
+	oauthAuthPath = "oauth2/auth"
+	// CLI to register an auth flow for acquiring tokens.
+	cliRegisterPath = "/identity/cli/register/{name}"
+	// CLI path to start the auth flow for the registered ID.
+	cliAuthPath = "/identity/cli/auth/{name}"
+	// CLI auth flow complete "accept" endpoint to acquire the code and/or tokens.
+	cliAcceptPath = "/identity/cli/accept"
 
 	// ---------------------------------------------------------------------------
 	// The following are administration endpoints for managing DAM.
 	// ---------------------------------------------------------------------------
-
-	// infoPath: metadata about the service, like versions of various services.
-	// Required permission: admin
-	infoPath = "/identity"
-	// Return the JWKS of keys for visas signed by the IC.
-	jwksPath = "/visas/jwks"
 
 	// The following are for managing realms.
 	realmPath = "/identity/v1alpha/{realm}"
@@ -68,6 +72,9 @@ const (
 	configHistoryPath         = "/identity/v1alpha/{realm}/config/history"
 	configHistoryRevisionPath = "/identity/v1alpha/{realm}/config/history/{name}"
 
+	// Part of SCIM V2 for managing groups. See "proto/scim/v2/groups.proto"
+	scimGroupsPath = "/identity/scim/v2/{realm}/Groups"
+	scimGroupPath  = "/identity/scim/v2/{realm}/Groups/{name}"
 	// Part of SCIM V2 for managing users. See "proto/scim/v2/users.proto"
 	scimUsersPath = "/identity/scim/v2/{realm}/Users"
 	scimUserPath  = "/identity/scim/v2/{realm}/Users/{name}"
@@ -92,6 +99,16 @@ const (
 	identityProvidersPath = "/identity/v1alpha/{realm}/identityProviders"
 	clientPath            = "/identity/v1alpha/{realm}/clients/{name}"
 	translatorsPath       = "/identity/v1alpha/{realm}/passportTranslators"
+
+	// ---------------------------------------------------------------------------
+	// The following are read-only and public.
+	// ---------------------------------------------------------------------------
+
+	// infoPath: metadata about the service, like versions of various services.
+	// Required permission: none
+	infoPath = "/identity"
+	// Return the JWKS of keys for visas signed by the IC.
+	jwksPath = "/visas/jwks"
 
 	// ---------------------------------------------------------------------------
 	// The following are unsupported and to be removed.
