@@ -31,6 +31,8 @@ import (
 
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/clouds"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage"
+	"crypto/sha1"
+	"hash"
 )
 
 const (
@@ -261,7 +263,7 @@ func (wh *AccountWarehouse) ensureTokenResult(sess *session.Session, principalAr
 
 func createTempCredentialResult(sess *session.Session, principalArn string, params *ResourceParams) (*clouds.ResourceTokenResult, error) {
 	svc := sts.New(sess)
-	userId := convertToAwsSafeIdentifier(params.UserId)
+	userId := convertUserIdToSessionName(params.UserId)
 	aro, err := assumeRole(userId, svc, principalArn, params.Ttl)
 	if err != nil {
 		return nil, err
@@ -316,6 +318,34 @@ func ensureIdentityBasedPolicy(sess *session.Session, spec *policySpec) error {
 
 func convertToAwsSafeIdentifier(val string) string {
 	return strings.ReplaceAll(val, "|", "@")
+}
+
+func convertUserIdToSessionName(userId string) string{
+	parts := strings.SplitN(userId, "|", 2)
+	sessionName := parts[0] + "@" + stringHash(parts[1])
+	maxLen := 64
+	if len(sessionName) < 64 {
+		maxLen = len(sessionName)
+	}
+	return sessionName[0:maxLen]
+}
+
+// TODO: figure out right place to have this code
+//CreateHash method
+func createHash(byteStr []byte) []byte {
+	var hashVal hash.Hash
+	hashVal = sha1.New()
+	hashVal.Write(byteStr)
+
+	var bytes []byte
+
+	bytes = hashVal.Sum(nil)
+	return bytes
+}
+
+func stringHash(val string) string {
+	h := createHash([]byte(val))
+	return fmt.Sprintf("%x", h)
 }
 
 func assumeRole(sessionName string, svcSts *sts.STS, roleArn string, ttl time.Duration) (*sts.AssumeRoleOutput, error) {
@@ -413,7 +443,7 @@ func ensureBucketPolicy(sess *session.Session, spec *policySpec) error {
 		Policy:                        aws.String(policy),
 	})
 	if err != nil {
-		return fmt.Errorf("unable to create AWS user policy %s: %v", spec.principal.getId(), err)
+		return fmt.Errorf("unable to create AWS bucket policy %s: %v", spec.principal.getId(), err)
 	} else {
 		return nil
 	}
