@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/sts"
+	"github.com/cenkalti/backoff"
 	"strings"
 	"time"
 
@@ -54,6 +55,25 @@ type resourceType int
 const (
 	otherRType resourceType = iota
 	bucketType
+)
+
+const (
+	backoffInitialInterval     = 1 * time.Second
+	backoffRandomizationFactor = 0.5
+	backoffMultiplier          = 1.5
+	backoffMaxInterval         = 3 * time.Second
+	backoffMaxElapsedTime      = 10 * time.Second
+)
+
+var (
+	exponentialBackoff = &backoff.ExponentialBackOff{
+		InitialInterval:     backoffInitialInterval,
+		RandomizationFactor: backoffRandomizationFactor,
+		Multiplier:          backoffMultiplier,
+		MaxInterval:         backoffMaxInterval,
+		MaxElapsedTime:      backoffMaxElapsedTime,
+		Clock:               backoff.SystemClock,
+	}
 )
 
 // AccountWarehouse is used to create AWS IAM Users and temporary credentials
@@ -437,13 +457,26 @@ func ensureBucketPolicy(sess *session.Session, spec *policySpec) error {
                                     "Principal":{"AWS":"%s"}
 								}
 							}`, actions, resources, spec.principal.getArn())
+	f := func() error { return putBucketPolicy(svc, spec, policy) }
+	if err := backoff.Retry(f, exponentialBackoff); err != nil {
+		return err
+	} else {
+		return nil
+	}
+}
+
+func putBucketPolicy(svc *s3.S3, spec *policySpec, policy string) error {
 	_, err := svc.PutBucketPolicy(&s3.PutBucketPolicyInput{
 		// Assume all specs are under same bucket
-		Bucket:                        aws.String(spec.rSpecs[0].id),
-		Policy:                        aws.String(policy),
+		Bucket: aws.String(spec.rSpecs[0].id),
+		Policy: aws.String(policy),
 	})
 	if err != nil {
-		return fmt.Errorf("unable to create AWS bucket policy %s: %v", spec.principal.getId(), err)
+		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "MalformedPolicy" && strings.Contains(aerr.Message(), "Invalid principal in policy") {
+			return fmt.Errorf("unable to create AWS bucket policy %s: %v", spec.principal.getId(), err)
+		} else {
+			return backoff.Permanent(fmt.Errorf("unable to create AWS bucket policy %s: %v", spec.principal.getId(), err))
+		}
 	} else {
 		return nil
 	}
@@ -480,17 +513,30 @@ func ensureUserPolicy(sess *session.Session, spec *policySpec) error {
 									"Resource":%s
 								}
 							}`, actions, resources)
+	f := func() error { return putUserPolicy(svc, spec, policy) }
+	if err := backoff.Retry(f, exponentialBackoff); err != nil {
+		return err
+	}
+	return nil
+}
+
+func putUserPolicy(svc *iam.IAM, spec *policySpec, policy string) error {
 	_, err := svc.PutUserPolicy(&iam.PutUserPolicyInput{
 		PolicyName:     aws.String(spec.principal.getId()),
 		UserName:       aws.String(spec.principal.getId()),
 		PolicyDocument: aws.String(policy),
 	})
 	if err != nil {
-		return fmt.Errorf("unable to create AWS user policy %s: %v", spec.principal.getId(), err)
+		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "MalformedPolicy" && strings.Contains(aerr.Message(), "Invalid principal in policy") {
+			return fmt.Errorf("unable to create AWS user policy %s: %v", spec.principal.getId(), err)
+		} else {
+			return backoff.Permanent(fmt.Errorf("unable to create AWS user policy %s: %v", spec.principal.getId(), err))
+		}
 	} else {
 		return nil
 	}
 }
+
 
 // ensures user is created and returns non-empty user ARN if successful
 func ensureUser(sess *session.Session, spec *principalSpec) (string, error) {
