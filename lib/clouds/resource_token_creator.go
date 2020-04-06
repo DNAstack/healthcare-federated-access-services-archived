@@ -40,6 +40,15 @@ type ResourceTokenResult struct {
 	Format  string
 }
 
+// AwsResourceTokenResult is returned from GetTokenWithTTL() for aws adapter.
+type AwsResourceTokenResult struct {
+	Account string
+	Format string
+	AccessKeyId string
+	SecretAccessKey string
+	SessionToken string
+}
+
 // ResourceTokenCreator abstracts token creation for resource accessing in cloud platforms. This refers to Service Account Warehouses (SAWs) in GCP and our communication.
 type ResourceTokenCreator interface {
 

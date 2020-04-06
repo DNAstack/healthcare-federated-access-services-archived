@@ -174,7 +174,7 @@ func NewWarehouse(store storage.Store) (*AccountWarehouse, error) {
 }
 
 // MintTokenWithTTL returns an AccountKey or an AccessToken depending on the TTL requested.
-func (wh *AccountWarehouse) MintTokenWithTTL(ctx context.Context, params *ResourceParams) (*clouds.ResourceTokenResult, error) {
+func (wh *AccountWarehouse) MintTokenWithTTL(ctx context.Context, params *ResourceParams) (*clouds.AwsResourceTokenResult, error) {
 	sess, err := createSession()
 	if err != nil {
 		return nil, err
@@ -270,7 +270,7 @@ func (wh *AccountWarehouse) MintTokenWithTTL(ctx context.Context, params *Resour
 	return wh.ensureTokenResult(sess, principalArn, princSpec)
 }
 
-func (wh *AccountWarehouse) ensureTokenResult(sess *session.Session, principalArn string, princSpec *principalSpec) (*clouds.ResourceTokenResult, error) {
+func (wh *AccountWarehouse) ensureTokenResult(sess *session.Session, principalArn string, princSpec *principalSpec) (*clouds.AwsResourceTokenResult, error) {
 	switch princSpec.pType {
 	case userType:
 		return wh.ensureAccessKeyResult(sess, principalArn, princSpec)
@@ -281,28 +281,31 @@ func (wh *AccountWarehouse) ensureTokenResult(sess *session.Session, principalAr
 	}
 }
 
-func createTempCredentialResult(sess *session.Session, principalArn string, params *ResourceParams) (*clouds.ResourceTokenResult, error) {
+func createTempCredentialResult(sess *session.Session, principalArn string, params *ResourceParams) (*clouds.AwsResourceTokenResult, error) {
 	svc := sts.New(sess)
 	userId := convertUserIdToSessionName(params.UserId)
 	aro, err := assumeRole(userId, svc, principalArn, params.Ttl)
 	if err != nil {
 		return nil, err
 	}
-	return &clouds.ResourceTokenResult{
+	return &clouds.AwsResourceTokenResult{
 		Account: *aro.AssumedRoleUser.AssumedRoleId,
-		Token:   *aro.Credentials.AccessKeyId + ":" + *aro.Credentials.SecretAccessKey + ":" + *aro.Credentials.SessionToken,
+		AccessKeyId:   *aro.Credentials.AccessKeyId,
+		SecretAccessKey:   *aro.Credentials.SecretAccessKey,
+		SessionToken:   *aro.Credentials.SessionToken,
 		Format:  "aws",
 	}, nil
 }
 
-func (wh *AccountWarehouse) ensureAccessKeyResult(sess *session.Session, principalArn string, princSpec *principalSpec) (*clouds.ResourceTokenResult, error) {
+func (wh *AccountWarehouse) ensureAccessKeyResult(sess *session.Session, principalArn string, princSpec *principalSpec) (*clouds.AwsResourceTokenResult, error) {
 	accessKey, err := wh.ensureAccessKey(sess, princSpec.getId())
 	if err != nil {
 		return nil, err
 	}
-	return &clouds.ResourceTokenResult{
+	return &clouds.AwsResourceTokenResult{
 		Account: principalArn,
-		Token:   *accessKey.AccessKeyId + ":" + *accessKey.SecretAccessKey,
+		AccessKeyId: *accessKey.AccessKeyId,
+		SecretAccessKey: *accessKey.SecretAccessKey,
 		Format:  "aws",
 	}, nil
 }

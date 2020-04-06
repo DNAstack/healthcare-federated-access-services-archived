@@ -76,8 +76,11 @@ func (a *AwsAdapter) MintToken(ctx context.Context, input *Action) (*MintTokenRe
 
 	return &MintTokenResult{
 		Credentials: map[string]string{
-			"account":      result.Account,
-			"access_token": result.Token,
+			"account":       result.Account,
+			"access_key_id": result.AccessKeyId,
+			"secret":        result.SecretAccessKey,
+			"session_token": result.SessionToken,
+
 		},
 		TokenFormat: result.Format,
 	}, nil
