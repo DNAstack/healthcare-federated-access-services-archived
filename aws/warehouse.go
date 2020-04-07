@@ -24,7 +24,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/iam"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/cenkalti/backoff"
 	"strings"
@@ -321,8 +320,6 @@ func ensurePrincipal(sess *session.Session, princSpec *principalSpec) (string, e
 func ensurePolicy(sess *session.Session, spec *policySpec) error {
 	if len(spec.rSpecs) == 0 {
 		return fmt.Errorf("cannot have policy without any resources")
-	} else if allUnderSameBucket(spec.rSpecs) {
-		return ensureBucketPolicy(sess, spec)
 	} else {
 		return ensureIdentityBasedPolicy(sess, spec)
 	}
@@ -443,63 +440,6 @@ func ensureRolePolicy(sess *session.Session, spec *policySpec) error {
 	}
 }
 
-func ensureBucketPolicy(sess *session.Session, spec *policySpec) error {
-	svc := s3.New(sess)
-	// FIXME handle versioning
-	actions := valuesToJsonStringArray(spec.params.TargetRoles)
-	resources := resourceArnsToJsonStringArray(spec.rSpecs)
-	// FIXME user serialization library
-	policy := fmt.Sprintf(
-		`{
-								"Version":"2012-10-17",
-								"Statement":
-								{
-									"Effect":"Allow",
-									"Action":%s,
-									"Resource":%s,
-                                    "Principal":{"AWS":"%s"}
-								}
-							}`, actions, resources, spec.principal.getArn())
-	f := func() error { return putBucketPolicy(svc, spec, policy) }
-	if err := backoff.Retry(f, exponentialBackoff); err != nil {
-		return err
-	} else {
-		return nil
-	}
-}
-
-func putBucketPolicy(svc *s3.S3, spec *policySpec, policy string) error {
-	_, err := svc.PutBucketPolicy(&s3.PutBucketPolicyInput{
-		// Assume all specs are under same bucket
-		Bucket: aws.String(spec.rSpecs[0].id),
-		Policy: aws.String(policy),
-	})
-	if err != nil {
-		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == "MalformedPolicy" && strings.Contains(aerr.Message(), "Invalid principal in policy") {
-			return fmt.Errorf("unable to create AWS bucket policy %s: %v", spec.principal.getId(), err)
-		} else {
-			return backoff.Permanent(fmt.Errorf("unable to create AWS bucket policy %s: %v", spec.principal.getId(), err))
-		}
-	} else {
-		return nil
-	}
-}
-
-func allUnderSameBucket(specs []*resourceSpec) bool {
-	if len(specs) == 0 {
-		return true
-	} else {
-		bucketId := specs[0].id
-		for _, spec := range specs {
-			if !(spec.rType == bucketType && spec.id == bucketId) {
-				return false
-			}
-		}
-
-		return true
-	}
-}
-
 func ensureUserPolicy(sess *session.Session, spec *policySpec) error {
 	svc := iam.New(sess)
 	// FIXME handle versioning
@@ -513,9 +453,12 @@ func ensureUserPolicy(sess *session.Session, spec *policySpec) error {
 								{
 									"Effect":"Allow",
 									"Action":%s,
-									"Resource":%s
+									"Resource":%s,
+									"Condition": {
+										"DateLessThanEquals": {"aws:CurrentTime": "%s"}
+									}
 								}
-							}`, actions, resources)
+							}`, actions, resources, (time.Now().Add(spec.params.Ttl)).Format(time.RFC3339) )
 	f := func() error { return putUserPolicy(svc, spec, policy) }
 	if err := backoff.Retry(f, exponentialBackoff); err != nil {
 		return err
