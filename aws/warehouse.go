@@ -19,6 +19,7 @@ package aws
 import (
 	"context"
 	"fmt"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/processaws"
 	v1 "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -64,6 +65,11 @@ const (
 	backoffMaxElapsedTime      = 10 * time.Second
 )
 
+const (
+	defaultGcFrequency = 1 * 24 * time.Hour /* 1 day */
+	defaultKeysPerAccount = 1 //FIXME my assumption is there is only one key per account
+)
+
 var (
 	exponentialBackoff = &backoff.ExponentialBackOff{
 		InitialInterval:     backoffInitialInterval,
@@ -80,6 +86,19 @@ type AccountWarehouse struct {
 	svcUserArn *string
 	store      storage.Store
 	tmp        map[string]iam.AccessKey
+	keyGC      *processaws.KeyGc
+}
+
+func (wh *AccountWarehouse) GetServiceAccounts(ctx context.Context, project string) (<-chan *clouds.Account, error) {
+	panic("implement me getserviceaccounts")
+}
+
+func (wh *AccountWarehouse) RemoveServiceAccount(ctx context.Context, project, accountID string) error {
+	panic("implement me removeserviceaccount")
+}
+
+func (wh *AccountWarehouse) ManageAccountKeys(ctx context.Context, project, accountID string, ttl, maxKeyTTL time.Duration, now time.Time, keysPerAccount int64) (int, int, error) {
+	panic("implement me manageaccountkeys")
 }
 
 type ResourceParams struct {
@@ -168,7 +187,14 @@ func NewWarehouse(store storage.Store) (*AccountWarehouse, error) {
 	wh := &AccountWarehouse{
 		store: store,
 		tmp: make(map[string]iam.AccessKey),
+		keyGC: nil,
 	}
+
+	ctx := context.Background()
+	fmt.Printf("*******================Registering key=============********* \n")
+	wh.keyGC = processaws.NewKeyGC("aws_key_gc", wh, wh.store, defaultGcFrequency, defaultKeysPerAccount)
+
+	go wh.Run(ctx)
 	return wh, nil
 }
 
@@ -410,6 +436,10 @@ func (wh *AccountWarehouse) loadSvcUserArn(sess *session.Session) (string, error
 			return *wh.svcUserArn, nil
 		}
 	}
+}
+
+func (wh *AccountWarehouse) Run(ctx context.Context) {
+	wh.keyGC.Run(ctx)
 }
 
 func ensureRolePolicy(sess *session.Session, spec *policySpec) error {
