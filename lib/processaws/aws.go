@@ -47,6 +47,35 @@ func NewKeyGC(name string, warehouse clouds.AccountManager, store storage.Store,
 	return k
 }
 
+func (k *KeyGc) RegisterWork(workName string, params *pb.Process_Params, tx storage.Tx) (*pb.Process_Work, error) {
+	return k.process.RegisterWork(workName, params, tx)
+}
+
+func (k *KeyGc) UnregisterWork(workName string, tx storage.Tx) error  {
+	return k.process.UnregisterWork(workName, tx)
+}
+
+func (k *KeyGc) UpdateSettings(maxRequestedTTL time.Duration, keysPerAccount int, tx storage.Tx) error {
+	keyTTL := timeutil.KeyTTL(maxRequestedTTL, keysPerAccount)
+	settings := &pb.Process_Params{
+		IntParams: map[string]int64{
+			"maxRequestedTtl": int64(maxRequestedTTL.Seconds()),
+			"keysPerAccount":  int64(keysPerAccount),
+			"keyTtl":          int64(keyTTL.Seconds()),
+		},
+	}
+	scheduleFrequency := keyTTL / 10
+	if scheduleFrequency > maxKeyScheduleFrequency {
+		scheduleFrequency = maxKeyScheduleFrequency
+	}
+	return k.process.UpdateSettings(scheduleFrequency, settings, tx)
+}
+
+// WaitCondition registers a callback that is called and checks conditions before every wait cycle.
+func (k *KeyGc) WaitCondition(fn func(ctx context.Context, duration time.Duration) bool) {
+	k.wait = fn
+}
+
 // processlib implementations
 func (k *KeyGc) ProcessActiveWork(ctx context2.Context, state *pb.Process, workName string, work *pb.Process_Work, process *processlib.Process) error {
 	panic("implement me process active work")
@@ -65,7 +94,7 @@ func (k *KeyGc) Wait(ctx context2.Context, duration time.Duration) bool {
 	return true
 }
 
-// Run
+// Run schedules a background process.
 func (k *KeyGc) Run(ctx context.Context)  {
 	fmt.Printf("++++ Calling aws run ++++ \n")
 	k.process.Run(ctx)

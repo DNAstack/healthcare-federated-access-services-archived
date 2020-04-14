@@ -28,10 +28,15 @@ func NewAwsAdapter(store storage.Store, warehouse clouds.ResourceTokenCreator, s
 	if err := srcutil.LoadProto(path, &msg); err != nil {
 		return nil, fmt.Errorf("reading %q service descriptors from path %q: %v", aggregatorName, path, err)
 	}
-
-	wh, err := aws.NewWarehouse(store)
+	ctx := context.Background()
+	wh, err := aws.NewWarehouse(store, ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error creating AWS key warehouse: %v", err)
+	}
+
+	//Register Accounts
+	if err := aws.RegisterAccountGC(store, wh); err != nil {
+		return nil, fmt.Errorf("error registering AWS account key GC: %v", err)
 	}
 
 	return &AwsAdapter{

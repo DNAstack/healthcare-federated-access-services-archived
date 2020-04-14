@@ -183,19 +183,25 @@ type policySpec struct {
 
 // NewAccountWarehouse creates a new AccountWarehouse using the provided client
 // and options.
-func NewWarehouse(store storage.Store) (*AccountWarehouse, error) {
+func NewWarehouse(store storage.Store, ctx context.Context) (*AccountWarehouse, error) {
 	wh := &AccountWarehouse{
 		store: store,
 		tmp: make(map[string]iam.AccessKey),
 		keyGC: nil,
 	}
-
-	ctx := context.Background()
-	fmt.Printf("*******================Registering key=============********* \n")
-	wh.keyGC = processaws.NewKeyGC("aws_key_gc", wh, wh.store, defaultGcFrequency, defaultKeysPerAccount)
+	wh.keyGC = processaws.NewKeyGC("aws_key_gc", wh, store, defaultGcFrequency, defaultKeysPerAccount)
 
 	go wh.Run(ctx)
 	return wh, nil
+}
+
+func RegisterAccountGC(store storage.Store, wh *AccountWarehouse) (error) {
+	tx, err := store.Tx(true)
+	if err !=nil {
+		return err
+	}
+
+	return wh.RegisterAccountProject("test-project", tx)
 }
 
 // MintTokenWithTTL returns an AccountKey or an AccessToken depending on the TTL requested.
@@ -327,6 +333,7 @@ func (wh *AccountWarehouse) ensureAccessKeyResult(sess *session.Session, princip
 	if err != nil {
 		return nil, err
 	}
+	//wh.keyGC.RegisterWork("access_key", nil, nil)
 	return &clouds.AwsResourceTokenResult{
 		Account: principalArn,
 		AccessKeyId: *accessKey.AccessKeyId,
@@ -436,10 +443,6 @@ func (wh *AccountWarehouse) loadSvcUserArn(sess *session.Session) (string, error
 			return *wh.svcUserArn, nil
 		}
 	}
-}
-
-func (wh *AccountWarehouse) Run(ctx context.Context) {
-	wh.keyGC.Run(ctx)
 }
 
 func ensureRolePolicy(sess *session.Session, spec *policySpec) error {
