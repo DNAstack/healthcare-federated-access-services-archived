@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	keyScheduleFrequency    = time.Hour
+	keyScheduleFrequency    = time.Minute //FIXME Before merging, updating this for testing
 	maxKeyScheduleFrequency = 12 * time.Hour
 )
 
@@ -43,7 +43,6 @@ func NewKeyGC(name string, warehouse clouds.AccountManager, store storage.Store,
 	fmt.Printf("*** Calling New Process *** \n")
 
 	k.process = processlib.NewProcess(name, k, store, keyScheduleFrequency, defaultParams)
-
 	return k
 }
 
@@ -77,16 +76,59 @@ func (k *KeyGc) WaitCondition(fn func(ctx context.Context, duration time.Duratio
 }
 
 // processlib implementations
-func (k *KeyGc) ProcessActiveWork(ctx context2.Context, state *pb.Process, workName string, work *pb.Process_Work, process *processlib.Process) error {
-	panic("implement me process active work")
+func (k *KeyGc) ProcessActiveWork(ctx context.Context, state *pb.Process, workName string, work *pb.Process_Work, process *processlib.Process) error {
+	fmt.Printf("Process Active Work AWS\n")
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	accounts, err := k.aw.GetServiceAccounts(ctx, workName)
+	fmt.Printf("Process Active Work AWS accounts: %v \n", len(accounts))
+	if err != nil {
+		return err
+	}
+
+	for a := range accounts  {
+		//TODO: Implement this
+		fmt.Printf("Process work Inside account: %v \n", a.DisplayName)
+		process.AddWorkStats(1, "accounts", workName, state)
+		keyTTL := work.Params.IntParams["keyTtl"]
+		keysPerAccount := work.Params.IntParams["keysPerAccount"]
+		got, rm, err := k.aw.ManageAccountKeys(ctx, workName, a.DisplayName, 0, time.Duration(keyTTL)*time.Second, time.Now(), keysPerAccount)
+		if err != nil {
+			run := process.AddWorkError(err, workName, state)
+			if run != processlib.Continue {
+				return nil
+			}
+			continue
+		}
+		fmt.Printf("**** GOT: %v \n", got)
+		fmt.Printf("**** RM: %v \n", rm)
+		process.AddWorkStats(float64(got), "keysKept", workName, state)
+		process.AddWorkStats(float64(rm), "keysRemoved", workName, state)
+	}
+	return nil
 }
 
-func (k *KeyGc) CleanupWork(ctx context2.Context, state *pb.Process, workName string, process *processlib.Process) error {
-	panic("implement me cleanup work")
+func (k *KeyGc) CleanupWork(ctx context.Context, state *pb.Process, workName string, process *processlib.Process) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	accounts, err := k.aw.GetServiceAccounts(ctx, workName)
+	fmt.Printf("Cleanup Active Work AWS accounts: %v \n", accounts)
+	if err != nil {
+		return err
+	}
+
+	for a := range accounts  {
+		fmt.Printf("Cleanup work Inside account: %v \n", a.DisplayName)
+	}
+	// Get aws access keys
+
+	return nil
 }
 
 func (k *KeyGc) Wait(ctx context2.Context, duration time.Duration) bool {
-	fmt.Printf("!!!!!WAITING!!!!! \n")
+	fmt.Printf("!!!!!AWS WAITING!!!!! \n")
 	if k.wait != nil && !k.wait(ctx, duration) {
 		return false
 	}
@@ -96,6 +138,6 @@ func (k *KeyGc) Wait(ctx context2.Context, duration time.Duration) bool {
 
 // Run schedules a background process.
 func (k *KeyGc) Run(ctx context.Context)  {
-	fmt.Printf("++++ Calling aws run ++++ \n")
+	fmt.Printf("++++ Calling aws run from processaws ++++ \n")
 	k.process.Run(ctx)
 }

@@ -16,6 +16,7 @@ package saw
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/storage" /* copybara-comment: storage */
@@ -31,6 +32,7 @@ func (wh *AccountWarehouse) Run(ctx context.Context) {
 
 // RegisterAccountProject adds a project to the state for workers to process.
 func (wh *AccountWarehouse) RegisterAccountProject(project string, tx storage.Tx) error {
+	fmt.Printf("##### Registering Account Project ##### \n")
 	_, err := wh.keyGC.RegisterWork(project, nil, tx)
 	return err
 }

@@ -19,6 +19,8 @@ package aws
 import (
 	"context"
 	"fmt"
+	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/timeutil"
+	glog "github.com/golang/glog"
 	"github.com/GoogleCloudPlatform/healthcare-federated-access-services/lib/processaws"
 	v1 "github.com/GoogleCloudPlatform/healthcare-federated-access-services/proto/dam/v1"
 	"github.com/aws/aws-sdk-go/aws"
@@ -67,7 +69,7 @@ const (
 
 const (
 	defaultGcFrequency = 1 * 24 * time.Hour /* 1 day */
-	defaultKeysPerAccount = 1 //FIXME my assumption is there is only one key per account
+	defaultKeysPerAccount = 2 //FIXME my assumption is there is only one key per account
 )
 
 var (
@@ -89,16 +91,93 @@ type AccountWarehouse struct {
 	keyGC      *processaws.KeyGc
 }
 
+//TODO: Getting AWS service accounts
 func (wh *AccountWarehouse) GetServiceAccounts(ctx context.Context, project string) (<-chan *clouds.Account, error) {
-	panic("implement me getserviceaccounts")
+	fmt.Printf("Getting aws service accounts: %v \n", project)
+	c := make(chan *clouds.Account)
+	go func() {
+		defer close(c)
+		f := func(acct *iam.User) error {
+			a := &clouds.Account{
+				ID:          aws.StringValue(acct.UserId),
+				DisplayName: aws.StringValue(acct.UserName),
+			}
+			fmt.Printf("Inside f: %v \n", a.DisplayName)
+			select {
+			case c <- a:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			return nil
+		}
+		sess, err := createSession()
+		if err !=nil {
+			return
+		}
+		svc := iam.New(sess)
+		accounts, err := svc.ListUsers(&iam.ListUsersInput{
+			PathPrefix: aws.String("/ddap/"),
+		})
+		//svc.DeleteLoginProfile()
+		users := accounts.Users
+		fmt.Printf("Users List: %v \n", users)
+		for _, user := range users {
+			if err := f(user); err != nil {
+				glog.Errorf("getting user accounts list: %v", err)
+				return
+			}
+		}
+
+	}()
+	return c, nil
 }
 
 func (wh *AccountWarehouse) RemoveServiceAccount(ctx context.Context, project, accountID string) error {
+	// Unlike the AWS Management Console, when
+	//       you delete a user programmatically, you must delete the items  attached
+	//       to  the user manually, or the deletion fails. For more information, see
+	//       Deleting an IAM User . Before attempting to delete a user,  remove  the
+	//       following items
+	// Refer: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_users_manage.html#id_users_deleting_cli
 	panic("implement me removeserviceaccount")
 }
 
+//This method is the main method where key removal happens
 func (wh *AccountWarehouse) ManageAccountKeys(ctx context.Context, project, accountID string, ttl, maxKeyTTL time.Duration, now time.Time, keysPerAccount int64) (int, int, error) {
-	panic("implement me manageaccountkeys")
+	//TODO: Get service account keys
+	expired := now.Add(-1 * maxKeyTTL).Format(time.RFC3339)
+	sess, err := createSession()
+	if err != nil {
+
+	}
+	svc := iam.New(sess)
+	accessKeys, err := svc.ListAccessKeys(&iam.ListAccessKeysInput{
+		UserName: aws.String(accountID),
+	})
+	fmt.Printf("Access Keys: %v \n", accessKeys.AccessKeyMetadata)
+	if err != nil {
+		return 0, 0, fmt.Errorf("error getting key list: %v", err)
+	}
+	keys := accessKeys.AccessKeyMetadata
+	var actives []*iam.AccessKeyMetadata
+	active := len(keys)
+	//keys := accessKeys.AccessKeyMetadata
+	for _, key := range keys {
+		t := timeutil.TimestampProto(aws.TimeValue(key.CreateDate))
+		if timeutil.RFC3339(t) < expired {
+			// delete key
+			fmt.Printf("Expired key: %v \n", key)
+			active--
+			continue
+		}
+		actives = append(actives, key)
+	}
+
+	if int64(len(actives)) < keysPerAccount {
+		return active, len(keys) - active, nil
+	}
+	//expired := now.Add(-1 * maxKeyTTL).Format(time.RFC3339)
+	return active, len(keys) - active, nil
 }
 
 type ResourceParams struct {
@@ -200,8 +279,19 @@ func RegisterAccountGC(store storage.Store, wh *AccountWarehouse) (error) {
 	if err !=nil {
 		return err
 	}
+	sess, err := createSession()
+	if err != nil {
+		return err
+	}
 
-	return wh.RegisterAccountProject("test-project", tx)
+	//QUESTION: What to use here? At present we are using current caller identity
+	svcUserArn, err := wh.loadSvcUserArn(sess)
+	fmt.Printf("Account Name: %v \n", extractAccount(svcUserArn))
+	if err != nil {
+		return err
+	}
+
+	return wh.RegisterAccountProject(svcUserArn, tx)
 }
 
 // MintTokenWithTTL returns an AccountKey or an AccessToken depending on the TTL requested.
@@ -230,6 +320,8 @@ func (wh *AccountWarehouse) MintTokenWithTTL(ctx context.Context, params *Resour
 	} else {
 		princSpec.pType = roleType
 	}
+
+	fmt.Printf("SVC USER: %v \n", svcUserArn)
 
 	var polSpec *policySpec
 	switch params.ServiceTemplate.ServiceName {
@@ -528,6 +620,8 @@ func ensureUser(sess *session.Session, spec *principalSpec) (string, error) {
 		if aerr, ok := err.(awserr.Error); ok && aerr.Code() == iam.ErrCodeNoSuchEntityException {
 			cuo, err := svc.CreateUser(&iam.CreateUserInput{
 				UserName: aws.String(spec.getId()),
+				// TODO: Make prefix configurable for different dam deployments GcpServiceAccountProject
+				Path: aws.String("/ddap/"),
 			})
 			if err != nil {
 				return "", fmt.Errorf("unable to create IAM user %s: %v", spec.getId(), err)
@@ -539,6 +633,7 @@ func ensureUser(sess *session.Session, spec *principalSpec) (string, error) {
 		}
 	} else {
 		userArn = *guo.User.Arn
+		fmt.Printf("USER: %v \n", aws.StringValue(guo.User.UserName))
 	}
 	return userArn, nil
 }
@@ -546,6 +641,10 @@ func ensureUser(sess *session.Session, spec *principalSpec) (string, error) {
 func ensureRole(sess *session.Session, spec *principalSpec) (string, error) {
 	svc := iam.New(sess)
 	// FIXME should include a path based on the DAM URL
+	list, err := svc.ListUsers(&iam.ListUsersInput{
+		PathPrefix: aws.String("/ddap/"),
+	})
+	fmt.Printf("USER LIST: %v \n", len(list.Users))
 	gro, err := svc.GetRole(&iam.GetRoleInput{
 		RoleName: aws.String(spec.getId()),
 	})

@@ -113,6 +113,7 @@ func NewProcess(name string, worker Worker, store storage.Store, scheduleFrequen
 	sf, pf := p.frequency(scheduleFrequency)
 	p.scheduleFrequency = sf
 	p.progressFrequency = pf
+	fmt.Printf("**********Creating Process************* \n")
 	return p
 }
 
@@ -261,8 +262,10 @@ func (p *Process) UpdateFlowControl(initialWaitDuration time.Duration, minSchedu
 
 // Run schedules a background process. Typically this will be on its own go routine.
 func (p *Process) Run(ctx context.Context) {
+	fmt.Printf("Process RUN called: %v \n", p.name)
 	p.running = true
 	freq := p.initialWaitDuration
+	fmt.Printf("Process RUN frequency: %v \n", freq)
 	for {
 		if !p.worker.Wait(ctx, p.sleepTime(freq)) {
 			break
@@ -276,6 +279,7 @@ func (p *Process) Run(ctx context.Context) {
 			continue
 		}
 		completion := pb.Process_Status_COMPLETED
+		//fmt.Printf("Process completion: %v \n", state)
 		result, err := p.work(ctx, state)
 		if err != nil && len(state.ProcessStatus.Errors) > 0 {
 			glog.Infof("process %q instance %q errors during execution: %d total errors, exit error: %v, first processing error: %v", p.name, instanceID, state.ProcessStatus.TotalErrors, err, state.ProcessStatus.Errors[0])
@@ -387,6 +391,7 @@ func (p *Process) work(ctx context.Context, state *pb.Process) (Progress, error)
 		}
 		p.AddStats(1, "workItems", state)
 		work.Status = newStatus(pb.Process_Status_ACTIVE)
+		fmt.Printf("*****PROCESS ACTIVE WORK*****: %v \n", workName)
 		err := p.worker.ProcessActiveWork(ctx, state, workName, work, p)
 		if err == nil {
 			p.setWorkState(pb.Process_Status_COMPLETED, workName, state)
@@ -463,6 +468,7 @@ func (p *Process) setWorkState(statusState pb.Process_Status_State, workName str
 func (p *Process) readState(tx storage.Tx) (*pb.Process, error) {
 	state := &pb.Process{}
 	err := p.store.ReadTx(storage.ProcessDataType, storage.DefaultRealm, storage.DefaultUser, p.name, storage.LatestRev, state, tx)
+	//fmt.Printf("Read state: %v \n", state)
 	p.setup(state)
 	if err == nil || !storage.ErrNotFound(err) {
 		return state, err
@@ -521,6 +527,7 @@ func (p *Process) start() (_ *pb.Process, _ time.Duration, ferr error) {
 	// Set up a new process status object to track this worker run.
 	state.ProcessStatus = newStatus(pb.Process_Status_ACTIVE)
 	// Save the current state to inform other workers that this worker owns processing for this scheduled run.
+	//fmt.Printf("**STATUS: %v \n **Process Name: %v \n", state, p.name)
 	if err := p.writeState(state, tx); err != nil {
 		return nil, freq, err
 	}

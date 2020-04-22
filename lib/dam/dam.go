@@ -161,6 +161,7 @@ func NewService(params *Options) *Service {
 
 // New creates a DAM and registers it on r.
 func New(r *mux.Router, params *Options) *Service {
+	fmt.Printf("Registering DAM \n")
 	var roleCat pb.DamRoleCategoriesResponse
 	if err := srcutil.LoadProto("deploy/metadata/dam_roles.json", &roleCat); err != nil {
 		glog.Exitf("cannot load role categories file %q: %v", "deploy/metadata/dam_roles.json", err)
@@ -1219,6 +1220,7 @@ func (s *Service) realmReadTx(datatype, realm, user, id string, rev int64, item 
 }
 
 func (s *Service) registerAllProjects(tx storage.Tx) error {
+	fmt.Printf("******** Register All Projects ********* \n")
 	if s.warehouse == nil {
 		return nil
 	}

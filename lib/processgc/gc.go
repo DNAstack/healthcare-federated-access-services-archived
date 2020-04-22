@@ -17,6 +17,7 @@ package processgc
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -157,6 +158,7 @@ func (k *KeyGC) CleanupWork(ctx context.Context, state *pb.Process, workName str
 
 // Wait indicates that the worker should wait for the next active cycle to begin.
 func (k *KeyGC) Wait(ctx context.Context, duration time.Duration) bool {
+	fmt.Printf("!!!!!! GCS WAITING !!!! \n")
 	if k.wait != nil && !k.wait(ctx, duration) {
 		return false
 	}

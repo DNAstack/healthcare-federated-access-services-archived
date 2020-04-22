@@ -294,6 +294,7 @@ func (wh *AccountWarehouse) GetAccountKey(ctx context.Context, id string, ttl, m
 func (wh *AccountWarehouse) ManageAccountKeys(ctx context.Context, project, email string, ttl, maxTTL time.Duration, now time.Time, keysPerAccount int64) (int, int, error) {
 	// TODO: instead of turning duration to string and comparing strings, the string ValidAfterTime should be converted to time and compared using time comparison.
 	// A key has expired if key.ValidAfterTime + maxTTL < now, i.e. key.ValidAfterTime < now - maxTTL
+	fmt.Printf("Manage account keys \n")
 	expired := now.Add(-1 * maxTTL).Format(time.RFC3339)
 
 	resp, err := wh.iam.ListServiceAccountKeys(ctx, &iampb.ListServiceAccountKeysRequest{Name: AccountResourceName(project, email), KeyTypes: userManaged})
@@ -357,7 +358,7 @@ func (wh *AccountWarehouse) GetAccessToken(ctx context.Context, id string, param
 
 // GetServiceAccounts gets the list of service accounts.
 func (wh *AccountWarehouse) GetServiceAccounts(ctx context.Context, project string) (<-chan *clouds.Account, error) {
-
+	fmt.Printf("** Getting GCS service account \n")
 	c := make(chan *clouds.Account)
 	go func() {
 		defer close(c)
@@ -367,6 +368,7 @@ func (wh *AccountWarehouse) GetServiceAccounts(ctx context.Context, project stri
 				ID:          acct.Email,
 				DisplayName: acct.DisplayName,
 			}
+			fmt.Printf("This function is called: %v \n", a.DisplayName)
 			select {
 			case c <- a:
 			case <-ctx.Done():
@@ -375,6 +377,7 @@ func (wh *AccountWarehouse) GetServiceAccounts(ctx context.Context, project stri
 			return nil
 		}
 
+		fmt.Printf("Get gcs service accounts: %v \n", project)
 		it := wh.iam.ListServiceAccounts(ctx, &iampb.ListServiceAccountsRequest{Name: "projects/" + project})
 		for {
 			accounts, err := it.Next()

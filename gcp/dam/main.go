@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -96,6 +97,7 @@ func main() {
 		glog.Exitf("Unknown storage type %q", storageType)
 	}
 
+	fmt.Printf("Calling must new \n")
 	wh := saw.MustNew(ctx, store)
 
 	logger, err := logging.NewClient(ctx, project)
